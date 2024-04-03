@@ -1,0 +1,2 @@
+[ ]  compute the statistics of success, failures, skipped and print them at the end of testsuite run.
+[ ] Build and use Authorization for test cases that need authentication.
