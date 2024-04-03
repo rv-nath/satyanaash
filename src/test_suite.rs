@@ -13,7 +13,6 @@ impl TestSuite {
         for test_case in &mut self.test_cases {
             let jwt_token = test_case.run(self.jwt_token.clone())?;
             //print the value of jwt_token
-            println!("JWT token: {:?}", jwt_token);
             if let Some(jwt_token) = jwt_token {
                 self.jwt_token = Some(jwt_token);
             }
