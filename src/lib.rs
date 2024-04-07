@@ -20,5 +20,5 @@ pub fn exec(filename: &str, config: &Config) {
 
     // Create a new TestSuite with the test data and run it
     let mut test_suite = TestSuite::new(test_data);
-    let _ = test_suite.run();
+    let _ = test_suite.run(config);
 }

@@ -1,2 +1,5 @@
-[ ]  compute the statistics of success, failures, skipped and print them at the end of testsuite run.
-[ ] Build and use Authorization for test cases that need authentication.
+[ ] Compute the statistics of success, failures, skipped and print them at the end of testsuite run.
+[✓] Build and use Authorization for test cases that need authentication.
+[ ] HTML output for results.
+[ ] Support grouped test cases.
+[ ] 

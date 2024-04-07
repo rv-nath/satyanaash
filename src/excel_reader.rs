@@ -36,16 +36,9 @@ pub fn read_test_data(filename: &str, config: &Config) -> Result<Vec<TestCase>, 
             .iter()
             .map(|cell| cell as &dyn calamine::DataType)
             .collect();
-        if let Ok(mut test_case) = TestCase::new_from_row(&row_data) {
-            // prepend the baseurl to url field.
-            if let Some(base_url) = &config.base_url {
-                let url = format!("{}{}", base_url, test_case.url);
-                test_case.url = url;
-            }
-            test_cases.push(test_case);
-        } else {
-            eprintln!("Error reading test case from row: {}. Ignoring...", index);
-        }
+        let test_case = TestCase::new(&row_data, config);
+        // prepend the baseurl to url field.
+        test_cases.push(test_case);
     }
     Ok(test_cases) // Return the test_cases vector as a Result
 }

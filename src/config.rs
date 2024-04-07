@@ -9,6 +9,7 @@ pub struct Config {
     pub end_row: Option<usize>,
     pub base_url: Option<String>,
     pub test_file: Option<String>, // Add this line
+    pub verbose: bool,
 }
 
 impl Config {
@@ -21,6 +22,7 @@ impl Config {
         opts.optopt("b", "base_url", "Set the base URL", "BASE_URL");
         opts.optopt("t", "test_file", "Set the test file", "TEST_FILE"); // Add this line
         opts.optflag("h", "help", "Print this help menu");
+        opts.optflag("v", "verbose", "Print verbose information");
 
         let matches = match opts.parse(&args[1..]) {
             Ok(m) => m,
@@ -34,6 +36,7 @@ impl Config {
                 "Help requested",
             )));
         }
+        let verbose = matches.opt_present("v");
 
         let start_row = matches.opt_str("s").map(|s| s.parse::<usize>().unwrap());
         let end_row = matches.opt_str("e").map(|e| e.parse::<usize>().unwrap());
@@ -58,6 +61,8 @@ impl Config {
             // Add this line
             config.test_file = Some(test_file);
         }
+
+        config.verbose = verbose;
 
         Ok(config)
     }
