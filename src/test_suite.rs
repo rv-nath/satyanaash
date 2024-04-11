@@ -30,6 +30,7 @@ impl TestSuite {
                 return Err(Box::new(e));
             }
         };
+        runtime.eval("var globals = {}").unwrap();
 
         // Create a test suite context
         let mut test_suite_ctx =

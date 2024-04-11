@@ -13,7 +13,7 @@ pub struct TestSuiteCtx<'a> {
 impl<'a> TestSuiteCtx<'a> {
     pub fn new(
         client: &'a reqwest::blocking::Client,
-        jwt_token: Option<String>,
+        _jwt_token: Option<String>,
         runtime: &'a mut Context,
     ) -> Self {
         TestSuiteCtx {

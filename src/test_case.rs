@@ -1,4 +1,5 @@
 use colored::Colorize;
+use regex::Regex;
 use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
 use std::time::Duration;
@@ -7,7 +8,7 @@ use indicatif::ProgressBar;
 
 use crate::{config::Config, test_suite_context::TestSuiteCtx};
 
-#[derive(Debug)]
+//#[derive(Debug)]
 
 pub struct TestCase {
     id: u32,                        // test case identifier (typically a number)
@@ -18,7 +19,8 @@ pub struct TestCase {
     url: String,                    // URL of the request
     method: Method,                 // http method for the request.
     headers: Vec<(String, String)>, // http headers for the request, if any.
-    payload: Value,                 // payload (json) to be sent with the request.
+    //payload: Value,                 // payload (json) to be sent with the request.
+    payload: String, // payload to be sent with the request.
     //expected_status: StatusCode,    // expected http status code.
     expected_status: i32,             // expected http status code.
     is_authorizer: bool,              // indicates if this is an authorization endpoint.
@@ -148,14 +150,14 @@ impl TestCase {
         };
 
         let payload = match row[8].get_string() {
-            Some(s) => match serde_json::from_str(s) {
-                Ok(v) => v,
+            Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(_) => s.to_owned(),
                 Err(_) => {
                     errors.push(("payload".to_string(), "Invalid JSON payload.".to_string()));
-                    Value::Null
+                    "".to_string()
                 }
             },
-            None => Value::Null,
+            None => "".to_owned(),
         };
 
         let expected_status = match row[9].get_float() {
@@ -229,6 +231,20 @@ impl TestCase {
             return None;
         }
 
+        // Execute pre_test_script if it exists
+        if let Some(pre_test_script) = &self.pre_test_script {
+            match ts_ctx.runtime.eval(pre_test_script) {
+                Ok(_) => (),
+                Err(e) => eprintln!("Error executing pre_test_script: {}", e),
+            }
+        }
+
+        // Retrieve global variables and substitute placeholders in test case parameters
+        self.name = self.substitute_placeholders(&self.name, ts_ctx);
+        self.url = self.substitute_placeholders(&self.url, ts_ctx);
+        self.payload = self.substitute_placeholders(&self.payload, ts_ctx);
+        // TODO: for other columns..
+
         // if the test case is authorized, then add the jwt token to the headers.
         if self.is_authorized {
             if let Some(token) = ts_ctx.jwt_token.as_ref() {
@@ -284,6 +300,18 @@ impl TestCase {
         self.actual_status = status;
         self.response_body = body;
         self.exec_duration = Some(start.elapsed());
+
+        // Execute the post-test script
+        if let Some(post_test_script) = &self.post_test_script {
+            match ts_ctx.runtime.eval(&post_test_script) {
+                Ok(_) => (),
+                Err(e) => {
+                    eprintln!("Error executing the post-test script: {}", e);
+                    //return Err(Box::new(e));
+                    return None;
+                }
+            }
+        }
 
         // Return the JWT token if it was an authorization endpoint.
         if self.is_authorizer {
@@ -370,5 +398,23 @@ impl TestCase {
         println!("Response Info: ");
         println!("\tStatus: {:?}", self.actual_status);
         println!("\tDuration: {:?}", self.exec_duration);
+    }
+
+    fn substitute_placeholders(&self, original: &str, ts_ctx: &TestSuiteCtx) -> String {
+        let mut result = original.to_string();
+        let re = Regex::new(r"\{\{(.*?)\}\}").unwrap();
+        for cap in re.captures_iter(original) {
+            let var_name = &cap[1];
+            //match ts_ctx.runtime.eval(&var_name) {
+            match ts_ctx.runtime.eval(&format!("globals.{}", var_name)) {
+                Ok(value) => {
+                    if let Some(value_str) = value.into_string() {
+                        result = result.replace(&format!("{{{{{}}}}}", var_name), &value_str);
+                    }
+                }
+                Err(_) => (),
+            }
+        }
+        result
     }
 }
