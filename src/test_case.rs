@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use indicatif::ProgressBar;
 
-use crate::config::Config;
+use crate::{config::Config, test_suite_context::TestSuiteCtx};
 
 #[derive(Debug)]
 
@@ -20,16 +20,16 @@ pub struct TestCase {
     headers: Vec<(String, String)>, // http headers for the request, if any.
     payload: Value,                 // payload (json) to be sent with the request.
     //expected_status: StatusCode,    // expected http status code.
-    expected_status: i32, // expected http status code.
-    is_authorizer: bool,  // indicates if this is an authorization endpoint.
-    is_authorized: bool,  // indicates if this requires authorization.
+    expected_status: i32,             // expected http status code.
+    is_authorizer: bool,              // indicates if this is an authorization endpoint.
+    is_authorized: bool,              // indicates if this requires authorization.
+    pre_test_script: Option<String>,  // script to be executed before the test case.
+    post_test_script: Option<String>, // script to be executed after the test case.
 
     errors: Vec<(String, String)>, // List of errors found while reading excel data.
-    //
+
     // fields that will be filled after test case is executed..
-    //actual_status: Option<reqwest::StatusCode>, // http status received after the request.
     actual_status: i32, // Received http status, else a negative number, for some failure.
-    //response: Option<ResponseType>,
     response_body: String,
     exec_duration: Option<Duration>, // time taken for executing the request.
 }
@@ -181,6 +181,15 @@ impl TestCase {
             None => (false, false),
         };
 
+        let pre_test_script = match row[11].get_string() {
+            Some(s) => Some(s.to_owned()),
+            None => None,
+        };
+        let post_test_script = match row[12].get_string() {
+            Some(s) => Some(s.to_owned()),
+            None => None,
+        };
+
         TestCase {
             id,
             name,
@@ -196,17 +205,18 @@ impl TestCase {
             is_authorizer,
             errors,
 
-            //actual_status: Option::<reqwest::StatusCode>::None,
             actual_status: 0,
-            //response: None,
             response_body: String::new(),
             exec_duration: Option::<Duration>::None,
+            pre_test_script,
+            post_test_script,
         }
     }
 
     // Executes the test case, by using the provided http client  and an optional JWT token.
     // Returns an optional JWT token (if it was an authorization endpoint).
-    pub fn run(&mut self, client: &reqwest::blocking::Client, jwt: Option<&str>) -> Option<String> {
+    //pub fn run(&mut self, client: &reqwest::blocking::Client, jwt: Option<&str>) -> Option<String> {
+    pub fn run(&mut self, ts_ctx: &mut TestSuiteCtx) -> Option<String> {
         println!("Running the test case: {}", self.name);
 
         // Verify if the test case has errors, if so return without executing.
@@ -221,14 +231,14 @@ impl TestCase {
 
         // if the test case is authorized, then add the jwt token to the headers.
         if self.is_authorized {
-            if let Some(token) = jwt {
+            if let Some(token) = ts_ctx.jwt_token.as_ref() {
                 self.headers
                     .push(("Authorization".to_owned(), format!("Bearer {}", token)));
             }
         }
 
         // Frame the request based on Method type, add headers.
-        let mut request = client.request(self.method.clone(), &self.url);
+        let mut request = ts_ctx.client.request(self.method.clone(), &self.url);
         for (key, value) in &self.headers {
             request = request.header(key, value);
         }
