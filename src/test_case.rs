@@ -34,6 +34,7 @@ pub struct TestCase {
     actual_status: i32, // Received http status, else a negative number, for some failure.
     response_body: String,
     exec_duration: Option<Duration>, // time taken for executing the request.
+    script_result: Option<bool>,     // result of the post-test script.
 }
 
 pub enum TestResult {
@@ -212,12 +213,12 @@ impl TestCase {
             exec_duration: Option::<Duration>::None,
             pre_test_script,
             post_test_script,
+            script_result: None,
         }
     }
 
     // Executes the test case, by using the provided http client  and an optional JWT token.
     // Returns an optional JWT token (if it was an authorization endpoint).
-    //pub fn run(&mut self, client: &reqwest::blocking::Client, jwt: Option<&str>) -> Option<String> {
     pub fn run(&mut self, ts_ctx: &mut TestSuiteCtx) -> Option<String> {
         println!("Running the test case: {}", self.name);
 
@@ -279,35 +280,30 @@ impl TestCase {
         let start = std::time::Instant::now();
 
         // Fire the request using blocking call.
-        let result = request.send();
-        let (status, body) = match result {
-            Ok(response) => {
-                let status = response.status().as_u16() as i32;
-                let body = response
-                    .text()
-                    .unwrap_or_else(|_| String::from("Failed to read resposne body"));
-                (status, body)
-            }
-            Err(e) => {
-                println!("Network error");
-                (1, format!("Network error: {}", e))
-            }
-        };
+        //ts_ctx.set_response(request.send());
+        ts_ctx.exec(request);
 
         pb.disable_steady_tick();
+        self.exec_duration = Some(start.elapsed());
 
+        /*
         // Set the actual status and exec durations
         self.actual_status = status;
         self.response_body = body;
-        self.exec_duration = Some(start.elapsed());
+
+        // Set the response body in the runtime context
+        ts_ctx.set_response(&self.response_body);
+        */
 
         // Execute the post-test script
         if let Some(post_test_script) = &self.post_test_script {
-            match ts_ctx.runtime.eval(&post_test_script) {
-                Ok(_) => (),
+            match ts_ctx.runtime.eval_as::<bool>(&post_test_script) {
+                Ok(result_bool) => {
+                    self.script_result = Some(result_bool);
+                }
                 Err(e) => {
                     eprintln!("Error executing the post-test script: {}", e);
-                    //return Err(Box::new(e));
+                    self.script_result = Some(false);
                     return None;
                 }
             }
@@ -347,32 +343,52 @@ impl TestCase {
             return TestResult::NotYetTested;
         }
 
-        if self.actual_status == self.expected_status {
-            TestResult::Passed
+        if let Some(script_result) = self.script_result {
+            if script_result {
+                TestResult::Passed
+            } else {
+                TestResult::Failed
+            }
         } else {
-            TestResult::Failed
+            if self.actual_status == self.expected_status {
+                TestResult::Passed
+            } else {
+                TestResult::Failed
+            }
         }
     }
 
-    pub fn print_result(&self, verbose: bool) {
+    pub fn print_result(&self, ts_ctx: &TestSuiteCtx, verbose: bool) {
         println!("Test Case ID: {}", self.id);
         println!("Test Case: {}", self.name);
         println!("Given: {:?}", self.given);
         println!("When: {:?}", self.when);
-        println!("Then: {:?}", self.then);
-        println!("Expected: {}", self.expected_status);
-        println!("Actual: {}", self.actual_status);
+        let then = if let Some(_post_test_script) = &self.post_test_script {
+            ts_ctx.get_test_name()
+        } else {
+            self.then.to_owned()
+        };
+        println!("Then: {:?}", then);
+        //println!("Expected: {}", self.expected_status);
+        //println!("Actual: {}", self.actual_status);
+        println!("Expected: {}", ts_ctx.get_test_name());
+        println!("Actual: {}", ts_ctx.get_test_status());
 
         // print only if -v (--verbose) flag is provided in command line.
         if verbose {
             self.print_request_info();
-            self.print_response_info();
+            //self.pri        println!("Response Status:", self.get_test_status());esponse
+            //Status:",
         }
-        //if StatusCode::from_u16(self.expected_status as u16).unwrap() == self.actual_status {
-        if self.expected_status == self.actual_status {
-            println!("Result: {}", "[PASS] ✔".green());
-        } else {
-            println!("Result: {}", "[FAIL] ✘".red());
+        let test_result = self.result();
+        match test_result {
+            TestResult::Passed => {
+                println!("Result: {}", "[PASS] ✔".green());
+            }
+            TestResult::Failed => {
+                println!("Result: {}", "[FAIL] ✘".red());
+            }
+            _ => {}
         }
     }
 
@@ -394,11 +410,13 @@ impl TestCase {
         }
     }
 
+    /*
     pub fn print_response_info(&self) {
         println!("Response Info: ");
         println!("\tStatus: {:?}", self.actual_status);
         println!("\tDuration: {:?}", self.exec_duration);
     }
+    */
 
     fn substitute_placeholders(&self, original: &str, ts_ctx: &TestSuiteCtx) -> String {
         let mut result = original.to_string();

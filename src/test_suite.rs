@@ -41,7 +41,7 @@ impl TestSuite {
             let jwt_token = test_case.run(&mut test_suite_ctx);
 
             // Print the result
-            test_case.print_result(config.verbose);
+            test_case.print_result(&test_suite_ctx, config.verbose);
             println!("------------------------------");
 
             // Update the token in the test suite context
