@@ -7,15 +7,9 @@ pub struct TestSuiteCtx<'a> {
     pub client: &'a reqwest::blocking::Client,
     pub jwt_token: Option<String>,
     pub runtime: &'a mut quick_js::Context,
+
     // More fields as necessary
     exec_duration: std::time::Duration,
-}
-
-pub enum TestResult {
-    NotYetTested,
-    Passed,
-    Failed,
-    Skipped,
 }
 
 impl<'a> TestSuiteCtx<'a> {
@@ -32,13 +26,15 @@ impl<'a> TestSuiteCtx<'a> {
             .eval(
                 r#"
                 SAT.test = function (name, fn) {
+                    let result = false;
                     try {
-                        fn();
+                        result = fn();
                         //console.log(`✔ ${name}`);
                     } catch (e) {
                         //console.error(`✘ ${name}: ${e}`);
                     }
                     SAT.testName = name;
+                    return result;
                 }
             "#,
             )
@@ -55,10 +51,10 @@ impl<'a> TestSuiteCtx<'a> {
         self.jwt_token = token;
     }
 
-    //pub fn set_response(&mut self, response: Result<Response, reqwest::Error>) {
-    pub fn exec(&mut self, request: reqwest::blocking::RequestBuilder) {
+    pub fn exec(&mut self, request: reqwest::blocking::RequestBuilder, is_authorizer: bool) {
         let start = std::time::Instant::now();
         let response = request.send();
+        //println!("DEBUG: response: {:?}", response);
         self.exec_duration = start.elapsed();
         match response {
             Ok(response) => {
@@ -69,10 +65,18 @@ impl<'a> TestSuiteCtx<'a> {
                 let body = response
                     .text()
                     .unwrap_or_else(|_| String::from("Failed to read response body"));
+                //println!("DEBUG: body: {:?}", body);
 
                 // Parse the body string as JSON
-                let body_json: Value = match serde_json::from_str(&body) {
-                    Ok(json) => json,
+                let body_json: Value = match serde_json::from_str::<Value>(&body) {
+                    Ok(json) => {
+                        // if is_authorizer is true, extract and store the token
+                        if is_authorizer {
+                            let token = json["token"].as_str().unwrap_or("");
+                            self.update_token(Some(token.to_owned()));
+                        }
+                        json
+                    }
                     Err(_) => Value::Null,
                 };
 
@@ -85,15 +89,17 @@ impl<'a> TestSuiteCtx<'a> {
                     .unwrap();
             }
             Err(e) => {
-                eprintln!("Network error: {}", e);
+                //eprintln!("error: {}", e);
                 // Clear the response in the JavaScript context
-                self.runtime.eval("SAT.response = {}").unwrap();
+                //self.runtime.eval("SAT.response = {}").unwrap();
+                self.runtime
+                    .eval(&format!("SAT.response = {{ status: 0, body: `{}` }}", e))
+                    .unwrap();
             }
         }
     }
 
     // Verify if the test has passed or failed.
-    //pub fn verify_result(&self, script: &str) -> bool {
     pub fn verify_result(&self, script: Option<&str>) -> bool {
         if let Some(script) = script {
             match self.runtime.eval_as::<bool>(script) {
@@ -108,18 +114,16 @@ impl<'a> TestSuiteCtx<'a> {
     pub fn get_test_name(&self) -> String {
         self.runtime
             .eval("SAT.testName")
-            .unwrap()
+            .unwrap_or(quick_js::JsValue::Null)
             .as_str()
-            .unwrap()
+            .unwrap_or_default()
             .to_owned()
     }
-    pub fn get_http_status(&self) -> String {
-        self.runtime
-            .eval("SAT.response.status")
-            .unwrap()
-            .as_str()
-            .unwrap_or("None")
-            .to_owned()
+    pub fn get_http_status(&self) -> i32 {
+        match self.runtime.eval("SAT.response.status") {
+            Ok(quick_js::JsValue::Int(status)) => status,
+            _ => 0, // return a default value in case of error or if the value is not an integer
+        }
     }
 
     pub fn get_response_body(&self) -> String {
@@ -137,7 +141,4 @@ impl<'a> TestSuiteCtx<'a> {
         println!("\tBody: {}", self.get_response_body());
         println!("\tExecution Time: {:?}", self.exec_duration);
     }
-
-    // Return the test result as an enum of TestResult options.
-    pub fn get_test_result(&self) -> TestResult {}
 }

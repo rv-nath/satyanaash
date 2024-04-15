@@ -1,7 +1,7 @@
 use crate::config::Config;
 // test_suite.rs
 use crate::test_case::TestCase;
-use crate::test_case::TestResult;
+//use crate::test_case::TestResult;
 use crate::test_suite_context::TestSuiteCtx;
 use quick_js::Context;
 
@@ -38,24 +38,19 @@ impl TestSuite {
 
         for test_case in &mut self.test_cases {
             // execute the test case..
-            let jwt_token = test_case.run(&mut test_suite_ctx);
+            test_case.run(&mut test_suite_ctx);
+
+            // accummulate test statistics
+            match test_suite_ctx.verify_result(test_case.pre_test_script.as_deref()) {
+                true => self.passed += 1,
+                false => self.failed += 1,
+            }
 
             // Print the result
             test_case.print_result(&test_suite_ctx, config.verbose);
             println!("------------------------------");
-
-            // Update the token in the test suite context
-            test_suite_ctx.update_token(jwt_token);
-
-            // accummulate test statistics
-            match test_case.result() {
-                // handle all enum variants
-                TestResult::Failed => self.failed += 1,
-                TestResult::Passed => self.passed += 1,
-                TestResult::Skipped => self.skipped += 1,
-                TestResult::NotYetTested => (),
-            }
         }
+
         self.print_stats();
         Ok(())
     }

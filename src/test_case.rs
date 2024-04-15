@@ -1,40 +1,47 @@
 use colored::Colorize;
+//use colored::Colorize;
 use regex::Regex;
 use reqwest::{Method, StatusCode, Url};
-use serde_json::Value;
 use std::time::Duration;
 
 use indicatif::ProgressBar;
 
 use crate::{config::Config, test_suite_context::TestSuiteCtx};
 
-//#[derive(Debug)]
+// Possible test case results.
+pub enum TestResult {
+    NotYetTested,
+    Passed,
+    Failed,
+    Skipped,
+}
 
 pub struct TestCase {
-    id: u32,                        // test case identifier (typically a number)
-    name: String,                   // human readable name for the test case.
-    given: String,                  // test case description for the given condition (Given)
-    when: String,                   // test case description for the then condition  (When)
-    then: String,                   // test case description. for resulting condition. (Then)
-    url: String,                    // URL of the request
-    method: Method,                 // http method for the request.
-    headers: Vec<(String, String)>, // http headers for the request, if any.
+    pub id: u32,                        // test case identifier (typically a number)
+    pub name: String,                   // human readable name for the test case.
+    pub given: String,                  // test case description for the given condition (Given)
+    pub when: String,                   // test case description for the then condition  (When)
+    pub then: String,                   // test case description. for resulting condition. (Then)
+    pub url: String,                    // URL of the request
+    pub method: Method,                 // http method for the request.
+    pub headers: Vec<(String, String)>, // http headers for the request, if any.
     //payload: Value,                 // payload (json) to be sent with the request.
-    payload: String, // payload to be sent with the request.
+    pub payload: String, // payload to be sent with the request.
     //expected_status: StatusCode,    // expected http status code.
-    expected_status: i32,             // expected http status code.
-    is_authorizer: bool,              // indicates if this is an authorization endpoint.
-    is_authorized: bool,              // indicates if this requires authorization.
-    pre_test_script: Option<String>,  // script to be executed before the test case.
-    post_test_script: Option<String>, // script to be executed after the test case.
+    pub expected_status: i32,             // expected http status code.
+    pub is_authorizer: bool,              // indicates if this is an authorization endpoint.
+    pub is_authorized: bool,              // indicates if this requires authorization.
+    pub pre_test_script: Option<String>,  // script to be executed before the test case.
+    pub post_test_script: Option<String>, // script to be executed after the test case.
 
-    errors: Vec<(String, String)>, // List of errors found while reading excel data.
+    pub errors: Vec<(String, String)>, // List of errors found while reading excel data.
 
     // fields that will be filled after test case is executed..
-    actual_status: i32, // Received http status, else a negative number, for some failure.
-    response_body: String,
-    exec_duration: Option<Duration>, // time taken for executing the request.
-    script_result: Option<bool>,     // result of the post-test script.
+    //actual_status: i32, // Received http status, else a negative number, for some failure.
+    //response_body: String,
+    //exec_duration: Option<Duration>, // time taken for executing the request.
+    //script_result: Option<bool>, // result of the post-test script.
+    result: TestResult,
 }
 
 impl TestCase {
@@ -134,7 +141,7 @@ impl TestCase {
                 .filter_map(|header| {
                     let parts: Vec<&str> = header.split(':').collect();
                     if parts.len() == 2 {
-                        Some((parts[0].to_owned(), parts[1].to_owned()))
+                        Some((parts[0].trim().to_owned(), parts[1].trim().to_owned()))
                     } else {
                         None
                     }
@@ -201,12 +208,13 @@ impl TestCase {
             is_authorizer,
             errors,
 
-            actual_status: 0,
-            response_body: String::new(),
-            exec_duration: Option::<Duration>::None,
+            //actual_status: 0,
+            //response_body: String::new(),
+            //exec_duration: Option::<Duration>::None,
             pre_test_script,
             post_test_script,
-            script_result: None,
+            //script_result: None,
+            result: TestResult::NotYetTested,
         }
     }
 
@@ -216,12 +224,12 @@ impl TestCase {
         println!("Running the test case: {}", self.name);
 
         // Verify if the test case has errors, if so return without executing.
-        // if the test case has errors then return without executing.
         if self.errors.len() > 0 {
             println!(
                 "Skipping test case: {} due to errors: {:?}",
                 self.name, self.errors
             );
+            self.result = TestResult::Skipped;
             return None;
         }
 
@@ -265,72 +273,60 @@ impl TestCase {
         let pb = ProgressBar::new_spinner();
 
         // Display a message to the user
-        print!("Fetching {}...", self.url);
+        println!("Fetching {}...", self.url);
         pb.set_message(format!("Fetching {}...", self.url));
         pb.enable_steady_tick(Duration::from_millis(100));
 
         // Fire the request using blocking call.
-        ts_ctx.exec(request);
+        ts_ctx.exec(request, self.is_authorizer);
 
         // Stop progress animation
         pb.disable_steady_tick();
 
-        /*
-        // Execute the post-test script
-        if let Some(post_test_script) = &self.post_test_script {
-            match ts_ctx.runtime.eval_as::<bool>(&post_test_script) {
-                Ok(result_bool) => {
-                    self.script_result = Some(result_bool);
-                }
-                Err(e) => {
-                    eprintln!("Error executing the post-test script: {}", e);
-                    self.script_result = Some(false);
-                    return None;
-                }
-            }
+        // print the value of post_test_script for debugging.
+        //println!("DEBUG: Post test script: {:?}", self.post_test_script);
+
+        // Execute the post test script and verify the result.
+        let result = ts_ctx.verify_result(self.post_test_script.as_deref());
+        //println!("DEBUG: Post test script evaluation result: {}", result);
+
+        // store the test result as an enum.
+        match result {
+            true => self.result = TestResult::Passed,
+            false => self.result = TestResult::Failed,
         }
-        */
 
-        // Return the JWT token if it was an authorization endpoint.
-        if self.is_authorizer {
-            // parse the response body as json
-            let response_json = match serde_json::from_str::<Value>(&self.response_body) {
-                Ok(json) => json,
-                Err(_) => {
-                    println!(
-                        "Warning: Authorizer request expected JSON response, but received: {:?}",
-                        &self.response_body
-                    );
-                    return None;
-                }
-            };
-
-            // capture jwt token from the response.
-            let jwt_token = response_json["access_token"]
-                .as_str()
-                .map(|token| token.to_owned());
-
-            return jwt_token;
-        }
         None
     }
 
     pub fn print_result(&self, ts_ctx: &TestSuiteCtx, verbose: bool) {
-        println!("Test Case ID: {}", self.id);
-        println!("Test Case: {}", self.name);
-        println!("Given: {:?}", self.given);
-        println!("When: {:?}", self.when);
-        let then = if let Some(_post_test_script) = &self.post_test_script {
-            ts_ctx.get_test_name()
-        } else {
-            self.then.to_owned()
-        };
-        println!("Then: {:?}", then);
-        println!("Expected: {}", ts_ctx.get_test_name());
-        println!("Actual: {}", ts_ctx.get_http_status());
+        println!("{:<15}: {}", "Test Case ID", self.id);
+        println!("{:<15}: {}", "Test Case", self.name);
+        println!("{:<15}: {}", "Given", self.given);
+        println!("{:<15}: {}", "When", self.when);
+        println!("{:<15}: {}", "Then", self.then);
+        println!("{:<15}: {}", "Expected", ts_ctx.get_test_name());
+        println!("{:<15}: {}", "Actual", ts_ctx.get_http_status());
 
-        // print only if -v (--verbose) flag is provided in command line.
-        let test_result = ts_ctx.verify_result(self.post_test_script.as_deref());
+        // print the below, if only verbose flag is enabled.
+        if verbose {
+            self.print_request_info();
+            ts_ctx.print_response_info();
+        }
+
+        // finally print the pass / fail / skip status with symbols.
+        match self.result {
+            TestResult::Passed => println!("{:<15}: {}", "Result", "✅ PASSED".green()),
+            TestResult::Failed => println!("{:<15}: {}", "Result", "❌ FAILED".red()),
+            TestResult::Skipped => println!("{:<15}: {}", "Result", "⚠️ SKIPPED".yellow()),
+
+            /*
+            TestResult::Passed => println!("Result: {}", "✅ PASSED".green()),
+            TestResult::Failed => println!("Result: {}", "❌ FAILED".red()),
+            TestResult::Skipped => println!("Result: {}", "⚠️ SKIPPED".yellow()),
+            */
+            _ => (),
+        }
     }
 
     pub fn print_request_info(&self) {
@@ -339,13 +335,23 @@ impl TestCase {
         println!("\tURL: {}", self.url);
         if !self.headers.is_empty() {
             println!("\tHeaders: ");
+            //println!("DEBUG: headers length:{}", self.headers.len());
             for (key, value) in &self.headers {
+                let value = value.replace("\n", "");
                 println!("\t\t{}: {}", key, value);
             }
         }
         match self.method {
             reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH => {
-                println!("\tPayload: {:#?}", self.payload);
+                match serde_json::from_str::<serde_json::Value>(&self.payload) {
+                    Ok(json) => {
+                        let pretty_json = serde_json::to_string_pretty(&json).unwrap();
+                        let indented_json = pretty_json.replace("\n", "\n\t\t");
+                        println!("\tPayload: {}", indented_json);
+                    }
+                    Err(_) => println!("\tPayload: {}", &self.payload),
+                }
+                //println!("\tPayload: {:#?}", self.payload);
             }
             _ => {}
         }

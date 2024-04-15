@@ -10,6 +10,7 @@ pub struct Config {
     pub base_url: Option<String>,
     pub test_file: Option<String>, // Add this line
     pub verbose: bool,
+    pub token_key: Option<String>,
 }
 
 impl Config {
