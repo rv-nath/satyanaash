@@ -37,13 +37,6 @@ pub struct TestCase {
     script_result: Option<bool>,     // result of the post-test script.
 }
 
-pub enum TestResult {
-    NotYetTested,
-    Passed,
-    Failed,
-    Skipped,
-}
-
 impl TestCase {
     // Initializes a test case object with a row of data from excel sheet.
     pub fn new(row: &[&dyn calamine::DataType], config: &Config) -> Self {
@@ -276,25 +269,13 @@ impl TestCase {
         pb.set_message(format!("Fetching {}...", self.url));
         pb.enable_steady_tick(Duration::from_millis(100));
 
-        // Strat timer tracking..
-        let start = std::time::Instant::now();
-
         // Fire the request using blocking call.
-        //ts_ctx.set_response(request.send());
         ts_ctx.exec(request);
 
+        // Stop progress animation
         pb.disable_steady_tick();
-        self.exec_duration = Some(start.elapsed());
 
         /*
-        // Set the actual status and exec durations
-        self.actual_status = status;
-        self.response_body = body;
-
-        // Set the response body in the runtime context
-        ts_ctx.set_response(&self.response_body);
-        */
-
         // Execute the post-test script
         if let Some(post_test_script) = &self.post_test_script {
             match ts_ctx.runtime.eval_as::<bool>(&post_test_script) {
@@ -308,6 +289,7 @@ impl TestCase {
                 }
             }
         }
+        */
 
         // Return the JWT token if it was an authorization endpoint.
         if self.is_authorizer {
@@ -333,31 +315,6 @@ impl TestCase {
         None
     }
 
-    // Returns the test result of the test case.
-    pub fn result(&self) -> TestResult {
-        if self.errors.len() > 0 {
-            return TestResult::Skipped;
-        }
-
-        if self.actual_status == 0 {
-            return TestResult::NotYetTested;
-        }
-
-        if let Some(script_result) = self.script_result {
-            if script_result {
-                TestResult::Passed
-            } else {
-                TestResult::Failed
-            }
-        } else {
-            if self.actual_status == self.expected_status {
-                TestResult::Passed
-            } else {
-                TestResult::Failed
-            }
-        }
-    }
-
     pub fn print_result(&self, ts_ctx: &TestSuiteCtx, verbose: bool) {
         println!("Test Case ID: {}", self.id);
         println!("Test Case: {}", self.name);
@@ -369,27 +326,11 @@ impl TestCase {
             self.then.to_owned()
         };
         println!("Then: {:?}", then);
-        //println!("Expected: {}", self.expected_status);
-        //println!("Actual: {}", self.actual_status);
         println!("Expected: {}", ts_ctx.get_test_name());
-        println!("Actual: {}", ts_ctx.get_test_status());
+        println!("Actual: {}", ts_ctx.get_http_status());
 
         // print only if -v (--verbose) flag is provided in command line.
-        if verbose {
-            self.print_request_info();
-            //self.pri        println!("Response Status:", self.get_test_status());esponse
-            //Status:",
-        }
-        let test_result = self.result();
-        match test_result {
-            TestResult::Passed => {
-                println!("Result: {}", "[PASS] ✔".green());
-            }
-            TestResult::Failed => {
-                println!("Result: {}", "[FAIL] ✘".red());
-            }
-            _ => {}
-        }
+        let test_result = ts_ctx.verify_result(self.post_test_script.as_deref());
     }
 
     pub fn print_request_info(&self) {
@@ -410,20 +351,11 @@ impl TestCase {
         }
     }
 
-    /*
-    pub fn print_response_info(&self) {
-        println!("Response Info: ");
-        println!("\tStatus: {:?}", self.actual_status);
-        println!("\tDuration: {:?}", self.exec_duration);
-    }
-    */
-
     fn substitute_placeholders(&self, original: &str, ts_ctx: &TestSuiteCtx) -> String {
         let mut result = original.to_string();
         let re = Regex::new(r"\{\{(.*?)\}\}").unwrap();
         for cap in re.captures_iter(original) {
             let var_name = &cap[1];
-            //match ts_ctx.runtime.eval(&var_name) {
             match ts_ctx.runtime.eval(&format!("globals.{}", var_name)) {
                 Ok(value) => {
                     if let Some(value_str) = value.into_string() {

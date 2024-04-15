@@ -11,6 +11,13 @@ pub struct TestSuiteCtx<'a> {
     exec_duration: std::time::Duration,
 }
 
+pub enum TestResult {
+    NotYetTested,
+    Passed,
+    Failed,
+    Skipped,
+}
+
 impl<'a> TestSuiteCtx<'a> {
     pub fn new(
         client: &'a reqwest::blocking::Client,
@@ -85,6 +92,19 @@ impl<'a> TestSuiteCtx<'a> {
         }
     }
 
+    // Verify if the test has passed or failed.
+    //pub fn verify_result(&self, script: &str) -> bool {
+    pub fn verify_result(&self, script: Option<&str>) -> bool {
+        if let Some(script) = script {
+            match self.runtime.eval_as::<bool>(script) {
+                Ok(result) => result,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn get_test_name(&self) -> String {
         self.runtime
             .eval("SAT.testName")
@@ -93,7 +113,7 @@ impl<'a> TestSuiteCtx<'a> {
             .unwrap()
             .to_owned()
     }
-    pub fn get_test_status(&self) -> String {
+    pub fn get_http_status(&self) -> String {
         self.runtime
             .eval("SAT.response.status")
             .unwrap()
@@ -110,10 +130,14 @@ impl<'a> TestSuiteCtx<'a> {
             .unwrap_or("None")
             .to_owned()
     }
+
     pub fn print_response_info(&self) {
         println!("Response Info:");
-        println!("\tStatus: {}", self.get_test_status());
+        println!("\tStatus: {}", self.get_http_status());
         println!("\tBody: {}", self.get_response_body());
         println!("\tExecution Time: {:?}", self.exec_duration);
     }
+
+    // Return the test result as an enum of TestResult options.
+    pub fn get_test_result(&self) -> TestResult {}
 }
