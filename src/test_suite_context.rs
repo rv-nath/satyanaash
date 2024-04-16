@@ -151,7 +151,7 @@ impl<'a> TestSuiteCtx<'a> {
             Ok(json) => {
                 let pretty_json = serde_json::to_string_pretty(&json).unwrap_or_default();
                 let indented_json = pretty_json.replace("\n", "\n\t");
-                println!("Body: {}", indented_json);
+                println!("\tBody: {}", indented_json);
             }
             Err(_) => {
                 println!("\tBody: {}", self.get_response_body());
