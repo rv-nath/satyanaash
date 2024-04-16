@@ -146,9 +146,16 @@ impl<'a> TestSuiteCtx<'a> {
     pub fn print_response_info(&self) {
         println!("Response Info:");
         println!("\tStatus: {}", self.get_http_status());
-        let body = self.get_response_body();
 
-        println!("\tBody: {}", self.get_response_body());
-        println!("\tExecution Time: {:?}", self.exec_duration);
+        match serde_json::from_str::<Value>(&self.get_response_body()) {
+            Ok(json) => {
+                let pretty_json = serde_json::to_string_pretty(&json).unwrap_or_default();
+                let indented_json = pretty_json.replace("\n", "\n\t");
+                println!("Body: {}", indented_json);
+            }
+            Err(_) => {
+                println!("\tBody: {}", self.get_response_body());
+            }
+        }
     }
 }
