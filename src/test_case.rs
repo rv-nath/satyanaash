@@ -2,6 +2,7 @@ use colored::Colorize;
 //use colored::Colorize;
 use regex::Regex;
 use reqwest::{Method, StatusCode, Url};
+use serde_json::Value;
 use std::time::Duration;
 
 use indicatif::ProgressBar;
@@ -262,9 +263,10 @@ impl TestCase {
         }
 
         // Only set the request body for HTTP methods that can have a request body.
+        let payload: Value = serde_json::from_str(&self.payload).unwrap_or(serde_json::json!({}));
         match self.method {
             reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH => {
-                request = request.json(&self.payload);
+                request = request.json(&payload);
             }
             _ => {}
         }
@@ -319,12 +321,6 @@ impl TestCase {
             TestResult::Passed => println!("{:<15}: {}", "Result", "✅ PASSED".green()),
             TestResult::Failed => println!("{:<15}: {}", "Result", "❌ FAILED".red()),
             TestResult::Skipped => println!("{:<15}: {}", "Result", "⚠️ SKIPPED".yellow()),
-
-            /*
-            TestResult::Passed => println!("Result: {}", "✅ PASSED".green()),
-            TestResult::Failed => println!("Result: {}", "❌ FAILED".red()),
-            TestResult::Skipped => println!("Result: {}", "⚠️ SKIPPED".yellow()),
-            */
             _ => (),
         }
     }
@@ -335,7 +331,6 @@ impl TestCase {
         println!("\tURL: {}", self.url);
         if !self.headers.is_empty() {
             println!("\tHeaders: ");
-            //println!("DEBUG: headers length:{}", self.headers.len());
             for (key, value) in &self.headers {
                 let value = value.replace("\n", "");
                 println!("\t\t{}: {}", key, value);
@@ -351,7 +346,6 @@ impl TestCase {
                     }
                     Err(_) => println!("\tPayload: {}", &self.payload),
                 }
-                //println!("\tPayload: {:#?}", self.payload);
             }
             _ => {}
         }

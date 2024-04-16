@@ -26,14 +26,17 @@ impl<'a> TestSuiteCtx<'a> {
             .eval(
                 r#"
                 SAT.test = function (name, fn) {
+                    SAT.testName = name;
                     let result = false;
                     try {
                         result = fn();
-                        //console.log(`✔ ${name}`);
+                        if (typeof result !== 'boolean') {
+                            result = false;
+                        }
                     } catch (e) {
-                        //console.error(`✘ ${name}: ${e}`);
+                        // Handle error
+                       result = false;
                     }
-                    SAT.testName = name;
                     return result;
                 }
             "#,
@@ -101,10 +104,15 @@ impl<'a> TestSuiteCtx<'a> {
 
     // Verify if the test has passed or failed.
     pub fn verify_result(&self, script: Option<&str>) -> bool {
+        // Debug and see if the SAT.test function exists in the runtime.
+        //println!("DEBUG: SAT.test: {:?}", self.runtime.eval("SAT.test"));
         if let Some(script) = script {
             match self.runtime.eval_as::<bool>(script) {
                 Ok(result) => result,
-                Err(_) => false,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    false
+                }
             }
         } else {
             false
@@ -138,6 +146,8 @@ impl<'a> TestSuiteCtx<'a> {
     pub fn print_response_info(&self) {
         println!("Response Info:");
         println!("\tStatus: {}", self.get_http_status());
+        let body = self.get_response_body();
+
         println!("\tBody: {}", self.get_response_body());
         println!("\tExecution Time: {:?}", self.exec_duration);
     }
