@@ -42,6 +42,7 @@ impl<'a> TestSuiteCtx<'a> {
             "#,
             )
             .unwrap();
+
         TestSuiteCtx {
             client,
             jwt_token: None,
@@ -159,3 +160,74 @@ impl<'a> TestSuiteCtx<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new() {
+    // Create a mock client, jwt_token, and runtime
+    let client = reqwest::blocking::Client::new();
+    let jwt_token = Some("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9".to_owned());
+    let cloned_jwt_token = jwt_token.clone(); // Clone the jwt_token value
+    let mut runtime = quick_js::Context::new().unwrap();
+
+        // Test if the runtime has the SAT object
+        let sat = runtime.eval("typeof SAT.test").unwrap();
+        let expected = quick_js::JsValue::String("function".to_string());
+        assert_eq!(sat, expected);
+    }
+
+    #[test]
+    fn test_sat_test_for_true() {
+
+    // Create a mock client, jwt_token, and runtime
+    let client = reqwest::blocking::Client::new();
+    let jwt_token = Some("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9".to_owned());
+    let cloned_jwt_token = jwt_token.clone(); // Clone the jwt_token value
+    let mut runtime = quick_js::Context::new().unwrap();
+
+    // Create a new TestSuiteCtx instance
+    TestSuiteCtx::new(&client, cloned_jwt_token, &mut runtime)
+        let runtime = quick_js::Context::new().unwrap();
+
+        // Create a mock function that returns true
+        let mock_fn = "function() { return true; }";
+
+        // Call SAT.test with the mock function
+        let result = runtime
+            .eval(&format!("SAT.test('test', {})", mock_fn))
+            .unwrap();
+
+        // Check if the return value is true
+        let expected = quick_js::JsValue::Bool(true);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sat_test_non_boolean() {
+        let runtime = quick_js::Context::new().unwrap();
+
+        // Create a mock function that returns a non-boolean value
+        let mock_fn = "function() { return 'non-boolean'; }";
+
+        // Call SAT.test with the mock function
+        let result = runtime
+            .eval(&format!("SAT.test('test', {})", mock_fn))
+            .unwrap();
+
+        // Check if the return value is false
+        let expected = quick_js::JsValue::Bool(false);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sat_test_error() {
+        // Create a mock function that throws an error
+        // Call SAT.test with the mock function
+        // Check if the return value is false
+    }
+}
+
