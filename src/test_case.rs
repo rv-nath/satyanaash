@@ -1,15 +1,17 @@
+use std::time::Duration;
+
 use colored::Colorize;
 //use colored::Colorize;
 use regex::Regex;
 use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
-use std::time::Duration;
 
 use indicatif::ProgressBar;
 
-use crate::{config::Config, test_suite_context::TestSuiteCtx};
+use crate::{config::Config, test_context::TestCtx};
 
 // Possible test case results.
+#[derive(Clone)]
 pub enum TestResult {
     NotYetTested,
     Passed,
@@ -221,7 +223,8 @@ impl TestCase {
 
     // Executes the test case, by using the provided http client  and an optional JWT token.
     // Returns an optional JWT token (if it was an authorization endpoint).
-    pub fn run(&mut self, ts_ctx: &mut TestSuiteCtx) -> Option<String> {
+    //pub fn run(&mut self, ts_ctx: &mut TestCtx) -> Option<String> {
+    pub fn run(&mut self, ts_ctx: &mut TestCtx, config: &Config) -> TestResult {
         println!("Running the test case: {}", self.name);
 
         // Verify if the test case has errors, if so return without executing.
@@ -230,8 +233,8 @@ impl TestCase {
                 "Skipping test case: {} due to errors: {:?}",
                 self.name, self.errors
             );
-            self.result = TestResult::Skipped;
-            return None;
+            //self.result = TestResult::Skipped;
+            return TestResult::Skipped;
         }
 
         // Execute pre_test_script if it exists
@@ -275,7 +278,7 @@ impl TestCase {
         let pb = ProgressBar::new_spinner();
 
         // Display a message to the user
-        println!("Fetching {}...", self.url);
+        //println!("Fetching {}...", self.url);
         pb.set_message(format!("Fetching {}...", self.url));
         pb.enable_steady_tick(Duration::from_millis(100));
 
@@ -293,15 +296,16 @@ impl TestCase {
         //println!("DEBUG: Post test script evaluation result: {}", result);
 
         // store the test result as an enum.
-        match result {
-            true => self.result = TestResult::Passed,
-            false => self.result = TestResult::Failed,
-        }
-
-        None
+        let test_result = match result {
+            true => TestResult::Passed,
+            false => TestResult::Failed,
+        };
+        self.result = test_result;
+        self.print_result(ts_ctx, config.verbose);
+        self.result.clone()
     }
 
-    pub fn print_result(&self, ts_ctx: &TestSuiteCtx, verbose: bool) {
+    pub fn print_result(&self, ts_ctx: &TestCtx, verbose: bool) {
         println!("{:<15}: {}", "Test Case ID", self.id);
         println!("{:<15}: {}", "Test Case", self.name);
         println!("{:<15}: {}", "Given", self.given);
@@ -351,7 +355,7 @@ impl TestCase {
         }
     }
 
-    fn substitute_placeholders(&self, original: &str, ts_ctx: &TestSuiteCtx) -> String {
+    fn substitute_placeholders(&self, original: &str, ts_ctx: &TestCtx) -> String {
         let mut result = original.to_string();
         let re = Regex::new(r"\{\{(.*?)\}\}").unwrap();
         for cap in re.captures_iter(original) {
