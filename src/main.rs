@@ -1,6 +1,6 @@
 use std::process;
 
-use pareeksha::{config::Config, exec}; // Import the TestOptions struct
+use satyanaash::{config::Config, exec}; // Import the TestOptions struct
 
 fn main() {
     let config = Config::build_config().unwrap_or_else(|err| {
