@@ -1,5 +1,9 @@
-[✓] Compute the statistics of success, failures, skipped and print them at the end of testsuite run.
+[ ] Compute the statistics of success, failures, skipped and print them at the end of testsuite run.
 [✓] Build and use Authorization for test cases that need authentication.
 [ ] HTML output for results.
-[ ] Support grouped test cases.
+[✓] Support grouped test cases.
+[ ] Persistent storage of test run results
+[ ] Support for running tests in parallel, if they belong to different worksheets.
+[ ] Visualization using a D3 or some tool (TBD)
+[ ] Building an API server for frontend tools to display reports
 [ ] 

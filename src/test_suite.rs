@@ -44,13 +44,14 @@ impl TestSuite {
             self.passed += test_group.passed;
             self.failed += test_group.failed;
             self.skipped += test_group.skipped;
+            self.exec_duration = self.exec_duration + test_group.exec_duration();
         }
         self.print_stats();
     }
 
     fn print_stats(&self) {
         println!(
-            "Summary: {{ Total: {}, Passed: {}, Failed: {}, Skipped: {} }}",
+            "Suite Summary: {{ Total: {}, Passed: {}, Failed: {}, Skipped: {} }}",
             self.total, self.passed, self.failed, self.skipped
         );
     }

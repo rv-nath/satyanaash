@@ -92,9 +92,7 @@ impl TestCtx {
                     .unwrap();
             }
             Err(e) => {
-                //eprintln!("error: {}", e);
                 // Clear the response in the JavaScript context
-                //self.runtime.eval("SAT.response = {}").unwrap();
                 self.runtime
                     .eval(&format!("SAT.response = {{ status: 0, body: `{}` }}", e))
                     .unwrap();
@@ -157,6 +155,10 @@ impl TestCtx {
                 println!("\tBody: {}", self.get_response_body());
             }
         }
+    }
+
+    pub fn exec_duration(&self) -> std::time::Duration {
+        self.exec_duration
     }
 }
 

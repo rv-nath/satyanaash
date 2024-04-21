@@ -25,6 +25,7 @@ pub struct TestGroup {
     pub passed: usize,
     pub failed: usize,
     pub skipped: usize,
+    pub exec_duration: std::time::Duration,
 }
 
 impl TestGroup {
@@ -67,6 +68,7 @@ impl TestGroup {
             passed: 0,
             failed: 0,
             skipped: 0,
+            exec_duration: std::time::Duration::default(),
         })
     }
 
@@ -82,6 +84,10 @@ impl TestGroup {
                 TestResult::NotYetTested => (),
             }
         }
+
+        // Accumulate the group level execution duration
+        self.exec_duration = self.group_ctx.exec_duration();
+
         // Print group level statistics
         self.print_stats();
     }
@@ -91,8 +97,11 @@ impl TestGroup {
     }
     fn print_stats(&self) {
         println!(
-            "Group: {{ Name: {}, Total: {}, Passed: {}, Failed: {}, Skipped: {} }}",
+            "Group Summary: {{ Name: {}, Total: {}, Passed: {}, Failed: {}, Skipped: {} }}",
             self.name, self.total, self.passed, self.failed, self.skipped
         );
+    }
+    pub fn exec_duration(&self) -> std::time::Duration {
+        self.exec_duration
     }
 }
