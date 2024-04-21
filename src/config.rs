@@ -1,6 +1,7 @@
 use getopts::Options;
 use serde::Deserialize;
 use serde_yaml;
+use std::process::exit;
 use std::{env, error::Error, fs};
 
 #[derive(Deserialize, Debug)]
@@ -32,10 +33,7 @@ impl Config {
 
         if matches.opt_present("h") {
             print_usage(&args[0], opts);
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Help requested",
-            )));
+            exit(0);
         }
         let verbose = matches.opt_present("v");
 
@@ -70,6 +68,13 @@ impl Config {
 }
 
 fn print_usage(program: &str, opts: Options) {
-    let brief = format!("Usage: {} [options]", program);
+    let version = env!("CARGO_PKG_VERSION");
+    let program_name = program.split('/').last().unwrap_or(program);
+    let description = "A delusional framework for testing / breaking the REST APIs";
+    let brief = format!(
+        "{}  {} version {}\nUsage: {} [options]",
+        program_name, version, description, program_name
+    );
+
     print!("{}", opts.usage(&brief));
 }

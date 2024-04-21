@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use colored::Colorize;
-//use colored::Colorize;
 use regex::Regex;
 use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;

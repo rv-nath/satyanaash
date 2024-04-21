@@ -7,7 +7,6 @@ mod test_suite; // Import the test_suite module
 
 use crate::config::Config;
 use crate::test_suite::TestSuite; // Import the TestSuite struct
-                                  //
 
 pub fn exec(filename: &str, config: &Config) {
     // Create a new test suite with the groups and run it
