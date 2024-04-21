@@ -3,21 +3,20 @@ use serde_json::Value;
 
 // A convenient struct for packing the arguments for testcase::run.
 // In future, we may be able to add more params, without changing the run method signature.
-pub struct TestSuiteCtx<'a> {
-    pub client: &'a reqwest::blocking::Client,
+pub struct TestCtx {
+    pub client: reqwest::blocking::Client,
     pub jwt_token: Option<String>,
-    pub runtime: &'a mut quick_js::Context,
+    pub runtime: quick_js::Context,
 
     // More fields as necessary
     exec_duration: std::time::Duration,
 }
 
-impl<'a> TestSuiteCtx<'a> {
-    pub fn new(
-        client: &'a reqwest::blocking::Client,
-        _jwt_token: Option<String>,
-        runtime: &'a mut Context,
-    ) -> Self {
+impl TestCtx {
+    pub fn new() -> Self {
+        let runtime = Context::new().unwrap();
+        let client = reqwest::blocking::Client::new();
+
         // Initialize SAT as an empty object
         runtime.eval("var SAT = {}").unwrap();
 
@@ -43,7 +42,7 @@ impl<'a> TestSuiteCtx<'a> {
             )
             .unwrap();
 
-        TestSuiteCtx {
+        TestCtx {
             client,
             jwt_token: None,
             runtime,
@@ -93,9 +92,7 @@ impl<'a> TestSuiteCtx<'a> {
                     .unwrap();
             }
             Err(e) => {
-                //eprintln!("error: {}", e);
                 // Clear the response in the JavaScript context
-                //self.runtime.eval("SAT.response = {}").unwrap();
                 self.runtime
                     .eval(&format!("SAT.response = {{ status: 0, body: `{}` }}", e))
                     .unwrap();
@@ -159,44 +156,36 @@ impl<'a> TestSuiteCtx<'a> {
             }
         }
     }
+
+    pub fn exec_duration(&self) -> std::time::Duration {
+        self.exec_duration
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::test_suite_context::TestSuiteCtx;
+    use crate::test_context::TestCtx;
 
     #[test]
     fn test_new() {
-        // Create a mock client, jwt_token, and runtime
-        let client = reqwest::blocking::Client::new();
-        let jwt_token = Some("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9".to_owned());
-        let cloned_jwt_token = jwt_token.clone(); // Clone the jwt_token value
-        let mut runtime = quick_js::Context::new().unwrap();
-
-        let _ts_ctx = TestSuiteCtx::new(&client, cloned_jwt_token, &mut runtime);
-
+        let ts_ctx = TestCtx::new();
         // Test if the runtime has the SAT object
-        let sat = runtime.eval("typeof SAT.test").unwrap();
+        let sat = ts_ctx.runtime.eval("typeof SAT.test").unwrap();
         let expected = quick_js::JsValue::String("function".to_string());
         assert_eq!(sat, expected);
     }
 
     #[test]
     fn test_sat_test_for_true() {
-        // Create a mock client, jwt_token, and runtime
-        let client = reqwest::blocking::Client::new();
-        let jwt_token = Some("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9".to_owned());
-        let cloned_jwt_token = jwt_token.clone(); // Clone the jwt_token value
-        let mut runtime = quick_js::Context::new().unwrap();
-
-        // Create a new TestSuiteCtx instance
-        TestSuiteCtx::new(&client, cloned_jwt_token, &mut runtime);
+        // Create a new TestCtx instance
+        let tctx = TestCtx::new();
 
         // Create a mock function that returns true
         let mock_fn = "function() { return true; }";
 
         // Call SAT.test with the mock function
-        let result = runtime
+        let result = tctx
+            .runtime
             .eval(&format!("SAT.test('test', {})", mock_fn))
             .unwrap();
 
@@ -207,45 +196,34 @@ mod tests {
 
     #[test]
     fn test_sat_test_non_boolean() {
-        // Create a mock client, jwt_token, and runtime
-        let client = reqwest::blocking::Client::new();
-        let jwt_token = Some("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9".to_owned());
-        let cloned_jwt_token = jwt_token.clone(); // Clone the jwt_token value
-        let mut runtime = quick_js::Context::new().unwrap();
-
-        // Create a new TestSuiteCtx instance
-        TestSuiteCtx::new(&client, cloned_jwt_token, &mut runtime);
+        // Create a new TestCtx instance
+        let tctx = TestCtx::new();
 
         // Create a mock function that returns a non-boolean value
         let mock_fn = "function() { return 'non-boolean'; }";
 
         // Call SAT.test with the mock function
-        let result = runtime
+        let result = tctx
+            .runtime
             .eval(&format!("SAT.test('test', {})", mock_fn))
             .unwrap();
 
         // Check if the return value is false
         let expected = quick_js::JsValue::Bool(false);
-
         assert_eq!(result, expected);
     }
 
     #[test]
     fn test_sat_test_error() {
-        // Create a mock client, jwt_token, and runtime
-        let client = reqwest::blocking::Client::new();
-        let jwt_token = Some("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9".to_owned());
-        let cloned_jwt_token = jwt_token.clone(); // Clone the jwt_token value
-        let mut runtime = quick_js::Context::new().unwrap();
-
-        // Create a new TestSuiteCtx instance
-        TestSuiteCtx::new(&client, cloned_jwt_token, &mut runtime);
+        // Create a new TestCtx instance
+        let tctx = TestCtx::new();
 
         // Create a mock function that throws an error
         let mock_fn = "function() { throw new Error('error'); }";
 
         // Call SAT.test with the mock function
-        let result = runtime
+        let result = tctx
+            .runtime
             .eval(&format!("SAT.test('test', {})", mock_fn))
             .unwrap();
 
