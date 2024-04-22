@@ -1,13 +1,11 @@
-use std::time::Duration;
-
+use crate::{config::Config, test_context::TestCtx};
+use bharat_cafe as bc;
 use colored::Colorize;
+use indicatif::ProgressBar;
 use regex::Regex;
 use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
-
-use indicatif::ProgressBar;
-
-use crate::{config::Config, test_context::TestCtx};
+use std::time::Duration;
 
 // Possible test case results.
 #[derive(Clone)]
@@ -55,14 +53,16 @@ impl TestCase {
             }
         };
         let name = match row[1].get_string() {
-            Some(s) => s.to_owned(),
+            //Some(s) => s.to_owned(),
+            Some(s) => substitute_keywords(s),
             None => {
                 errors.push(("name".to_owned(), "Invalid name field".to_owned()));
                 "".to_string()
             }
         };
         let given = match row[2].get_string() {
-            Some(s) => s.to_owned(),
+            //Some(s) => s.to_owned(),
+            Some(s) => substitute_keywords(s),
             None => {
                 errors.push((
                     "given".to_owned(),
@@ -73,7 +73,8 @@ impl TestCase {
         };
 
         let when = match row[3].get_string() {
-            Some(s) => s.to_owned(),
+            //Some(s) => s.to_owned(),
+            Some(s) => substitute_keywords(s),
             None => {
                 errors.push((
                     "when".to_owned(),
@@ -84,7 +85,8 @@ impl TestCase {
         };
 
         let then = match row[4].get_string() {
-            Some(s) => s.to_owned(),
+            //Some(s) => s.to_owned(),
+            Some(s) => substitute_keywords(s),
             None => {
                 errors.push((
                     "then".to_string(),
@@ -96,6 +98,7 @@ impl TestCase {
 
         let url = match row[5].get_string() {
             Some(s) => {
+                let s = substitute_keywords(s);
                 let full_url = format!(
                     "{}{}",
                     <std::option::Option<std::string::String> as Clone>::clone(&config.base_url)
@@ -149,13 +152,16 @@ impl TestCase {
         };
 
         let payload = match row[8].get_string() {
-            Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
-                Ok(_) => s.to_owned(),
-                Err(_) => {
-                    errors.push(("payload".to_string(), "Invalid JSON payload.".to_string()));
-                    "".to_string()
+            Some(s) => {
+                let substituted_s = substitute_keywords(s);
+                match serde_json::from_str::<serde_json::Value>(&substituted_s) {
+                    Ok(_) => substituted_s,
+                    Err(_) => {
+                        errors.push(("payload".to_string(), "Invalid JSON payload.".to_string()));
+                        "".to_string()
+                    }
                 }
-            },
+            }
             None => "".to_owned(),
         };
 
@@ -184,10 +190,12 @@ impl TestCase {
 
         let pre_test_script = match row[11].get_string() {
             Some(s) => Some(s.to_owned()),
+            //Some(s) => Some(substitute_keywords(s)),
             None => None,
         };
         let post_test_script = match row[12].get_string() {
             Some(s) => Some(s.to_owned()),
+            //Some(s) => Some(substitute_keywords(s)),
             None => None,
         };
 
@@ -354,4 +362,29 @@ impl TestCase {
         }
         result
     }
+}
+
+fn substitute_keywords(input: &str) -> String {
+    let mut output = input.to_string();
+    if output.contains("$RandomName") {
+        output = output.replace("$RandomName", &bc::random_name());
+    }
+    if output.contains("$RandomPhone") {
+        output = output.replace("$RandomPhone", &bc::random_phone());
+    }
+    if output.contains("$RandomAddress") {
+        output = output.replace("$RandomAddress", &bc::random_address());
+    }
+    if output.contains("$RandomEmail()") {
+        output = output.replace("$RandomEmail()", &bc::random_email(None));
+    }
+    let re = Regex::new(r#"\$RandomEmail\("(.+?)"\)"#).unwrap();
+    if let Some(captures) = re.captures(&output) {
+        if let Some(domain) = captures.get(1) {
+            let placeholder = format!("$RandomEmail(\"{}\")", domain.as_str());
+            let replacement = bc::random_email(Some(domain.as_str()));
+            output = output.replace(&placeholder, &replacement);
+        }
+    }
+    output
 }
