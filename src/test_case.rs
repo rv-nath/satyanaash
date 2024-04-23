@@ -375,6 +375,9 @@ fn substitute_keywords(input: &str) -> String {
     if output.contains("$RandomAddress") {
         output = output.replace("$RandomAddress", &bc::random_address());
     }
+    if output.contains("$RandomCompany") {
+        output = output.replace("$RandomCompany", &bc::generate_company_name());
+    }
     if output.contains("$RandomEmail()") {
         output = output.replace("$RandomEmail()", &bc::random_email(None));
     }
