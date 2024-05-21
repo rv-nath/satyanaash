@@ -3,6 +3,10 @@ use std::process;
 use satyanaash::{config::Config, exec}; // Import the TestOptions struct
 
 fn main() {
+    // Open banner file, if existing and print its contents to screen...
+    let banner = include_str!("../banner");
+    println!("{}", banner);
+
     let config = Config::build_config().unwrap_or_else(|err| {
         eprintln!("Error building config: {}", err);
         process::exit(1);
@@ -15,5 +19,8 @@ fn main() {
     });
 
     //execute test cases..
-    exec(&test_file, &config);
+    if let Err(err) = exec(&test_file, &config) {
+        eprintln!("Error executing test cases: {}", err);
+        process::exit(1);
+    }
 }
