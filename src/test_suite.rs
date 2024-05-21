@@ -39,7 +39,7 @@ impl TestSuite {
         worksheet_name: &str,
         config: &Config,
     ) -> Result<(), Box<dyn Error>> {
-        let start_time = std::time::Instant::now();
+        //let start_time = std::time::Instant::now();
 
         let range = excel.worksheet_range(worksheet_name)?;
         let mut current_group: Option<TestGroup> = None;
@@ -59,6 +59,7 @@ impl TestSuite {
                 if let Some(group) = current_group.take() {
                     // print group results
                     group.print_stats();
+                    self.update_stats(&group);
                     self.test_groups.push(group);
                 }
                 // Create a new group with the name that appears after "Group:"
@@ -70,7 +71,10 @@ impl TestSuite {
                     if groups.contains(group_name) {
                         current_group = Some(TestGroup::new(group_name));
                         println!("{}", "-".repeat(80));
-                        println!("Starting Group: {}...", group_name);
+                        println!(
+                            "Starting Group: {}...",
+                            current_group.as_ref().unwrap().name()
+                        );
                         println!("{}", "-".repeat(80));
                     }
                 }
@@ -85,10 +89,34 @@ impl TestSuite {
         // Finalize the last group if it exists
         if let Some(group) = current_group.take() {
             group.print_stats();
+            self.update_stats(&group);
             self.test_groups.push(group);
         }
 
+        // Print test suite level statistics.
+        self.print_stats();
+
         Ok(())
+    }
+
+    fn print_stats(&self) {
+        println!("");
+        println!("Test Suite Summary:");
+        println!(
+            "Total: {}, Passed: {}, Failed: {}, Skipped: {}",
+            self.total, self.passed, self.failed, self.skipped
+        );
+        println!("Execution Time: {:?}", self.exec_duration);
+        println!("{}", "-".repeat(80));
+        println!("");
+    }
+
+    fn update_stats(&mut self, group: &TestGroup) {
+        self.total += group.total;
+        self.passed += group.passed;
+        self.failed += group.failed;
+        self.skipped += group.skipped;
+        self.exec_duration += group.exec_duration();
     }
 }
 

@@ -38,6 +38,7 @@ impl TestGroup {
     pub fn name(&self) -> &str {
         &self.name
     }
+
     pub fn print_stats(&self) {
         println!("");
         println!(
@@ -56,6 +57,9 @@ impl TestGroup {
         let mut tc = TestCase::new(row, config);
         let t_result = tc.run(&mut self.group_ctx, config);
 
+        //TODO: add the test case to the group.
+        self.test_cases.push(tc);
+
         // update group counts
         self.total += 1;
         match t_result {
@@ -64,6 +68,9 @@ impl TestGroup {
             TestResult::Skipped => self.skipped += 1,
             _ => {}
         }
+        // update the exec duration..
+        self.exec_duration += self.group_ctx.exec_duration();
+
         Ok(())
     }
 }

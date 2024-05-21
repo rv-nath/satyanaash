@@ -3,7 +3,6 @@ pub mod config;
 mod test_case;
 mod test_context;
 mod test_group;
-mod test_result;
 mod test_suite; // Import the test_suite module
 
 use crate::config::Config;

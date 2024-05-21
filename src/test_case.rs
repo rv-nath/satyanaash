@@ -4,7 +4,7 @@ use calamine::DataType;
 use colored::Colorize;
 use indicatif::ProgressBar;
 use regex::Regex;
-use reqwest::{blocking::RequestBuilder, Method, StatusCode, Url};
+use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ pub struct TestCase {
     pub errors: Vec<(String, String)>, // List of errors found while reading excel data.
 
     // fields that will be filled after test case is executed..
-    exec_duration: std::time::Duration,
+    //exec_duration: std::time::Duration,
     result: TestResult,
 }
 
@@ -223,7 +223,7 @@ impl TestCase {
             pre_test_script,
             post_test_script,
             result: TestResult::NotYetTested,
-            exec_duration: Duration::from_secs(0),
+            //exec_duration: Duration::from_secs(0),
         }
     }
 
@@ -370,15 +370,6 @@ impl TestCase {
             }
         }
         result
-    }
-
-    fn exec(&mut self, request: RequestBuilder, tc: TestCtx) {
-        // Start a timer to track duration, fire the request.
-        let start = std::time::Instant::now();
-        let response = request.send();
-        self.exec_duration = start.elapsed();
-
-        //todo...
     }
 }
 
