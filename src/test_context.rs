@@ -15,7 +15,11 @@ pub struct TestCtx {
 impl TestCtx {
     pub fn new() -> Self {
         let runtime = Context::new().unwrap();
-        let client = reqwest::blocking::Client::new();
+
+        let client = reqwest::blocking::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("Failed to build client");
 
         // Initialize SAT as an empty object
         runtime.eval("var SAT = {}").unwrap();
@@ -24,6 +28,7 @@ impl TestCtx {
         runtime
             .eval(
                 r#"
+                SAT.globals = {};
                 SAT.test = function (name, fn) {
                     SAT.testName = name;
                     let result = false;
@@ -68,7 +73,6 @@ impl TestCtx {
                 let body = response
                     .text()
                     .unwrap_or_else(|_| String::from("Failed to read response body"));
-                //println!("DEBUG: body: {:?}", body);
 
                 // Parse the body string as JSON
                 let body_json: Value = match serde_json::from_str::<Value>(&body) {

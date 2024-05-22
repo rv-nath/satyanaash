@@ -1,5 +1,6 @@
 use crate::{config::Config, test_context::TestCtx};
 use bharat_cafe as bc;
+use calamine::DataType;
 use colored::Colorize;
 use indicatif::ProgressBar;
 use regex::Regex;
@@ -37,13 +38,24 @@ pub struct TestCase {
     pub errors: Vec<(String, String)>, // List of errors found while reading excel data.
 
     // fields that will be filled after test case is executed..
+    //exec_duration: std::time::Duration,
     result: TestResult,
 }
 
 impl TestCase {
     // Initializes a test case object with a row of data from excel sheet.
-    pub fn new(row: &[&dyn calamine::DataType], config: &Config) -> Self {
+    //pub fn new(row: &[&dyn calamine::DataType], config: &Config) -> Self {
+    pub fn new(row: &[calamine::Data], config: &Config) -> Self {
         let mut errors = Vec::new();
+
+        // Retrieve and evaluate the pre-test-script as the very first step,
+        // as it may contain the code to setup JS runtime vars,
+        // which may be consumed in other columns.
+        let pre_test_script = match row[11].get_string() {
+            //Some(s) => Some(s.to_owned()),
+            Some(s) => Some(substitute_keywords(s)),
+            None => None,
+        };
 
         let id = match row[0].get_float() {
             Some(f) => f as u32,
@@ -188,14 +200,9 @@ impl TestCase {
             None => (false, false),
         };
 
-        let pre_test_script = match row[11].get_string() {
-            Some(s) => Some(s.to_owned()),
-            //Some(s) => Some(substitute_keywords(s)),
-            None => None,
-        };
         let post_test_script = match row[12].get_string() {
-            Some(s) => Some(s.to_owned()),
-            //Some(s) => Some(substitute_keywords(s)),
+            //Some(s) => Some(s.to_owned()),
+            Some(s) => Some(substitute_keywords(s)),
             None => None,
         };
 
@@ -216,6 +223,7 @@ impl TestCase {
             pre_test_script,
             post_test_script,
             result: TestResult::NotYetTested,
+            //exec_duration: Duration::from_secs(0),
         }
     }
 
@@ -279,6 +287,7 @@ impl TestCase {
 
         // Fire the request using blocking call.
         ts_ctx.exec(request, self.is_authorizer);
+        //self.exec(request, ts_ctx);
 
         // Stop progress animation
         pb.disable_steady_tick();
@@ -351,7 +360,7 @@ impl TestCase {
         let re = Regex::new(r"\{\{(.*?)\}\}").unwrap();
         for cap in re.captures_iter(original) {
             let var_name = &cap[1];
-            match ts_ctx.runtime.eval(&format!("globals.{}", var_name)) {
+            match ts_ctx.runtime.eval(&format!("SAT.globals.{}", var_name)) {
                 Ok(value) => {
                     if let Some(value_str) = value.into_string() {
                         result = result.replace(&format!("{{{{{}}}}}", var_name), &value_str);
