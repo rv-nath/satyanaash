@@ -305,7 +305,7 @@ impl TestCase {
         self.result.clone()
     }
 
-    pub fn print_result(&self, ts_ctx: &TestCtx, verbose: bool) {
+    pub fn print_result(&self, ts_ctx: &mut TestCtx, verbose: bool) {
         println!("{:<15}: {}", "Test Case ID", self.id);
         println!("{:<15}: {}", "Test Case", self.name);
         println!("{:<15}: {}", "Given", self.given);
@@ -355,14 +355,14 @@ impl TestCase {
         }
     }
 
-    fn substitute_placeholders(&self, original: &str, ts_ctx: &TestCtx) -> String {
+    fn substitute_placeholders(&self, original: &str, ts_ctx: &mut TestCtx) -> String {
         let mut result = original.to_string();
         let re = Regex::new(r"\{\{(.*?)\}\}").unwrap();
         for cap in re.captures_iter(original) {
             let var_name = &cap[1];
             match ts_ctx.runtime.eval(&format!("SAT.globals.{}", var_name)) {
                 Ok(value) => {
-                    if let Some(value_str) = value.into_string() {
+                    if let Some(value_str) = value.as_str() {
                         result = result.replace(&format!("{{{{{}}}}}", var_name), &value_str);
                     }
                 }

@@ -4,6 +4,7 @@ mod test_case;
 mod test_context;
 mod test_group;
 mod test_suite; // Import the test_suite module
+pub mod v8engine;
 
 use crate::config::Config;
 use crate::test_suite::TestSuite;

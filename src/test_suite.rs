@@ -20,6 +20,15 @@ pub struct TestSuite {
     exec_duration: std::time::Duration, // Total duration for test suite execution
 }
 
+impl Drop for TestSuite {
+    fn drop(&mut self) {
+        while let Some(test_group) = self.test_groups.pop() {
+            //test_group.drop_js_engine();
+            println!("Dropping test group: {}", test_group.name());
+        }
+    }
+}
+
 impl TestSuite {
     pub fn new() -> Self {
         // Initialize the test suite object and return.
@@ -55,28 +64,28 @@ impl TestSuite {
 
             let first_cell = row[0].get_string().unwrap_or("");
             if first_cell.starts_with("Group:") {
-                // Finalize the current group if it exists
-                if let Some(group) = current_group.take() {
-                    // print group results
-                    group.print_stats();
-                    self.update_stats(&group);
-                    self.test_groups.push(group);
-                }
-                // Create a new group with the name that appears after "Group:"
+                // Finalize the previous group if it exists
+                self.finalize_group(&mut current_group);
+
+                // Extract the group name from the first cell.
                 let group_name = first_cell.trim_start_matches("Group:").trim();
 
                 // If the group name is specified in the config for this worksheet,
                 // construct and run the test group.
-                if let Some(groups) = config_groups.get(worksheet_name) {
-                    if groups.contains(group_name) {
-                        current_group = Some(TestGroup::new(group_name));
-                        println!("{}", "-".repeat(80));
-                        println!(
-                            "Starting Group: {}...",
-                            current_group.as_ref().unwrap().name()
-                        );
-                        println!("{}", "-".repeat(80));
-                    }
+                //if let Some(groups) = config_groups.get(worksheet_name) {
+                //if groups.contains(group_name) {
+                if config_groups.is_empty()
+                    || config_groups
+                        .get(worksheet_name)
+                        .map_or(false, |groups| groups.contains(group_name))
+                {
+                    current_group = Some(TestGroup::new(group_name));
+                    println!("{}", "-".repeat(80));
+                    println!(
+                        "Starting Group: {}...",
+                        current_group.as_ref().unwrap().name()
+                    );
+                    println!("{}", "-".repeat(80));
                 }
             } else {
                 // If we are in a group, call the group's exec method
@@ -87,16 +96,20 @@ impl TestSuite {
         }
 
         // Finalize the last group if it exists
-        if let Some(group) = current_group.take() {
-            group.print_stats();
-            self.update_stats(&group);
-            self.test_groups.push(group);
-        }
+        self.finalize_group(&mut current_group);
 
         // Print test suite level statistics.
         self.print_stats();
 
         Ok(())
+    }
+
+    fn finalize_group(&mut self, current_group: &mut Option<TestGroup>) {
+        if let Some(group) = current_group.take() {
+            group.print_stats();
+            self.update_stats(&group);
+            self.test_groups.push(group);
+        }
     }
 
     fn print_stats(&self) {

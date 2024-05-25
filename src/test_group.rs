@@ -26,7 +26,7 @@ impl TestGroup {
         TestGroup {
             name: group_name.to_string(),
             test_cases: vec![],
-            group_ctx: TestCtx::new(),
+            group_ctx: TestCtx::new().unwrap(),
             total: 0,
             passed: 0,
             failed: 0,
@@ -73,4 +73,10 @@ impl TestGroup {
 
         Ok(())
     }
+
+    /*
+    pub fn drop_js_engine(&mut self) {
+        let _ = std::mem::replace(&mut self.group_ctx.runtime, JsEngine::new());
+    }
+    */
 }
