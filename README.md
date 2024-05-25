@@ -1,3 +1,6 @@
+
+[![Rust](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml/badge.svg)](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml)
+
 # satyanaash
 A delusional framework for automatic testing of http endpoints
 
@@ -39,4 +42,3 @@ Does not support Windows OS.  Supposed to Work on any *nix.
 
 <br>
 
-[![Rust](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml/badge.svg)](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml)
