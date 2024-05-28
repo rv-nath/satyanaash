@@ -5,6 +5,7 @@ use serde_json::Value;
 
 // A convenient struct for packing the arguments for testcase::run.
 // In future, we may be able to add more params, without changing the run method signature.
+#[derive(Debug)]
 pub struct TestCtx {
     pub client: reqwest::blocking::Client,
     pub jwt_token: Option<String>,

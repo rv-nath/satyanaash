@@ -8,6 +8,12 @@ pub struct JsEngine {
     runtime: JsRuntime,
 }
 
+impl std::fmt::Debug for JsEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JsRuntime")
+    }
+}
+
 impl JsEngine {
     pub fn new() -> Self {
         let runtime = JsRuntime::new(RuntimeOptions::default());

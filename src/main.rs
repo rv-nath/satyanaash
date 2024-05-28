@@ -1,6 +1,6 @@
-use std::process;
+use std::{process, thread};
 
-use satyanaash::{config::Config, exec}; // Import the TestOptions struct
+use satyanaash::config::Config; // Import the TestOptions struct
 
 fn main() {
     // Open banner file, if existing and print its contents to screen...
@@ -18,8 +18,18 @@ fn main() {
         process::exit(1);
     });
 
+    // Create an instance of test framework..
+    let (sat, listener) = satyanaash::TSat::new();
+
+    // Get the listener and create a thread for event handling
+    thread::spawn(move || {
+        for event in listener {
+            println!("Event: {:?}", event);
+        }
+    });
+
     //execute test cases..
-    if let Err(err) = exec(&test_file, &config) {
+    if let Err(err) = sat.exec(&test_file, &config) {
         eprintln!("Error executing test cases: {}", err);
         process::exit(1);
     }

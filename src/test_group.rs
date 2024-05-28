@@ -6,8 +6,12 @@
 use crate::config::Config;
 use crate::test_case::{TestCase, TestResult};
 use crate::test_context::TestCtx;
+use crate::test_events::{TestEvent, TestGroupBegin, TestGroupEnd};
 use std::error::Error;
+use std::sync::mpsc::Sender;
+use std::time::Instant;
 
+#[derive(Debug)]
 pub struct TestGroup {
     pub name: String,
     test_cases: Vec<TestCase>,
@@ -22,8 +26,8 @@ pub struct TestGroup {
 }
 
 impl TestGroup {
-    pub fn new(group_name: &str) -> Self {
-        TestGroup {
+    pub fn new(group_name: &str, tx: &Sender<TestEvent>) -> Self {
+        let tg = TestGroup {
             name: group_name.to_string(),
             test_cases: vec![],
             group_ctx: TestCtx::new().unwrap(),
@@ -32,7 +36,9 @@ impl TestGroup {
             failed: 0,
             skipped: 0,
             exec_duration: std::time::Duration::new(0, 0),
-        }
+        };
+        tg.fire_start_evt(tx);
+        tg
     }
 
     pub fn name(&self) -> &str {
@@ -52,12 +58,15 @@ impl TestGroup {
         self.exec_duration
     }
 
-    pub fn exec(&mut self, row: &[calamine::Data], config: &Config) -> Result<(), Box<dyn Error>> {
+    pub fn exec(
+        &mut self,
+        row: &[calamine::Data],
+        config: &Config,
+        tx: &Sender<TestEvent>,
+    ) -> Result<(), Box<dyn Error>> {
         // Create an instance of test case, and execute it.
         let mut tc = TestCase::new(row, config);
-        let t_result = tc.run(&mut self.group_ctx, config);
-
-        //TODO: add the test case to the group.
+        let t_result = tc.run(&mut self.group_ctx, config, tx);
         self.test_cases.push(tc);
 
         // update group counts
@@ -70,13 +79,35 @@ impl TestGroup {
         }
         // update the exec duration..
         self.exec_duration += self.group_ctx.exec_duration();
-
         Ok(())
     }
 
-    /*
-    pub fn drop_js_engine(&mut self) {
-        let _ = std::mem::replace(&mut self.group_ctx.runtime, JsEngine::new());
+    fn fire_start_evt(&self, tx: &Sender<TestEvent>) {
+        tx.send(TestEvent::EvtTestGroupBegin(self.get_start_evt_data()))
+            .unwrap();
     }
-    */
+
+    pub fn fire_end_evt(&self, tx: &Sender<TestEvent>) {
+        tx.send(TestEvent::EvtTestGroupEnd(self.get_end_evt_data()))
+            .unwrap();
+    }
+
+    // Returns TestGroup's event data for begin event.
+    pub fn get_start_evt_data(&self) -> TestGroupBegin {
+        TestGroupBegin {
+            timestamp: Instant::now(),
+            iteration_id: "1".to_string(),
+            group_name: self.name.clone(),
+        }
+    }
+
+    // Returns TestGroup's event data for end event.
+    pub fn get_end_evt_data(&self) -> TestGroupEnd {
+        TestGroupEnd {
+            timestamp: Instant::now(),
+            exec_duration: self.exec_duration,
+            iteration_id: "1".to_string(),
+            group_name: self.name.clone(),
+        }
+    }
 }
