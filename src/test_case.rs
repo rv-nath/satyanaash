@@ -1,3 +1,4 @@
+use crate::test_events::{TestCaseBegin, TestCaseEnd, TestEvent};
 use crate::{config::Config, test_context::TestCtx};
 use bharat_cafe as bc;
 use calamine::DataType;
@@ -6,10 +7,11 @@ use indicatif::ProgressBar;
 use regex::Regex;
 use reqwest::{Method, StatusCode, Url};
 use serde_json::Value;
-use std::time::Duration;
+use std::default;
+use std::{sync::mpsc::Sender, time::Duration};
 
 // Possible test case results.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum TestResult {
     NotYetTested,
     Passed,
@@ -17,6 +19,7 @@ pub enum TestResult {
     Skipped,
 }
 
+#[derive(Debug, Clone)]
 pub struct TestCase {
     pub id: u32,                        // test case identifier (typically a number)
     pub name: String,                   // human readable name for the test case.
@@ -229,7 +232,15 @@ impl TestCase {
 
     // Executes the test case, by using the provided http client  and an optional JWT token.
     // Returns an optional JWT token (if it was an authorization endpoint).
-    pub fn run(&mut self, ts_ctx: &mut TestCtx, config: &Config) -> TestResult {
+    pub fn run(
+        &mut self,
+        ts_ctx: &mut TestCtx,
+        config: &Config,
+        tx: &Sender<TestEvent>,
+    ) -> TestResult {
+        // Fire an event indicating that the test case execution has started.
+        self.fire_start_evt(tx);
+
         println!("Running the test case: {}", self.name);
 
         // Verify if the test case has errors, if so return without executing.
@@ -287,7 +298,6 @@ impl TestCase {
 
         // Fire the request using blocking call.
         ts_ctx.exec(request, self.is_authorizer);
-        //self.exec(request, ts_ctx);
 
         // Stop progress animation
         pb.disable_steady_tick();
@@ -301,8 +311,80 @@ impl TestCase {
             false => TestResult::Failed,
         };
         self.result = test_result;
+
+        // Fire test case end evt.
+        self.fire_end_evt(tx, ts_ctx);
         self.print_result(ts_ctx, config.verbose);
         self.result.clone()
+    }
+
+    fn fire_start_evt(&self, tx: &Sender<TestEvent>) {
+        tx.send(TestEvent::EvtTestCaseBegin(self.get_start_evt_data()))
+            .unwrap();
+    }
+
+    fn fire_end_evt(&self, tx: &Sender<TestEvent>, ts_ctx: &mut TestCtx) {
+        tx.send(TestEvent::EvtTestCaseEnd(self.get_end_evt_data(ts_ctx)))
+            .unwrap();
+    }
+
+    fn get_start_evt_data(&self) -> TestCaseBegin {
+        TestCaseBegin {
+            timestamp: std::time::Instant::now(),
+            iteration_id: "1".to_string(),
+            testcase_id: self.id,
+            testcase_name: self.name.clone(),
+            given: self.given.clone(),
+            when: self.when.clone(),
+            then: self.then.clone(),
+            url: self.url.clone(),
+            method: self.method.to_string(),
+            headers: self.headers.clone(),
+            payload: self.payload.clone(),
+            pre_test_script: self.pre_test_script.clone(),
+            post_test_script: self.post_test_script.clone(),
+            is_authorizer: self.is_authorizer,
+            is_authorized: self.is_authorized,
+        }
+    }
+
+    fn get_end_evt_data(&self, ts_ctx: &mut TestCtx) -> TestCaseEnd {
+        TestCaseEnd {
+            timestamp: std::time::Instant::now(),
+            iteration_id: "1".to_string(),
+            testcase_id: self.id,
+            exec_duration: Duration::from_secs(0),
+            //TODO: Fix these below fields, to return properly filled values.
+            status: self.get_exec_status(ts_ctx),
+            response: self.get_exec_response(ts_ctx),
+            response_json: self.get_exec_response_json(ts_ctx),
+        }
+    }
+
+    fn get_exec_status(&self, ts_ctx: &mut TestCtx) -> i64 {
+        ts_ctx
+            .runtime
+            .eval("SAT.response.status")
+            .unwrap_or(default::Default::default())
+            .as_i64()
+            .unwrap_or(default::Default::default())
+    }
+
+    fn get_exec_response(&self, ts_ctx: &mut TestCtx) -> String {
+        ts_ctx
+            .runtime
+            .eval("SAT.response.body")
+            .unwrap_or(default::Default::default())
+            .as_str()
+            .unwrap_or(default::Default::default())
+            .to_string()
+    }
+
+    fn get_exec_response_json(&self, ts_ctx: &mut TestCtx) -> Option<serde_json::Value> {
+        match serde_json::from_str::<serde_json::Value>(&self.get_exec_response(ts_ctx)) {
+            Ok(json) => Some(json),
+            Err(_) => None,
+        }
     }
 
     pub fn print_result(&self, ts_ctx: &mut TestCtx, verbose: bool) {

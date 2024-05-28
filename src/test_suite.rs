@@ -1,4 +1,6 @@
 use crate::config::Config;
+use crate::test_events::TestEvent;
+use crate::test_events::{TestSuiteBegin, TestSuiteEnd};
 use crate::test_group::TestGroup;
 use anyhow::Result;
 use calamine::DataType;
@@ -6,6 +8,8 @@ use calamine::Reader;
 use calamine::Xlsx;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::mpsc::Sender;
+use std::time::Instant;
 use std::{
     error::Error,
     io::{Read, Seek},
@@ -22,9 +26,9 @@ pub struct TestSuite {
 
 impl Drop for TestSuite {
     fn drop(&mut self) {
-        while let Some(test_group) = self.test_groups.pop() {
+        while let Some(_test_group) = self.test_groups.pop() {
             //test_group.drop_js_engine();
-            println!("Dropping test group: {}", test_group.name());
+            //println!("Dropping test group: {}", test_group.name());
         }
     }
 }
@@ -47,8 +51,10 @@ impl TestSuite {
         excel: &mut Xlsx<R>,
         worksheet_name: &str,
         config: &Config,
+        tx: &Sender<TestEvent>,
     ) -> Result<(), Box<dyn Error>> {
-        //let start_time = std::time::Instant::now();
+        // Fire an event to indicate that the test suite has started.
+        self.fire_start_evt(tx);
 
         let range = excel.worksheet_range(worksheet_name)?;
         let mut current_group: Option<TestGroup> = None;
@@ -65,21 +71,19 @@ impl TestSuite {
             let first_cell = row[0].get_string().unwrap_or("");
             if first_cell.starts_with("Group:") {
                 // Finalize the previous group if it exists
-                self.finalize_group(&mut current_group);
+                self.finalize_group(&mut current_group, tx);
 
                 // Extract the group name from the first cell.
                 let group_name = first_cell.trim_start_matches("Group:").trim();
 
                 // If the group name is specified in the config for this worksheet,
                 // construct and run the test group.
-                //if let Some(groups) = config_groups.get(worksheet_name) {
-                //if groups.contains(group_name) {
                 if config_groups.is_empty()
                     || config_groups
                         .get(worksheet_name)
                         .map_or(false, |groups| groups.contains(group_name))
                 {
-                    current_group = Some(TestGroup::new(group_name));
+                    current_group = Some(TestGroup::new(group_name, tx));
                     println!("{}", "-".repeat(80));
                     println!(
                         "Starting Group: {}...",
@@ -90,24 +94,29 @@ impl TestSuite {
             } else {
                 // If we are in a group, call the group's exec method
                 if let Some(group) = current_group.as_mut() {
-                    group.exec(row, config)?;
+                    group.exec(row, config, tx)?;
                 }
             }
         }
 
         // Finalize the last group if it exists
-        self.finalize_group(&mut current_group);
+        self.finalize_group(&mut current_group, tx);
 
         // Print test suite level statistics.
         self.print_stats();
 
+        // Fire test suite end event.
+        self.fire_end_evt(tx);
+
         Ok(())
     }
 
-    fn finalize_group(&mut self, current_group: &mut Option<TestGroup>) {
-        if let Some(group) = current_group.take() {
+    fn finalize_group(&mut self, group: &mut Option<TestGroup>, tx: &Sender<TestEvent>) {
+        if let Some(group) = group.take() {
             group.print_stats();
             self.update_stats(&group);
+
+            group.fire_end_evt(tx);
             self.test_groups.push(group);
         }
     }
@@ -130,6 +139,34 @@ impl TestSuite {
         self.failed += group.failed;
         self.skipped += group.skipped;
         self.exec_duration += group.exec_duration();
+    }
+
+    fn fire_start_evt(&self, tx: &Sender<TestEvent>) {
+        tx.send(TestEvent::EvtTestSuiteBegin(self.get_start_evt_data()))
+            .unwrap();
+    }
+
+    fn fire_end_evt(&self, tx: &Sender<TestEvent>) {
+        tx.send(TestEvent::EvtTestSuiteEnd(self.get_end_evt_data()))
+            .unwrap();
+    }
+
+    // Returns Testsuite's event data for begin event.
+    pub fn get_start_evt_data(&self) -> TestSuiteBegin {
+        TestSuiteBegin {
+            timestamp: Instant::now(),
+            iteration_id: "1".to_string(),
+            suite_name: "TestSuite".to_string(),
+        }
+    }
+
+    pub fn get_end_evt_data(&self) -> TestSuiteEnd {
+        TestSuiteEnd {
+            timestamp: Instant::now(),
+            exec_duration: self.exec_duration,
+            iteration_id: "1".to_string(),
+            suite_name: "TestSuite".to_string(),
+        }
     }
 }
 
