@@ -9,7 +9,7 @@ This is a http request /response testing framework, inspired mostly by Postman. 
 
 
 ## Installation
-Simply download the executable file from the Github using the following link:  `//TODO`
+Currently there is a download link for windows executable.  We endeavour to provide downloads for all LInux variants. Simply download the executable file from the Github using the following link:  https://github.com/RVNath-Enterprises/satyanaash/releases/tag/v0.2.1-alpha
 
 Check if the binary is working properly for your operating system.  Run the executable with -h or --help to see if this emits a meaningful usage output.
 
@@ -32,12 +32,7 @@ Options:
 ## How to use
 First you need to decide and define your test requests in an excel file (.xlsx).  Here is a screenshot which shows few samples.
 
-
-![alt text](assets/excel-sample.png)
-
-
-## Limitations
-Does not support Windows OS.  Supposed to Work on any *nix.
+![image](https://github.com/RVNath-Enterprises/satyanaash/assets/87602915/2224c400-b59d-4918-bfdd-b8925421acff)
 
 
 <br>
