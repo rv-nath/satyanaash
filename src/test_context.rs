@@ -40,7 +40,7 @@ impl TestCtx {
     pub fn exec(&mut self, request: reqwest::blocking::RequestBuilder, is_authorizer: bool) {
         let start = std::time::Instant::now();
         let response = request.send();
-        println!("DEBUG: response: {:?}", response);
+        //println!("DEBUG: response: {:?}", response);
         self.exec_duration = start.elapsed();
         match response {
             Ok(response) => {
@@ -114,8 +114,17 @@ impl TestCtx {
     pub fn get_http_status(&mut self) -> i64 {
         match self.runtime.eval("SAT.response.status") {
             //Ok(quick_js::JsValue::Int(status)) => status,
-            Ok(val) => val.as_i64().unwrap_or(0),
-            _ => 0, // return a default value in case of error or if the value is not an integer
+            Ok(val) => {
+                //println!("DEBUG: val: {:?}", val);
+                match val.as_f64() {
+                    Some(float_val) => float_val as i64,
+                    None => 0,
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                0
+            }
         }
     }
 

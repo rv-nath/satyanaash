@@ -19,14 +19,16 @@ fn main() {
     });
 
     // Create an instance of test framework..
-    let (sat, listener) = satyanaash::TSat::new();
+    let (sat, _listener) = satyanaash::TSat::new();
 
+    /*
     // Get the listener and create a thread for event handling
     thread::spawn(move || {
         for event in listener {
             println!("Event: {:?}", event);
         }
     });
+    */
 
     //execute test cases..
     if let Err(err) = sat.exec(&test_file, &config) {
