@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use crate::v8engine::JsEngine;
+use crate::{config::Config, v8engine::JsEngine};
 use serde_json::Value;
 
 // A convenient struct for packing the arguments for testcase::run.
@@ -37,7 +37,12 @@ impl TestCtx {
         self.jwt_token = token;
     }
 
-    pub fn exec(&mut self, request: reqwest::blocking::RequestBuilder, is_authorizer: bool) {
+    pub fn exec(
+        &mut self,
+        request: reqwest::blocking::RequestBuilder,
+        is_authorizer: bool,
+        config: &Config,
+    ) {
         let start = std::time::Instant::now();
         let response = request.send();
         //println!("DEBUG: response: {:?}", response);
@@ -57,7 +62,14 @@ impl TestCtx {
                     Ok(json) => {
                         // if is_authorizer is true, extract and store the token
                         if is_authorizer {
-                            let token = json["token"].as_str().unwrap_or("");
+                            // extract the token's key from Cofnig file.
+                            let empty_string = String::new();
+                            let token_key = config.token_key.as_ref().unwrap_or(&empty_string);
+
+                            let token = json
+                                .get(token_key)
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("");
                             self.update_token(Some(token.to_owned()));
                         }
                         json

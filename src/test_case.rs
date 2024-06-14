@@ -297,7 +297,7 @@ impl TestCase {
         pb.enable_steady_tick(Duration::from_millis(100));
 
         // Fire the request using blocking call.
-        ts_ctx.exec(request, self.is_authorizer);
+        ts_ctx.exec(request, self.is_authorizer, &config);
 
         // Stop progress animation
         pb.disable_steady_tick();
