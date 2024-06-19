@@ -30,12 +30,12 @@ pub struct TestCase {
     pub method: Method,                 // http method for the request.
     pub headers: Vec<(String, String)>, // http headers for the request, if any.
     //payload: Value,                 // payload (json) to be sent with the request.
-    pub payload: String, // payload to be sent with the request.
-    //expected_status: StatusCode,    // expected http status code.
-    pub expected_status: i32,             // expected http status code.
-    pub is_authorizer: bool,              // indicates if this is an authorization endpoint.
-    pub is_authorized: bool,              // indicates if this requires authorization.
-    pub pre_test_script: Option<String>,  // script to be executed before the test case.
+    pub payload: String,     // payload to be sent with the request.
+    pub sleep_duration: u64, // sleep duration after the request is sent.
+    //pub expected_status: i32,             // expected http status code.
+    pub is_authorizer: bool, // indicates if this is an authorization endpoint.
+    pub is_authorized: bool, // indicates if this requires authorization.
+    pub pre_test_script: Option<String>, // script to be executed before the test case.
     pub post_test_script: Option<String>, // script to be executed after the test case.
 
     pub errors: Vec<(String, String)>, // List of errors found while reading excel data.
@@ -60,6 +60,7 @@ impl TestCase {
             None => None,
         };
 
+        // Read the test case id.
         let id = match row[0].get_float() {
             Some(f) => f as u32,
             None => {
@@ -67,6 +68,8 @@ impl TestCase {
                 0
             }
         };
+
+        // Test case name
         let name = match row[1].get_string() {
             //Some(s) => s.to_owned(),
             Some(s) => substitute_keywords(s),
@@ -75,6 +78,8 @@ impl TestCase {
                 "".to_string()
             }
         };
+
+        // Test case's given condition
         let given = match row[2].get_string() {
             //Some(s) => s.to_owned(),
             Some(s) => substitute_keywords(s),
@@ -87,6 +92,7 @@ impl TestCase {
             }
         };
 
+        // Testcase when condition
         let when = match row[3].get_string() {
             //Some(s) => s.to_owned(),
             Some(s) => substitute_keywords(s),
@@ -99,6 +105,7 @@ impl TestCase {
             }
         };
 
+        // Test case's then result
         let then = match row[4].get_string() {
             //Some(s) => s.to_owned(),
             Some(s) => substitute_keywords(s),
@@ -111,6 +118,7 @@ impl TestCase {
             }
         };
 
+        // Test case URL
         let url = match row[5].get_string() {
             Some(s) => {
                 let s = substitute_keywords(s);
@@ -134,6 +142,7 @@ impl TestCase {
             }
         };
 
+        // Test case HTTP method
         let method = match row[6].get_string() {
             Some(s) => match s.parse::<reqwest::Method>() {
                 Ok(m) => m,
@@ -151,6 +160,7 @@ impl TestCase {
             }
         };
 
+        // http headers if any for the request.
         let headers = match row[7].get_string() {
             Some(s) => s
                 .split(',')
@@ -166,6 +176,7 @@ impl TestCase {
             None => Vec::new(),
         };
 
+        // INput payload for the request, if the method is post, put or patch.
         let payload = match row[8].get_string() {
             Some(s) => {
                 let substituted_s = substitute_keywords(s);
@@ -180,6 +191,7 @@ impl TestCase {
             None => "".to_owned(),
         };
 
+        /*
         let expected_status = match row[9].get_float() {
             Some(i) => match StatusCode::from_u16(i as u16) {
                 Ok(s) => s.as_u16() as i32,
@@ -191,6 +203,12 @@ impl TestCase {
                     0
                 }
             },
+            None => 0,
+        };
+        */
+
+        let sleep_duration = match row[9].get_float() {
+            Some(f) => f as u64,
             None => 0,
         };
 
@@ -209,7 +227,7 @@ impl TestCase {
             None => None,
         };
 
-        TestCase {
+        let tc = TestCase {
             id,
             name,
             given,
@@ -219,7 +237,8 @@ impl TestCase {
             method,
             headers,
             payload,
-            expected_status,
+            //expected_status,
+            sleep_duration,
             is_authorized,
             is_authorizer,
             errors,
@@ -227,7 +246,9 @@ impl TestCase {
             post_test_script,
             result: TestResult::NotYetTested,
             //exec_duration: Duration::from_secs(0),
-        }
+        };
+        //println!("Testcase data: {:?}", tc);
+        tc
     }
 
     // Executes the test case, by using the provided http client  and an optional JWT token.
@@ -315,6 +336,11 @@ impl TestCase {
         // Fire test case end evt.
         self.fire_end_evt(tx, ts_ctx);
         self.print_result(ts_ctx, config.verbose);
+
+        // Sleep for the amount of time specified in the test case.
+        println!("Sleeping for {} ms", self.sleep_duration);
+        std::thread::sleep(Duration::from_millis(self.sleep_duration));
+
         self.result.clone()
     }
 
