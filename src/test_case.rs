@@ -3,13 +3,15 @@ use crate::{config::Config, test_context::TestCtx};
 use bharat_cafe as bc;
 use calamine::DataType;
 use colored::Colorize;
-use deno_core::Op;
 use indicatif::ProgressBar;
 use regex::Regex;
-use reqwest::{Method, RequestBuilder, Url};
+use reqwest::blocking::multipart;
+use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::default;
+use std::fs::File;
+use std::io::Read;
 use std::{sync::mpsc::Sender, time::Duration};
 
 // Possible test case results.
@@ -19,6 +21,13 @@ pub enum TestResult {
     Passed,
     Failed,
     Skipped,
+}
+
+#[derive(Debug, Clone)]
+enum PayloadType {
+    Json,
+    FormData,
+    UrlEncoded,
 }
 
 // How authentication should be handled for a given test case.
@@ -37,7 +46,7 @@ struct TestCaseConfig {
     #[serde(default = "default_repeat_count")]
     repeat_count: u32, // Indicates if this test case shd be repeated
     #[serde(default = "default_data_source")]
-    data_source: String, // For repeating the test case with different data sets. A csv file path or excel sheet!cell ref.
+    data_source: String, // For repeating the test case with different data sets. A csv file path that cotnains
     #[serde(default = "default_auth_type")]
     auth_type: AuthType, // Indicates if the test case generates or consumes a JWT
     #[serde(default = "default_delay")]
@@ -357,9 +366,6 @@ impl TestCase {
         self.effective_payload =
             self.substitute_placeholders(&substitute_keywords(&self.payload), ts_ctx);
 
-        //self.effective_url = self.substitute_placeholders(&self.url, ts_ctx);
-        //self.effective_payload = self.substitute_placeholders(&self.payload, ts_ctx);
-
         // 2. if the test case is authorized, then add the jwt token to the headers.
         if self.is_authorized() {
             if let Some(token) = ts_ctx.jwt_token.as_ref() {
@@ -376,16 +382,8 @@ impl TestCase {
             request = request.header(key, value);
         }
 
-        // 4. Only set the request body for HTTP methods that can have a request body.
-        let payload_json: Value =
-            serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
-        match self.method {
-            reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH => {
-                request = request.json(&payload_json);
-            }
-            _ => {}
-        }
-        request
+        // Prepare payload and return.
+        self.prepare_payload(request)
     }
 
     fn execute_request(
@@ -607,6 +605,81 @@ impl TestCase {
             println!("Sleeping for {} ms", self.config.delay);
             std::thread::sleep(Duration::from_millis(self.config.delay));
         }
+    }
+
+    fn prepare_payload(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
+        let mut content_type_found = false;
+        for (key, value) in self.headers.iter() {
+            if key.to_lowercase() == "content-type" {
+                content_type_found = true;
+                match value.as_str() {
+                    "application/json" => {
+                        let payload_json: Value = serde_json::from_str(&self.effective_payload)
+                            .unwrap_or(serde_json::json!({}));
+                        return request.json(&payload_json);
+                    }
+                    "application/x-www-form-urlencoded" => {
+                        let url_encoded_data =
+                            serde_json::from_str(self.effective_payload.as_str())
+                                .unwrap_or(serde_json::json!({}));
+                        return request.form(&url_encoded_data);
+                    }
+                    "multipart/form-data" => {
+                        let form_data = serde_json::from_str(self.effective_payload.as_str())
+                            .unwrap_or(serde_json::json!({}));
+                        return self.prepare_multipart_data(request, &form_data);
+                    }
+                    _ => {
+                        eprintln!("Unsupported content type: {}", value);
+                    }
+                }
+                break;
+            }
+        }
+        // Default to JSON if no matching content type is found
+        if !content_type_found {
+            let payload_json: Value =
+                serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
+            return request.json(&payload_json);
+        }
+        request
+    }
+
+    fn prepare_multipart_data(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+        data: &Value,
+    ) -> reqwest::blocking::RequestBuilder {
+        let mut form = reqwest::blocking::multipart::Form::new();
+
+        // Add fields
+        if let Some(fields) = data["form-data"]["fields"].as_object() {
+            for (key, value) in fields.clone() {
+                form = form.text(key.clone(), value.as_str().unwrap().to_string());
+            }
+        }
+
+        // Add files
+        if let Some(files) = data["form-data"]["files"].as_array() {
+            for file_info in files {
+                let field_name = file_info["fieldname"].as_str().unwrap();
+                let file_path = file_info["filepath"].as_str().unwrap();
+
+                println!("Adding file: {} as {}", file_path, field_name);
+                let mut file = File::open(file_path).expect("file not found");
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).expect("Error reading file");
+
+                // Create a multipart part from the file content
+                let file_part = multipart::Part::bytes(buffer).file_name(file_path.to_string());
+                form = form.part(field_name.to_string(), file_part);
+            }
+        }
+        println!("Form: {:?}", form);
+        return req.multipart(form);
     }
 }
 

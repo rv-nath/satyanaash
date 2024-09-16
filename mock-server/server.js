@@ -1,6 +1,8 @@
 const jsonServer = require("json-server");
 const express = require("express");
 const jwt = require("jsonwebtoken");
+const multer = require("multer");
+const path = require("path");
 
 const server = jsonServer.create();
 const router = jsonServer.router("db.json");
@@ -9,6 +11,21 @@ const PORT = process.env.PORT || 3000;
 
 server.use(express.json());
 server.use(middlewares);
+
+
+// Setup storage for uploaded files
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, path.join(__dirname, "uploads"));
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  },
+});
+  
+
+// Initialize multer with diskStorage
+const upload = multer({ storage });
 
 // Secret key for JWT
 const secretKey = "yourSecretKey";
@@ -24,6 +41,15 @@ server.post("/api/login", (req, res) => {
     res.status(401).json({ message: "Invalid username or password" });
   }
 });
+
+// upl  oads route to handle file uploads
+server.post("/api/uploads", upload.single("file"), (req, res) => {
+  if (req.file) {
+    res.json({ url: `/uploads/${req.file.filename}` });
+  } else {
+    res.status(400).json({ message: "File upload error" });
+  }
+})
 
 // Middleware to check JWT token
 server.use((req, res, next) => {
@@ -49,6 +75,7 @@ server.use((req, res, next) => {
     }
   }
 });
+
 
 // Use default router
 server.use(router);

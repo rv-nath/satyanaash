@@ -15,7 +15,7 @@ deno_core = "0.283.0"
 getopts = "0.2.21"
 indicatif = "0.17.8"
 regex = "1.10.4"
-reqwest = { version = "0.11.26", features = ["blocking", "json"] }
+reqwest = { version = "0.11.26", features = ["blocking", "json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.115"
 serde_yaml = "0.9.34"
