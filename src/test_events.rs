@@ -52,8 +52,8 @@ pub struct TestCaseBegin {
     pub payload: String,
     pub pre_test_script: Option<String>,
     pub post_test_script: Option<String>,
-    pub is_authorizer: bool,
-    pub is_authorized: bool,
+    //pub is_authorizer: bool,
+    //pub is_authorized: bool,
 }
 
 #[derive(Debug)]

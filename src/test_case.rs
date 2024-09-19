@@ -5,9 +5,13 @@ use calamine::DataType;
 use colored::Colorize;
 use indicatif::ProgressBar;
 use regex::Regex;
-use reqwest::{Method, StatusCode, Url};
+use reqwest::blocking::multipart;
+use reqwest::{Method, Url};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::default;
+use std::fs::File;
+use std::io::Read;
 use std::{sync::mpsc::Sender, time::Duration};
 
 // Possible test case results.
@@ -20,25 +24,95 @@ pub enum TestResult {
 }
 
 #[derive(Debug, Clone)]
+enum PayloadType {
+    Json,
+    FormData,
+    UrlEncoded,
+}
+
+// How authentication should be handled for a given test case.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum AuthType {
+    None,
+    Authorizer,
+    Authorized,
+}
+// Advanced configuration for tweaking the test case behavior
+// for repeated execution, delay between requests, etc.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestCaseConfig {
+    #[serde(default = "default_repeat_count")]
+    repeat_count: u32, // Indicates if this test case shd be repeated
+    #[serde(default = "default_data_source")]
+    data_source: String, // For repeating the test case with different data sets. A csv file path that cotnains
+    #[serde(default = "default_auth_type")]
+    auth_type: AuthType, // Indicates if the test case generates or consumes a JWT
+    #[serde(default = "default_delay")]
+    delay: u64, // Delay between test case execution (in millis).
+}
+
+impl Default for TestCaseConfig {
+    fn default() -> Self {
+        TestCaseConfig {
+            repeat_count: default_repeat_count(),
+            data_source: default_data_source(),
+            auth_type: default_auth_type(),
+            delay: default_delay(),
+        }
+    }
+}
+
+impl TestCaseConfig {
+    // A `new` method for creating instances of `TestCaseConfig` with custom values.
+    pub fn new(repeat_count: u32, data_source: String, auth_type: AuthType, delay: u64) -> Self {
+        TestCaseConfig {
+            repeat_count,
+            data_source,
+            auth_type,
+            delay,
+        }
+    }
+}
+
+fn default_repeat_count() -> u32 {
+    1
+}
+
+fn default_data_source() -> String {
+    "".to_string()
+}
+
+fn default_auth_type() -> AuthType {
+    AuthType::None
+}
+
+fn default_delay() -> u64 {
+    0
+}
+
+#[derive(Debug, Clone)]
 pub struct TestCase {
-    pub id: u32,                        // test case identifier (typically a number)
-    pub name: String,                   // human readable name for the test case.
-    pub given: String,                  // test case description for the given condition (Given)
-    pub when: String,                   // test case description for the then condition  (When)
-    pub then: String,                   // test case description. for resulting condition. (Then)
-    pub url: String,                    // URL of the request
-    pub method: Method,                 // http method for the request.
-    pub headers: Vec<(String, String)>, // http headers for the request, if any.
-    //payload: Value,                 // payload (json) to be sent with the request.
-    pub payload: String,     // payload to be sent with the request.
-    pub sleep_duration: u64, // sleep duration after the request is sent.
-    //pub expected_status: i32,             // expected http status code.
-    pub is_authorizer: bool, // indicates if this is an authorization endpoint.
-    pub is_authorized: bool, // indicates if this requires authorization.
-    pub pre_test_script: Option<String>, // script to be executed before the test case.
+    pub id: u32,                          // test case identifier (typically a number)
+    pub name: String,                     // human readable name for the test case.
+    pub given: String,                    // test case description for the given condition (Given)
+    pub when: String,                     // test case description for the then condition  (When)
+    pub then: String,                     // test case description. for resulting condition. (Then)
+    pub url: String,                      // URL of the request
+    pub method: Method,                   // http method for the request.
+    pub headers: Vec<(String, String)>,   // http headers for the request, if any.
+    pub payload: String,                  // payload to be sent with the request.
+    config: TestCaseConfig,               // advanced configuration for the test case.
+    pub pre_test_script: Option<String>,  // script to be executed before the test case.
     pub post_test_script: Option<String>, // script to be executed after the test case.
 
     pub errors: Vec<(String, String)>, // List of errors found while reading excel data.
+
+    // Shadow fields to track the substituted values for name, url, payload, headers, ...
+    effective_name: String,
+    effective_url: String,
+    effective_payload: String,
 
     // fields that will be filled after test case is executed..
     //exec_duration: std::time::Duration,
@@ -54,9 +128,9 @@ impl TestCase {
         // Retrieve and evaluate the pre-test-script as the very first step,
         // as it may contain the code to setup JS runtime vars,
         // which may be consumed in other columns.
-        let pre_test_script = match row[11].get_string() {
-            //Some(s) => Some(s.to_owned()),
-            Some(s) => Some(substitute_keywords(s)),
+        let pre_test_script = match row[10].get_string() {
+            Some(s) => Some(s.to_owned()),
+            //Some(s) => Some(substitute_keywords(s)),
             None => None,
         };
 
@@ -191,37 +265,28 @@ impl TestCase {
             None => "".to_owned(),
         };
 
-        /*
-        let expected_status = match row[9].get_float() {
-            Some(i) => match StatusCode::from_u16(i as u16) {
-                Ok(s) => s.as_u16() as i32,
-                Err(_) => {
-                    errors.push((
-                        "expected_status".to_string(),
-                        "Invalid HTTP status code.".to_string(),
-                    ));
-                    0
+        // Initialize config with row[9] json data.
+        let config = match row[9].get_string() {
+            Some(s) => match serde_json::from_str::<TestCaseConfig>(&s) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error parsing test case config: {}", e);
+                    TestCaseConfig::default()
                 }
             },
-            None => 0,
+            None => TestCaseConfig::default(),
+        };
+
+        /*
+        // This column is read in the beginning. So no need here.
+        let pre_test_script = match row[10].get_string() {
+            //Some(s) => Some(s.to_owned()),
+            Some(s) => Some(substitute_keywords(s)),
+            None => None,
         };
         */
 
-        let sleep_duration = match row[9].get_float() {
-            Some(f) => f as u64,
-            None => 0,
-        };
-
-        let (is_authorizer, is_authorized) = match row[10].get_string() {
-            Some(s) => match s.to_lowercase().as_str() {
-                "authorizer" => (true, false),
-                "authorized" => (false, true),
-                _ => (false, false),
-            },
-            None => (false, false),
-        };
-
-        let post_test_script = match row[12].get_string() {
+        let post_test_script = match row[11].get_string() {
             //Some(s) => Some(s.to_owned()),
             Some(s) => Some(substitute_keywords(s)),
             None => None,
@@ -237,17 +302,15 @@ impl TestCase {
             method,
             headers,
             payload,
-            //expected_status,
-            sleep_duration,
-            is_authorized,
-            is_authorizer,
             errors,
             pre_test_script,
             post_test_script,
             result: TestResult::NotYetTested,
-            //exec_duration: Duration::from_secs(0),
+            config,
+            effective_name: "".to_string(),
+            effective_url: "".to_string(),
+            effective_payload: "".to_string(),
         };
-        //println!("Testcase data: {:?}", tc);
         tc
     }
 
@@ -256,7 +319,7 @@ impl TestCase {
     pub fn run(
         &mut self,
         ts_ctx: &mut TestCtx,
-        config: &Config,
+        sys_config: &Config,
         tx: &Sender<TestEvent>,
     ) -> TestResult {
         // Fire an event indicating that the test case execution has started.
@@ -273,55 +336,70 @@ impl TestCase {
             return TestResult::Skipped;
         }
 
-        // Execute pre_test_script if it exists
-        if let Some(pre_test_script) = &self.pre_test_script {
-            match ts_ctx.runtime.eval(pre_test_script) {
-                Ok(_) => (),
-                Err(e) => eprintln!("Error executing pre_test_script: {}", e),
-            }
+        let mut overall_result = TestResult::Passed;
+
+        // Execute the test case as per the configuration found in the test case.
+        println!("Test case configurations {:?}", self.config);
+        for _ in 0..self.config.repeat_count {
+            let req = self.pre_run_ops(ts_ctx, sys_config);
+            let spinner = ProgressBar::new_spinner();
+            show_progress(&mut self.url, &spinner);
+            let _test_result = self.execute_request(ts_ctx, req, sys_config, tx);
+            stop_progress(&spinner);
+            self.post_run_ops(ts_ctx, sys_config);
         }
 
-        // Retrieve global variables and substitute placeholders in test case parameters
-        self.name = self.substitute_placeholders(&self.name, ts_ctx);
-        self.url = self.substitute_placeholders(&self.url, ts_ctx);
-        self.payload = self.substitute_placeholders(&self.payload, ts_ctx);
-        // TODO: for other columns..
+        self.result.clone()
+    }
 
-        // if the test case is authorized, then add the jwt token to the headers.
-        if self.is_authorized {
+    fn prepare_request(
+        &mut self,
+        ts_ctx: &mut TestCtx,
+        _config: &Config,
+    ) -> reqwest::blocking::RequestBuilder {
+        // 1. Retrieve global variables and substitute placeholders in test case parameters
+        //    Retrieve global variables and substitute placeholders in test case parameters
+        self.effective_name =
+            self.substitute_placeholders(&substitute_keywords(&self.name), ts_ctx);
+
+        self.effective_url = self.substitute_placeholders(&substitute_keywords(&self.url), ts_ctx);
+        self.effective_payload =
+            self.substitute_placeholders(&substitute_keywords(&self.payload), ts_ctx);
+
+        // 2. if the test case is authorized, then add the jwt token to the headers.
+        if self.is_authorized() {
             if let Some(token) = ts_ctx.jwt_token.as_ref() {
                 self.headers
                     .push(("Authorization".to_owned(), format!("Bearer {}", token)));
             }
         }
 
-        // Frame the request based on Method type, add headers.
-        let mut request = ts_ctx.client.request(self.method.clone(), &self.url);
+        // 3. Frame the request based on Method type, add headers.
+        let mut request = ts_ctx
+            .client
+            .request(self.method.clone(), &self.effective_url);
+
+        // Finally, add the headers to the request.
         for (key, value) in &self.headers {
+            if (key.to_lowercase() == "content-type") {
+                continue;
+            }
             request = request.header(key, value);
         }
 
-        // Only set the request body for HTTP methods that can have a request body.
-        let payload: Value = serde_json::from_str(&self.payload).unwrap_or(serde_json::json!({}));
-        match self.method {
-            reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH => {
-                request = request.json(&payload);
-            }
-            _ => {}
-        }
+        // Prepare payload and return.
+        self.prepare_payload(request)
+    }
 
-        // Create a new progress bar
-        let pb = ProgressBar::new_spinner();
-
-        // Display a message to the user
-        pb.set_message(format!("Fetching {}...", self.url));
-        pb.enable_steady_tick(Duration::from_millis(100));
-
+    fn execute_request(
+        &mut self,
+        ts_ctx: &mut TestCtx,
+        req: reqwest::blocking::RequestBuilder,
+        config: &Config,
+        tx: &Sender<TestEvent>,
+    ) {
         // Fire the request using blocking call.
-        ts_ctx.exec(request, self.is_authorizer, &config);
-
-        // Stop progress animation
-        pb.disable_steady_tick();
+        ts_ctx.exec(req, self.is_authorizer(), &config);
 
         // Execute the post test script and verify the result.
         let result = ts_ctx.verify_result(self.post_test_script.as_deref());
@@ -335,13 +413,20 @@ impl TestCase {
 
         // Fire test case end evt.
         self.fire_end_evt(tx, ts_ctx);
-        self.print_result(ts_ctx, config.verbose);
+    }
 
-        // Sleep for the amount of time specified in the test case.
-        println!("Sleeping for {} ms", self.sleep_duration);
-        std::thread::sleep(Duration::from_millis(self.sleep_duration));
+    fn is_authorized(&self) -> bool {
+        match self.config.auth_type {
+            AuthType::Authorized => true,
+            _ => false,
+        }
+    }
 
-        self.result.clone()
+    fn is_authorizer(&self) -> bool {
+        match self.config.auth_type {
+            AuthType::Authorizer => true,
+            _ => false,
+        }
     }
 
     fn fire_start_evt(&self, tx: &Sender<TestEvent>) {
@@ -369,8 +454,8 @@ impl TestCase {
             payload: self.payload.clone(),
             pre_test_script: self.pre_test_script.clone(),
             post_test_script: self.post_test_script.clone(),
-            is_authorizer: self.is_authorizer,
-            is_authorized: self.is_authorized,
+            //is_authorizer: self.is_authorizer,
+            //is_authorized: self.is_authorized,
         }
     }
 
@@ -440,7 +525,7 @@ impl TestCase {
     pub fn print_request_info(&self) {
         println!("Request Info: ");
         println!("\tMethod: {:?}", self.method);
-        println!("\tURL: {}", self.url);
+        println!("\tURL: {}", self.effective_url);
         if !self.headers.is_empty() {
             println!("\tHeaders: ");
             for (key, value) in &self.headers {
@@ -450,13 +535,13 @@ impl TestCase {
         }
         match self.method {
             reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH => {
-                match serde_json::from_str::<serde_json::Value>(&self.payload) {
+                match serde_json::from_str::<serde_json::Value>(&self.effective_payload) {
                     Ok(json) => {
                         let pretty_json = serde_json::to_string_pretty(&json).unwrap();
                         let indented_json = pretty_json.replace("\n", "\n\t\t");
                         println!("\tPayload: {}", indented_json);
                     }
-                    Err(_) => println!("\tPayload: {}", &self.payload),
+                    Err(_) => println!("\tPayload: {}", &self.effective_payload),
                 }
             }
             _ => {}
@@ -478,6 +563,128 @@ impl TestCase {
             }
         }
         result
+    }
+
+    // Performs the following steps:
+    // 1. Execute the pre-test-script if it exists.
+    // 2. Retrieve global vars and substitute placeholders in test case parameters.
+    // 3. if the test case is an "authorized" one, then add the JWT token to the headers.
+    // 4. Setup delay between test cases.
+    fn pre_run_ops(
+        &mut self,
+        ts_ctx: &mut TestCtx,
+        sys_conifg: &Config,
+    ) -> reqwest::blocking::RequestBuilder {
+        // Execute pre_test script, if present.
+        if let Some(pre_test_script) = &self.pre_test_script {
+            // substitute keywords with values
+            let pre_test_script = substitute_keywords(pre_test_script);
+
+            // Execute pre-test-script if it exists.
+            match ts_ctx.runtime.eval(&pre_test_script) {
+                Ok(_) => (),
+                Err(e) => eprintln!("Error executing pre_test_script: {}", e),
+            }
+        }
+        // Prepare request object (vars substitution, auth handling, etc.)
+        let req = self.prepare_request(ts_ctx, sys_conifg);
+
+        // Setup delay between test cases.
+        if self.config.delay > 0 {
+            println!("Sleeping for {} ms", self.config.delay);
+            std::thread::sleep(Duration::from_millis(self.config.delay));
+        }
+        req
+    }
+
+    // Performs the following steps:
+    // 1. Execute the post-test-script if it exists.
+    // 2. if the test case is an authorizer, then store the JWT token in the context.
+
+    fn post_run_ops(&self, ts_ctx: &mut TestCtx, sys_config: &Config) {
+        // Print test results.
+        self.print_result(ts_ctx, sys_config.verbose);
+
+        // Setup delay between test cases.
+        if self.config.delay > 0 {
+            println!("Sleeping for {} ms", self.config.delay);
+            std::thread::sleep(Duration::from_millis(self.config.delay));
+        }
+    }
+
+    fn prepare_payload(
+        &self,
+        request: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
+        let mut content_type_found = false;
+        for (key, value) in self.headers.iter() {
+            if key.to_lowercase() == "content-type" {
+                content_type_found = true;
+                match value.as_str() {
+                    "application/json" => {
+                        let payload_json: Value = serde_json::from_str(&self.effective_payload)
+                            .unwrap_or(serde_json::json!({}));
+                        return request.json(&payload_json);
+                    }
+                    "application/x-www-form-urlencoded" => {
+                        let url_encoded_data =
+                            serde_json::from_str(self.effective_payload.as_str())
+                                .unwrap_or(serde_json::json!({}));
+                        return request.form(&url_encoded_data);
+                    }
+                    "multipart/form-data" => {
+                        let form_data = serde_json::from_str(self.effective_payload.as_str())
+                            .unwrap_or(serde_json::json!({}));
+                        return self.prepare_multipart_data(request, &form_data);
+                    }
+                    _ => {
+                        eprintln!("Unsupported content type: {}", value);
+                    }
+                }
+                break;
+            }
+        }
+        // Default to JSON if no matching content type is found
+        if !content_type_found {
+            let payload_json: Value =
+                serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
+            return request.json(&payload_json);
+        }
+        request
+    }
+
+    fn prepare_multipart_data(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+        data: &Value,
+    ) -> reqwest::blocking::RequestBuilder {
+        let mut form = reqwest::blocking::multipart::Form::new();
+
+        // Add fields
+        if let Some(fields) = data["form-data"]["fields"].as_object() {
+            for (key, value) in fields.clone() {
+                form = form.text(key.clone(), value.as_str().unwrap().to_string());
+            }
+        }
+
+        // Add files
+        if let Some(files) = data["form-data"]["files"].as_array() {
+            for file_info in files {
+                let field_name = file_info["fieldname"].as_str().unwrap();
+                let file_path = file_info["filepath"].as_str().unwrap();
+
+                println!("Adding file: {} as {}", file_path, field_name);
+                let mut file = File::open(file_path).expect("file not found");
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).expect("Error reading file");
+
+                // Create a multipart part from the file content
+                let file_part = multipart::Part::bytes(buffer).file_name(file_path.to_string());
+                form = form.part(field_name.to_string(), file_part);
+            }
+        }
+        println!("Form: {:?}", form);
+        return req.multipart(form);
     }
 }
 
@@ -507,4 +714,17 @@ fn substitute_keywords(input: &str) -> String {
         }
     }
     output
+}
+
+fn show_progress<'a>(url: &'a str, pb: &'a ProgressBar) -> &'a ProgressBar {
+    // Display a message to the user
+    pb.set_message(format!("Fetching {}...", url));
+    pb.enable_steady_tick(Duration::from_millis(100));
+    pb
+}
+
+fn stop_progress(pb: &ProgressBar) {
+    // Stop progress animation
+    pb.disable_steady_tick();
+    pb.finish_with_message("Done");
 }
