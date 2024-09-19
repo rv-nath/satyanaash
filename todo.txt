@@ -6,4 +6,5 @@
 [ ] Support for running tests in parallel, if they belong to different worksheets.
 [ ] Visualization using a D3 or some tool (TBD)
 [ ] Building an API server for frontend tools to display reports
-[ ] 
+[ ] Support looped execution of test cases for a given no. of times.
+[ ] Support executing test cases with sets of data from a csv file.
