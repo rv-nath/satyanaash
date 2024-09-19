@@ -43,13 +43,19 @@ server.post("/api/login", (req, res) => {
 });
 
 // upl  oads route to handle file uploads
-server.post("/api/uploads", upload.single("file"), (req, res) => {
+server.post("/api/upload", upload.single("file"), (req, res) => {
   if (req.file) {
     res.json({ url: `/uploads/${req.file.filename}` });
   } else {
     res.status(400).json({ message: "File upload error" });
   }
 })
+
+// Modified configuration to accept multiple files under the same field name
+server.post('/api/uploads', upload.array('file', 10), (req, res) => {
+  // Handle the uploaded files in req.files
+  res.status(200).json({ message: 'Files uploaded successfully' });
+});
 
 // Middleware to check JWT token
 server.use((req, res, next) => {

@@ -19,4 +19,9 @@ launch.json
 
 settings.json
 
+# all uploaded test files
+**/uploads/*
 .~*
+
+# pcap files if any
+*.pcap

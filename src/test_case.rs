@@ -378,7 +378,12 @@ impl TestCase {
         let mut request = ts_ctx
             .client
             .request(self.method.clone(), &self.effective_url);
+
+        // Finally, add the headers to the request.
         for (key, value) in &self.headers {
+            if (key.to_lowercase() == "content-type") {
+                continue;
+            }
             request = request.header(key, value);
         }
 
