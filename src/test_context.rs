@@ -62,15 +62,10 @@ impl TestCtx {
                     Ok(json) => {
                         // if is_authorizer is true, extract and store the token
                         if is_authorizer {
-                            // extract the token's key from Cofnig file.
-                            let empty_string = String::new();
-                            let token_key = config.token_key.as_ref().unwrap_or(&empty_string);
-
-                            let token = json
-                                .get(token_key)
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("");
-                            self.update_token(Some(token.to_owned()));
+                            // extract the token's key from config file.
+                            if let Some(token) = extract_token(&body, config) {
+                                self.update_token(Some(token));
+                            }
                         }
                         json
                     }
@@ -170,10 +165,35 @@ impl TestCtx {
     }
 }
 
+fn extract_token(body: &str, config: &Config) -> Option<String> {
+    let json: Value = match serde_json::from_str(body) {
+        Ok(json) => json,
+        Err(_) => return None,
+    };
+
+    let empty_string = String::new();
+    let token_key = config.token_key.as_ref().unwrap_or(&empty_string);
+    let keys: Vec<&str> = token_key.split('.').collect();
+    let mut current_value = Some(&json);
+
+    for key in keys {
+        if let Some(value) = current_value {
+            current_value = value.get(key);
+        } else {
+            return None;
+        }
+    }
+
+    current_value
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     //use crate::test_context::TestCtx;
     use super::*;
+    use crate::config::Config;
 
     #[test]
     fn test_new() {
@@ -221,29 +241,75 @@ mod tests {
         assert_eq!(result, Value::Bool(false));
     }
 
-    /*
     #[test]
-    fn test_sat_test_error() {
-        // Create a new TestCtx instance
-        let tctx = TestCtx::new();
+    fn test_flat_key_extraction() {
+        let body = r#"{ "token": "abc123" }"#;
+        let config = Config {
+            worksheet: None,
+            groups: None,
+            verbose: false,
+            start_row: None,
+            end_row: None,
+            test_file: None,
+            base_url: None,
+            token_key: Some("token".to_string()),
+        };
 
-        // Create a mock function that throws an error
-        let mock_fn = "function() { throw new Error('error'); }";
-
-        // Call SAT.test with the mock function
-        let result = tctx
-            .runtime
-            .eval(&format!("SAT.test('test', {})", mock_fn))
-            .unwrap();
-
-        // Check if the return value is false
-        let expected = quick_js::JsValue::Bool(false);
-
-        assert_eq!(result, expected);
+        let extracted_token = extract_token(body, &config);
+        assert_eq!(extracted_token, Some("abc123".to_string()));
     }
-    */
-}
 
-//oO08
-//ProFont: Nerd Font.
-//
+    #[test]
+    fn test_nested_key_extraction() {
+        let body = r#"{ "token": { "access_token": "nested_token_value" } }"#;
+        let config = Config {
+            worksheet: None,
+            groups: None,
+            verbose: false,
+            start_row: None,
+            end_row: None,
+            test_file: None,
+            base_url: None,
+            token_key: Some("token.access_token".to_string()),
+        };
+
+        let extracted_token = extract_token(body, &config);
+        assert_eq!(extracted_token, Some("nested_token_value".to_string()));
+    }
+
+    #[test]
+    fn test_key_not_found() {
+        let body = r#"{ "token": { "access_token": "nested_token_value" } }"#;
+        let config = Config {
+            worksheet: None,
+            groups: None,
+            verbose: false,
+            start_row: None,
+            end_row: None,
+            test_file: None,
+            base_url: None,
+            token_key: Some("nonexistent.key".to_string()),
+        };
+
+        let extracted_token = extract_token(body, &config);
+        assert_eq!(extracted_token, None);
+    }
+
+    #[test]
+    fn test_empty_token_key() {
+        let body = r#"{ "token": "abc123" }"#;
+        let config = Config {
+            worksheet: None,
+            groups: None,
+            verbose: false,
+            start_row: None,
+            end_row: None,
+            test_file: None,
+            base_url: None,
+            token_key: None,
+        };
+
+        let extracted_token = extract_token(body, &config);
+        assert_eq!(extracted_token, None);
+    }
+}

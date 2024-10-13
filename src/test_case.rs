@@ -23,12 +23,14 @@ pub enum TestResult {
     Skipped,
 }
 
+/*
 #[derive(Debug, Clone)]
 enum PayloadType {
     Json,
     FormData,
     UrlEncoded,
 }
+*/
 
 // How authentication should be handled for a given test case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -64,6 +66,7 @@ impl Default for TestCaseConfig {
     }
 }
 
+/*
 impl TestCaseConfig {
     // A `new` method for creating instances of `TestCaseConfig` with custom values.
     pub fn new(repeat_count: u32, data_source: String, auth_type: AuthType, delay: u64) -> Self {
@@ -75,6 +78,7 @@ impl TestCaseConfig {
         }
     }
 }
+*/
 
 fn default_repeat_count() -> u32 {
     1
@@ -336,7 +340,7 @@ impl TestCase {
             return TestResult::Skipped;
         }
 
-        let mut overall_result = TestResult::Passed;
+        let overall_result = TestResult::Passed;
 
         // Execute the test case as per the configuration found in the test case.
         println!("Test case configurations {:?}", self.config);
@@ -381,7 +385,8 @@ impl TestCase {
 
         // Finally, add the headers to the request.
         for (key, value) in &self.headers {
-            if (key.to_lowercase() == "content-type") {
+            // Ignore the content-type header, as it will be handled separately.
+            if key.to_lowercase() == "content-type" {
                 continue;
             }
             request = request.header(key, value);
