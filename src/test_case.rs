@@ -23,15 +23,6 @@ pub enum TestResult {
     Skipped,
 }
 
-/*
-#[derive(Debug, Clone)]
-enum PayloadType {
-    Json,
-    FormData,
-    UrlEncoded,
-}
-*/
-
 // How authentication should be handled for a given test case.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
