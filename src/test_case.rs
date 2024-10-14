@@ -1,9 +1,11 @@
 use crate::test_events::{TestCaseBegin, TestCaseEnd, TestEvent};
 use crate::{config::Config, test_context::TestCtx};
+use base64;
 use bharat_cafe as bc;
 use calamine::DataType;
 use colored::Colorize;
 use indicatif::ProgressBar;
+use infer;
 use regex::Regex;
 use reqwest::blocking::multipart;
 use reqwest::{Method, Url};
@@ -57,20 +59,6 @@ impl Default for TestCaseConfig {
     }
 }
 
-/*
-impl TestCaseConfig {
-    // A `new` method for creating instances of `TestCaseConfig` with custom values.
-    pub fn new(repeat_count: u32, data_source: String, auth_type: AuthType, delay: u64) -> Self {
-        TestCaseConfig {
-            repeat_count,
-            data_source,
-            auth_type,
-            delay,
-        }
-    }
-}
-*/
-
 fn default_repeat_count() -> u32 {
     1
 }
@@ -116,7 +104,6 @@ pub struct TestCase {
 
 impl TestCase {
     // Initializes a test case object with a row of data from excel sheet.
-    //pub fn new(row: &[&dyn calamine::DataType], config: &Config) -> Self {
     pub fn new(row: &[calamine::Data], config: &Config) -> Self {
         let mut errors = Vec::new();
 
@@ -191,12 +178,11 @@ impl TestCase {
         let url = match row[5].get_string() {
             Some(s) => {
                 let s = substitute_keywords(s);
-                let full_url = format!(
-                    "{}{}",
-                    <std::option::Option<std::string::String> as Clone>::clone(&config.base_url)
-                        .unwrap_or_default(),
-                    s
-                );
+                let full_url = if s.starts_with("http://") || s.starts_with("https://") {
+                    s.to_string()
+                } else {
+                    format!("{}{}", config.base_url.clone().unwrap_or_default(), s)
+                };
                 match Url::parse(&full_url) {
                     Ok(_) => full_url,
                     Err(_) => {
@@ -450,8 +436,6 @@ impl TestCase {
             payload: self.payload.clone(),
             pre_test_script: self.pre_test_script.clone(),
             post_test_script: self.post_test_script.clone(),
-            //is_authorizer: self.is_authorizer,
-            //is_authorized: self.is_authorized,
         }
     }
 
@@ -529,6 +513,7 @@ impl TestCase {
                 println!("\t\t{}: {}", key, value);
             }
         }
+        /*
         match self.method {
             reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH => {
                 match serde_json::from_str::<serde_json::Value>(&self.effective_payload) {
@@ -537,11 +522,15 @@ impl TestCase {
                         let indented_json = pretty_json.replace("\n", "\n\t\t");
                         println!("\tPayload: {}", indented_json);
                     }
-                    Err(_) => println!("\tPayload: {}", &self.effective_payload),
+                    Err(_) => {
+                        println!("\tPayload: {}", &self.effective_payload);
+                    }
                 }
             }
             _ => {}
         }
+        */
+        print_payload(self.effective_payload.as_bytes());
     }
 
     fn substitute_placeholders(&self, original: &str, ts_ctx: &mut TestCtx) -> String {
@@ -609,7 +598,7 @@ impl TestCase {
     }
 
     fn prepare_payload(
-        &self,
+        &mut self,
         request: reqwest::blocking::RequestBuilder,
     ) -> reqwest::blocking::RequestBuilder {
         let mut content_type_found = false;
@@ -650,16 +639,39 @@ impl TestCase {
     }
 
     fn prepare_multipart_data(
-        &self,
+        &mut self,
         req: reqwest::blocking::RequestBuilder,
         data: &Value,
     ) -> reqwest::blocking::RequestBuilder {
         let mut form = reqwest::blocking::multipart::Form::new();
+        let mut effective_payload_parts = Vec::new();
+
+        // Define the boundary marker (you could use a unique value here)
+        let boundary = "--boundary-placeholder";
 
         // Add fields
         if let Some(fields) = data["form-data"]["fields"].as_object() {
             for (key, value) in fields.clone() {
-                form = form.text(key.clone(), value.as_str().unwrap().to_string());
+                if let Some(string_value) = value.as_str() {
+                    // Add to form
+                    form = form.text(key.clone(), string_value.to_string());
+
+                    // Add to effective payload parts representation
+                    effective_payload_parts.push(format!(
+                        "--{}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n{}",
+                        boundary, key, string_value
+                    ));
+                } else if value.is_object() || value.is_array() {
+                    let serialized_value = serde_json::to_string(&value).unwrap();
+                    // Add to form
+                    form = form.text(key.clone(), serialized_value.clone());
+
+                    // Add to the effective payload parts
+                    effective_payload_parts.push(format!(
+                        "--{}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n{}",
+                        boundary, key, serialized_value
+                    ));
+                }
             }
         }
 
@@ -674,12 +686,28 @@ impl TestCase {
                 let mut buffer = Vec::new();
                 file.read_to_end(&mut buffer).expect("Error reading file");
 
+                // Encode file contennt in base64
+                let encoded = base64::encode(&buffer);
+
                 // Create a multipart part from the file content
-                let file_part = multipart::Part::bytes(buffer).file_name(file_path.to_string());
+                let file_part =
+                    multipart::Part::bytes(buffer.clone()).file_name(file_path.to_string());
                 form = form.part(field_name.to_string(), file_part);
+
+                // Add to effective payload parts representation
+                effective_payload_parts.push(format!(
+                "--boundary-placeholder\r\n\t\tContent-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n\t\tContent-Type: application/octet-stream\r\n\r\n\t\t{}",
+                field_name, file_path, encoded));
             }
         }
-        println!("Form: {:?}", form);
+
+        // Final boundary for ending the multipart form
+        effective_payload_parts.push(format!("--{}--", boundary));
+
+        // Store the complete payload in 'effective_payload' field.
+        self.effective_payload = effective_payload_parts.join("\r\n");
+
+        //println!("Form: {:?}", form);
         return req.multipart(form);
     }
 }
@@ -723,4 +751,50 @@ fn stop_progress(pb: &ProgressBar) {
     // Stop progress animation
     pb.disable_steady_tick();
     pb.finish_with_message("Done");
+}
+
+fn print_payload(payload: &[u8]) {
+    let kind = infer::get(&payload);
+
+    match kind {
+        Some(kind) if kind.mime_type().starts_with("text/") => {
+            let text = String::from_utf8_lossy(payload);
+            // Print the first 10 lines if possible
+            print_first_10_lines(&text);
+        }
+        Some(kind) if kind.mime_type() == "application/json" => {
+            match serde_json::from_slice::<serde_json::Value>(payload) {
+                Ok(json) => {
+                    let pretty_json = serde_json::to_string_pretty(&json).unwrap();
+                    let indented_json = pretty_json.replace("\n", "\n\t\t");
+                    println!("\tPayload: {}", indented_json);
+                }
+                Err(e) => eprintln!("Error parsing JSON: {}", e),
+            }
+        }
+        _ => {
+            // Assume its binary.
+            println!("\tBinary data (Base64 encoded, first 1024 bytes):");
+            let max_bytes = 1024.min(payload.len());
+
+            // Define the indentation string
+            let indent = "\t\t";
+
+            // Print the data in chunks of 80 characters
+            for chunk in payload[..max_bytes].chunks(80) {
+                println!("{}{}", indent, String::from_utf8_lossy(chunk));
+            }
+        }
+    }
+}
+
+fn print_first_10_lines(text: &str) {
+    let mut lines = text.lines();
+    for _ in 0..10 {
+        if let Some(line) = lines.next() {
+            println!("{}", line);
+        } else {
+            break;
+        }
+    }
 }
