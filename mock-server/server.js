@@ -57,6 +57,24 @@ server.post('/api/uploads', upload.array('file', 10), (req, res) => {
   res.status(200).json({ message: 'Files uploaded successfully' });
 });
 
+// Uploads route to handle file uploads along with additional form fields
+server.post("/api/upload_with_params", upload.single("file"), (req, res) => {
+  if (req.file) {
+    // Extract additional form fields from req.body
+    const { var1, var2 } = req.body;
+
+    // Respond with the file URL and the additional data
+    res.json({
+      url: `/uploads/${req.file.filename}`,
+      var1: var1 || null,
+      var2: var2 || null,
+    });
+  } else {
+    res.status(400).json({ message: "File upload error" });
+  }
+});
+
+
 // Middleware to check JWT token
 server.use((req, res, next) => {
   if (req.path === "/api/login" || req.method === "OPTIONS") {
