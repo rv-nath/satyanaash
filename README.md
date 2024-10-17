@@ -5,7 +5,7 @@
 A delusional framework for automatic testing of http endpoints
 
 ## Brief
-This is a http request /response testing framework, inspired mostly by Postman.  A simple cli tool that can run test cases defined in an excel file in an opinionated format.  This framework is purely written in Rust and is terminal application.
+This is a http request /response testing framework, inspired mostly by Postman.  A simple cli tool that can run test cases defined in an excel file in an opinionated format.  This framework is purely written in Rust and is a terminal application.
 
 
 ## Installation
