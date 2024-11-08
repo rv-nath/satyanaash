@@ -45,7 +45,7 @@ impl TestCtx {
     ) {
         let start = std::time::Instant::now();
         let response = request.send();
-        //println!("DEBUG: response: {:?}", response);
+        println!("DEBUG: response: {:?}", response);
         self.exec_duration = start.elapsed();
         match response {
             Ok(response) => {
@@ -56,6 +56,17 @@ impl TestCtx {
                 let body = response
                     .text()
                     .unwrap_or_else(|_| String::from("Failed to read response body"));
+
+                // Sanitize the body string for JavaScript
+                let sanitized_body = body
+                    .replace('\\', "\\\\") // Escape backslashes
+                    .replace('`', "\\`") // Escape backticks
+                    .replace('"', "\\\"") // Escape double quotes
+                    .replace('\'', "\\'") // Escape single quotes
+                    .replace('\n', "\\n") // Replace newlines with \n
+                    .replace('\r', "\\r"); // Replace carriage returns with \r
+
+                println!("DBG: response Body : {}", body);
 
                 // Parse the body string as JSON
                 let body_json: Value = match serde_json::from_str::<Value>(&body) {
@@ -76,7 +87,7 @@ impl TestCtx {
                 self.runtime
                     .eval(&format!(
                         "SAT.response = {{ status: {}, body: `{}`, json: {} }}",
-                        status, body, body_json
+                        status, sanitized_body, body_json
                     ))
                     .unwrap();
             }

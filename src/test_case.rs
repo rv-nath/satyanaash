@@ -317,14 +317,14 @@ impl TestCase {
             return TestResult::Skipped;
         }
 
-        let overall_result = TestResult::Passed;
+        let _overall_result = TestResult::Passed;
 
         // Execute the test case as per the configuration found in the test case.
         println!("Test case configurations {:?}", self.config);
         for _ in 0..self.config.repeat_count {
             let req = self.pre_run_ops(ts_ctx, sys_config);
             let spinner = ProgressBar::new_spinner();
-            show_progress(&mut self.url, &spinner);
+            show_progress(&mut self.effective_url, &spinner);
             let _test_result = self.execute_request(ts_ctx, req, sys_config, tx);
             stop_progress(&spinner);
             self.post_run_ops(ts_ctx, sys_config);
