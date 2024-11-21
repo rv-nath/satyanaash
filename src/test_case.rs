@@ -40,8 +40,8 @@ enum AuthType {
 struct TestCaseConfig {
     #[serde(default = "default_repeat_count")]
     repeat_count: u32, // Indicates if this test case shd be repeated
-    #[serde(default = "default_data_source")]
-    data_source: String, // For repeating the test case with different data sets. A csv file path that cotnains
+    //#[serde(default = "default_data_source")]
+    //data_source: String, // For repeating the test case with different data sets. A csv file path that cotnains
     #[serde(default = "default_auth_type")]
     auth_type: AuthType, // Indicates if the test case generates or consumes a JWT
     #[serde(default = "default_delay")]
@@ -52,7 +52,7 @@ impl Default for TestCaseConfig {
     fn default() -> Self {
         TestCaseConfig {
             repeat_count: default_repeat_count(),
-            data_source: default_data_source(),
+            //data_source: default_data_source(),
             auth_type: default_auth_type(),
             delay: default_delay(),
         }
@@ -96,6 +96,7 @@ pub struct TestCase {
     effective_name: String,
     effective_url: String,
     effective_payload: String,
+    content_type: String, // will be filled by `prepare_payload` method.
 
     // fields that will be filled after test case is executed..
     //exec_duration: std::time::Duration,
@@ -291,6 +292,7 @@ impl TestCase {
             effective_name: "".to_string(),
             effective_url: "".to_string(),
             effective_payload: "".to_string(),
+            content_type: "".to_string(),
         };
         tc
     }
@@ -513,24 +515,7 @@ impl TestCase {
                 println!("\t\t{}: {}", key, value);
             }
         }
-        /*
-        match self.method {
-            reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH => {
-                match serde_json::from_str::<serde_json::Value>(&self.effective_payload) {
-                    Ok(json) => {
-                        let pretty_json = serde_json::to_string_pretty(&json).unwrap();
-                        let indented_json = pretty_json.replace("\n", "\n\t\t");
-                        println!("\tPayload: {}", indented_json);
-                    }
-                    Err(_) => {
-                        println!("\tPayload: {}", &self.effective_payload);
-                    }
-                }
-            }
-            _ => {}
-        }
-        */
-        print_payload(self.effective_payload.as_bytes());
+        self.print_payload();
     }
 
     fn substitute_placeholders(&self, original: &str, ts_ctx: &mut TestCtx) -> String {
@@ -607,17 +592,20 @@ impl TestCase {
                 content_type_found = true;
                 match value.as_str() {
                     "application/json" => {
+                        self.content_type = value.clone();
                         let payload_json: Value = serde_json::from_str(&self.effective_payload)
                             .unwrap_or(serde_json::json!({}));
                         return request.json(&payload_json);
                     }
                     "application/x-www-form-urlencoded" => {
+                        self.content_type = value.clone();
                         let url_encoded_data =
                             serde_json::from_str(self.effective_payload.as_str())
                                 .unwrap_or(serde_json::json!({}));
                         return request.form(&url_encoded_data);
                     }
                     "multipart/form-data" => {
+                        self.content_type = value.clone();
                         let form_data = serde_json::from_str(self.effective_payload.as_str())
                             .unwrap_or(serde_json::json!({}));
                         return self.prepare_multipart_data(request, &form_data);
@@ -631,6 +619,7 @@ impl TestCase {
         }
         // Default to JSON if no matching content type is found
         if !content_type_found {
+            self.content_type = "application/json".to_string();
             let payload_json: Value =
                 serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
             return request.json(&payload_json);
@@ -710,6 +699,50 @@ impl TestCase {
         //println!("Form: {:?}", form);
         return req.multipart(form);
     }
+
+    fn print_payload(&self) {
+        match self.content_type.as_str() {
+            "application/json" => {
+                match serde_json::from_str::<serde_json::Value>(&self.effective_payload) {
+                    Ok(json) => {
+                        let pretty_json = serde_json::to_string_pretty(&json).unwrap();
+                        let indented_json = pretty_json.replace("\n", "\n\t\t");
+                        println!("\tPayload: {}", indented_json);
+                    }
+                    Err(e) => eprintln!("Error parsing JSON: {}", e),
+                }
+            }
+            "application/x-www-form-urlencoded" => {
+                let form_data = serde_json::from_str(self.effective_payload.as_str())
+                    .unwrap_or(serde_json::json!({}));
+                println!("\tPayload: {:?}", form_data);
+            }
+            "multipart/form-data" => {
+                //println!("\tPayload: {}", self.effective_payload);
+                print_first_10_lines(&self.effective_payload);
+            }
+            content_type if content_type.starts_with("text/") => {
+                //let text = String::from_utf8_lossy(&self.effective_payload);
+                // Print the first 10 lines if possible
+                print_first_10_lines(&self.effective_payload);
+            }
+
+            _ => {
+                // Assume its binary.
+                println!("\tBinary data (Base64 encoded, first 1024 bytes):");
+                let max_bytes = 1024.min(self.effective_payload.len());
+                let payload_bytes = &self.effective_payload.as_bytes()[..max_bytes];
+
+                // Define the indentation string
+                let indent = "\t\t";
+
+                // Print the data in chunks of 80 characters
+                for chunk in payload_bytes[..max_bytes].chunks(80) {
+                    println!("{}{}", indent, String::from_utf8_lossy(chunk));
+                }
+            }
+        }
+    }
 }
 
 fn substitute_keywords(input: &str) -> String {
@@ -751,41 +784,6 @@ fn stop_progress(pb: &ProgressBar) {
     // Stop progress animation
     pb.disable_steady_tick();
     pb.finish_with_message("Done");
-}
-
-fn print_payload(payload: &[u8]) {
-    let kind = infer::get(&payload);
-
-    match kind {
-        Some(kind) if kind.mime_type().starts_with("text/") => {
-            let text = String::from_utf8_lossy(payload);
-            // Print the first 10 lines if possible
-            print_first_10_lines(&text);
-        }
-        Some(kind) if kind.mime_type() == "application/json" => {
-            match serde_json::from_slice::<serde_json::Value>(payload) {
-                Ok(json) => {
-                    let pretty_json = serde_json::to_string_pretty(&json).unwrap();
-                    let indented_json = pretty_json.replace("\n", "\n\t\t");
-                    println!("\tPayload: {}", indented_json);
-                }
-                Err(e) => eprintln!("Error parsing JSON: {}", e),
-            }
-        }
-        _ => {
-            // Assume its binary.
-            println!("\tBinary data (Base64 encoded, first 1024 bytes):");
-            let max_bytes = 1024.min(payload.len());
-
-            // Define the indentation string
-            let indent = "\t\t";
-
-            // Print the data in chunks of 80 characters
-            for chunk in payload[..max_bytes].chunks(80) {
-                println!("{}{}", indent, String::from_utf8_lossy(chunk));
-            }
-        }
-    }
 }
 
 fn print_first_10_lines(text: &str) {

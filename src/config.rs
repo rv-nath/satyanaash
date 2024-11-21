@@ -70,6 +70,10 @@ impl Config {
             .collect();
 
         // Read from config.yaml
+        // Get and print the current working directory for debugging
+        let current_dir = env::current_dir()?;
+        println!("Current working directory: {}", current_dir.display());
+
         let config_file = fs::read_to_string("config.yaml")?;
         let mut config: Config = serde_yaml::from_str(&config_file)?;
 
