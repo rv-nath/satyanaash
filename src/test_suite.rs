@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::test_case::TestResult;
 use crate::test_events::TestEvent;
 use crate::test_events::{TestSuiteBegin, TestSuiteEnd};
 use crate::test_group::TestGroup;
@@ -52,7 +53,7 @@ impl TestSuite {
         worksheet_name: &str,
         config: &Config,
         tx: &Sender<TestEvent>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<TestResult, Box<dyn Error>> {
         // Fire an event to indicate that the test suite has started.
         self.fire_start_evt(tx);
 
@@ -108,7 +109,8 @@ impl TestSuite {
         // Fire test suite end event.
         self.fire_end_evt(tx);
 
-        Ok(())
+        // If we reached here, all applicable tests would have passed.
+        Ok(TestResult::Passed)
     }
 
     fn finalize_group(&mut self, group: &mut Option<TestGroup>, tx: &Sender<TestEvent>) {

@@ -17,7 +17,7 @@ use std::io::Read;
 use std::{sync::mpsc::Sender, time::Duration};
 
 // Possible test case results.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TestResult {
     NotYetTested,
     Passed,
@@ -319,7 +319,7 @@ impl TestCase {
             return TestResult::Skipped;
         }
 
-        let _overall_result = TestResult::Passed;
+        let mut overall_result = TestResult::Passed;
 
         // Execute the test case as per the configuration found in the test case.
         println!("Test case configurations {:?}", self.config);
@@ -327,12 +327,19 @@ impl TestCase {
             let req = self.pre_run_ops(ts_ctx, sys_config);
             let spinner = ProgressBar::new_spinner();
             show_progress(&mut self.effective_url, &spinner);
-            let _test_result = self.execute_request(ts_ctx, req, sys_config, tx);
+            self.execute_request(ts_ctx, req, sys_config, tx);
+            if self.result == TestResult::Failed {
+                overall_result = TestResult::Failed;
+                stop_progress(&spinner);
+                self.post_run_ops(ts_ctx, sys_config);
+                break;
+            }
             stop_progress(&spinner);
             self.post_run_ops(ts_ctx, sys_config);
         }
 
-        self.result.clone()
+        //self.result.clone()
+        overall_result
     }
 
     fn prepare_request(

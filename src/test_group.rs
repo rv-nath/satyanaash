@@ -63,7 +63,7 @@ impl TestGroup {
         row: &[calamine::Data],
         config: &Config,
         tx: &Sender<TestEvent>,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<TestResult, Box<dyn Error>> {
         // Create an instance of test case, and execute it.
         let mut tc = TestCase::new(row, config);
         let t_result = tc.run(&mut self.group_ctx, config, tx);
@@ -79,7 +79,13 @@ impl TestGroup {
         }
         // update the exec duration..
         self.exec_duration += self.group_ctx.exec_duration();
-        Ok(())
+        //Ok(t_result)
+        match t_result {
+            TestResult::Passed => Ok(TestResult::Passed),
+            //TestResult::Failed => Err("Test Failed".into()),
+            TestResult::Skipped => Err("Test Skipped".into()),
+            _ => Err("Test Failed".into()),
+        }
     }
 
     fn fire_start_evt(&self, tx: &Sender<TestEvent>) {
