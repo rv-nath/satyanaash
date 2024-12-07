@@ -14,6 +14,8 @@ use std::default;
 use std::env;
 use std::fs::File;
 use std::io::Read;
+use std::io::{self, Write};
+use std::sync::Arc;
 use std::{sync::mpsc::Sender, time::Duration};
 
 // Possible test case results.
@@ -104,6 +106,28 @@ pub struct TestCase {
 }
 
 impl TestCase {
+    pub fn dummy() -> Self {
+        TestCase {
+            id: 0,
+            name: "".to_string(),
+            given: "".to_string(),
+            when: "".to_string(),
+            then: "".to_string(),
+            url: "".to_string(),
+            method: Method::GET,
+            headers: Vec::new(),
+            payload: "".to_string(),
+            config: TestCaseConfig::default(),
+            pre_test_script: None,
+            post_test_script: None,
+            errors: Vec::new(),
+            effective_name: "".to_string(),
+            effective_url: "".to_string(),
+            effective_payload: "".to_string(),
+            content_type: "".to_string(),
+            result: TestResult::NotYetTested,
+        }
+    }
     // Initializes a test case object with a row of data from excel sheet.
     pub fn new(row: &[calamine::Data], config: &Config) -> Self {
         let mut errors = Vec::new();
@@ -581,7 +605,19 @@ impl TestCase {
                         caps[0].to_string() // Return the original placeholder
                     }
                 }
-            } else {
+             } else if var_expression.starts_with("input:") {
+            // Handle user input for variables
+            let input_var_name = var_expression.trim_start_matches("input:").trim();
+            let mut user_input = String::new();
+
+            print!("Enter value for '{}': ", input_var_name);
+            io::stdout().flush().expect("Failed to flush stdout");
+            io::stdin()
+                .read_line(&mut user_input)
+                .expect("Failed to read input");
+            user_input.trim().to_string()
+
+             } else {
                 // Handle JS context variable substitution
                 let var_name = var_expression;
                 match ts_ctx.runtime.eval(&format!("SAT.globals.{}", var_name)) {
@@ -870,5 +906,54 @@ fn print_first_10_lines(text: &str) {
         } else {
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Ok;
+    use calamine::{open_workbook, Data, Reader, Xlsx};
+
+    fn read_excel_row(file: &str, sheet: &str, row: usize) -> Result<Vec<Data>, anyhow::Error> {
+        let mut workbook: Xlsx<_> = open_workbook(file).unwrap();
+        let sheet = workbook.worksheet_range(sheet).unwrap();
+        let row_data = sheet
+            .rows()
+            .nth(row)
+            .ok_or(anyhow::anyhow!("Row not found"))?;
+        Ok(row_data.to_vec())
+    }
+
+    #[test]
+    fn test_env_vars() {
+        let mut ts_ctx = TestCtx::new().unwrap();
+        env::set_var("TEST_VAR", "test_value");
+        let input = "Hello {{env:TEST_VAR}}";
+        let tc = TestCase::dummy();
+        let output = tc.substitute_placeholders(input, &mut ts_ctx);
+        assert_eq!(output, "Hello test_value");
+    }
+    #[test]
+    fn test_substitute_keywords() {
+        let input = "Hello $RandomName, your phone number is $RandomPhone";
+        let output = substitute_keywords(input);
+        assert!(output.contains("Hello "));
+        assert!(!output.contains("$RandomName"));
+        assert!(output.contains(", your phone number is "));
+        assert!(!output.contains("$RandomPhone"));
+    }
+
+    #[test]
+    fn test_input_var() {
+        // read excel row
+        let row = read_excel_row("./data/vars.xlsx", "Sheet1", 1).unwrap();
+        let tc = TestCase::new(&row, &Config::default());
+        let mut ts_ctx = TestCtx::new().unwrap();
+
+        assert_eq!(
+            tc.substitute_placeholders("Hello {{input:NAME}}", &mut ts_ctx),
+            "Hello Bharat"
+        );
     }
 }

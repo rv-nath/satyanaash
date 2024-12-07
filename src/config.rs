@@ -17,6 +17,18 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn default() -> Self {
+        Config {
+            start_row: None,
+            end_row: None,
+            base_url: None,
+            test_file: None,
+            worksheet: None,
+            verbose: false,
+            token_key: None,
+            groups: None,
+        }
+    }
     pub fn build_config() -> Result<Self, Box<dyn Error>> {
         let args: Vec<String> = env::args().collect();
 

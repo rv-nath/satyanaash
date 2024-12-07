@@ -5,10 +5,10 @@
 # contained in the excel file.  This is useful when you have to run the same
 # set of API requests on different environments (dev, staging, production)
 #base_url: http://localhost:3000
-#base_url: https://genulix.ai/api
+base_url: https://genulix.ai/api
 #base_url: https://cpaas.comviva.com/api
 #base_url: http://172.25.47.153:32606/api
-base_url: http://localhost:3000
+#base_url: http://localhost:3000
 
 start_row: 1 # start row from where to start processing
 #end_row: 100  # enale this to limit the number of rows to be processed
