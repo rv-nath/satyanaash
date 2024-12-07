@@ -5,13 +5,13 @@ use bharat_cafe as bc;
 use calamine::DataType;
 use colored::Colorize;
 use indicatif::ProgressBar;
-use infer;
 use regex::Regex;
 use reqwest::blocking::multipart;
 use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::default;
+use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::{sync::mpsc::Sender, time::Duration};
@@ -525,6 +525,7 @@ impl TestCase {
         self.print_payload();
     }
 
+    /*
     fn substitute_placeholders(&self, original: &str, ts_ctx: &mut TestCtx) -> String {
         let mut result = original.to_string();
         let re = Regex::new(r"\{\{(.*?)\}\}").unwrap();
@@ -540,6 +541,74 @@ impl TestCase {
             }
         }
         result
+    }
+    */
+
+    /// Substitutes placeholders in the input string with corresponding values.
+    ///
+    /// - `{{env:VAR_NAME}}` will be replaced with the value of the environment variable `VAR_NAME`.
+    /// - `{{var}}` will be replaced with the value of the JS context variable `var`.
+    /// - If a substitution is not possible, the placeholder remains unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `original` - The original string containing placeholders.
+    /// * `ts_ctx` - Mutable reference to the test context containing the JS runtime.
+    ///
+    /// # Returns
+    ///
+    /// A new `String` with placeholders substituted where possible.
+    fn substitute_placeholders(&self, original: &str, ts_ctx: &mut TestCtx) -> String {
+        // Compile the regex once for efficiency
+        let re = Regex::new(r"\{\{(.*?)\}\}").unwrap();
+
+        // Perform substitution using Regex::replace_all with a closure
+        re.replace_all(original, |caps: &regex::Captures| {
+            let var_expression = &caps[1].trim();
+
+            // Check if the placeholder is an environment variable
+            if var_expression.starts_with("env:") {
+                let env_var_name = var_expression.trim_start_matches("env:").trim();
+                match env::var(env_var_name) {
+                    Ok(env_value) => env_value,
+                    Err(_) => {
+                        /*
+                        eprintln!(
+                            "Warning: Environment variable '{}' is not set. Leaving placeholder unchanged.",
+                            env_var_name
+                        );
+                        */
+                        caps[0].to_string() // Return the original placeholder
+                    }
+                }
+            } else {
+                // Handle JS context variable substitution
+                let var_name = var_expression;
+                match ts_ctx.runtime.eval(&format!("SAT.globals.{}", var_name)) {
+                    Ok(value) => {
+                        if let Some(value_str) = value.as_str() {
+                            value_str.to_string()
+                        } else {
+                            eprintln!(
+                                "Warning: JS context variable '{}' is not a string. Leaving placeholder unchanged.",
+                                var_name
+                            );
+                            caps[0].to_string() // Return the original placeholder
+                        }
+                    }
+                    Err(_) => {
+                        /*
+                        eprintln!(
+                            "Warning: JS context variable '{}' could not be evaluated. Leaving placeholder unchanged.",
+                            var_name
+                        );
+                        */
+                        caps[0].to_string() // Return the original placeholder
+                    }
+                }
+            }
+        })
+        .to_string()
     }
 
     // Performs the following steps:
