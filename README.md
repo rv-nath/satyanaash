@@ -9,7 +9,7 @@ This is a http request /response testing framework, inspired mostly by Postman. 
 
 
 ## Installation
-Currently there is a download link for windows executable.  We endeavour to provide downloads for all LInux variants. Simply download the executable file from the Github using the following link:  https://github.com/RVNath-Enterprises/satyanaash/releases/tag/v0.2.1-alpha
+You may download the executable from the releases page [here](https://github.com/rv-nath/satyanaash/releases).  Note that the latest versions do not support windows binaries.
 
 Check if the binary is working properly for your operating system.  Run the executable with -h or --help to see if this emits a meaningful usage output.
 
