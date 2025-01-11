@@ -1,5 +1,5 @@
 
-[![Rust](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml/badge.svg)](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml)
+[![Rust](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml/badge.svg?cache-bust=1)](https://github.com/rv-nath/satyanaash/actions/workflows/rust.yml)
 
 # satyanaash
 A delusional framework for automatic testing of http endpoints
