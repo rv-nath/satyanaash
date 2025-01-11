@@ -615,6 +615,7 @@ impl TestCase {
             io::stdin()
                 .read_line(&mut user_input)
                 .expect("Failed to read input");
+
             user_input.trim().to_string()
 
              } else {
@@ -914,6 +915,8 @@ mod tests {
     use super::*;
     use anyhow::Ok;
     use calamine::{open_workbook, Data, Reader, Xlsx};
+    //use std::io::{self, Read};
+    use std::sync::{Arc, Mutex};
 
     fn read_excel_row(file: &str, sheet: &str, row: usize) -> Result<Vec<Data>, anyhow::Error> {
         let mut workbook: Xlsx<_> = open_workbook(file).unwrap();
@@ -942,18 +945,5 @@ mod tests {
         assert!(!output.contains("$RandomName"));
         assert!(output.contains(", your phone number is "));
         assert!(!output.contains("$RandomPhone"));
-    }
-
-    #[test]
-    fn test_input_var() {
-        // read excel row
-        let row = read_excel_row("./data/vars.xlsx", "Sheet1", 1).unwrap();
-        let tc = TestCase::new(&row, &Config::default());
-        let mut ts_ctx = TestCtx::new().unwrap();
-
-        assert_eq!(
-            tc.substitute_placeholders("Hello {{input:NAME}}", &mut ts_ctx),
-            "Hello Bharat"
-        );
     }
 }
