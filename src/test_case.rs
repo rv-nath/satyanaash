@@ -890,7 +890,8 @@ fn substitute_keywords(input: &str) -> String {
         output = output.replacen(matched.as_str(), &random_company, 1);
     }
 
-    let re_email = Regex::new(r#"\$RandomEmail(?:\("(.+?)"\))?"#).unwrap();
+    //let re_email = Regex::new(r#"\$RandomEmail(?:\("(.+?)"\))?"#).unwrap();
+    let re_email = Regex::new(r#"\$RandomEmail(?:\(\s*(?:"([^"]*)")?\s*\))?"#).unwrap();
     while let Some(matched) = re_email.captures(&output) {
         let domain = matched.get(1).map(|m| m.as_str()); // Capture the domain if present
         let placeholder = matched.get(0).unwrap().as_str(); // Match the entire placeholder
