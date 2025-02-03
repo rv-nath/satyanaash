@@ -18,12 +18,19 @@ pub struct TestCtx {
 impl TestCtx {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         let mut runtime = JsEngine::new();
-        runtime.initialize_globals().unwrap();
+        //runtime.initialize_globals().unwrap();
+        runtime.initialize_globals().map_err(|e| {
+            eprintln!("Failed to initialize JavaScript runtime: {}", e);
+            e
+        })?;
 
         let client = reqwest::blocking::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
-            .expect("Failed to build client");
+            .map_err(|e| {
+                eprintln!("Failed to create reqwest client: {}", e);
+                e
+            })?;
 
         Ok(TestCtx {
             client,
