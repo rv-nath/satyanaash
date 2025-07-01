@@ -15,6 +15,7 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::io::{self, Write};
+use std::path::Path;
 //use std::sync::Arc;
 use std::{sync::mpsc::Sender, time::Duration};
 use uuid::Uuid;
@@ -700,45 +701,48 @@ impl TestCase {
         &mut self,
         request: reqwest::blocking::RequestBuilder,
     ) -> reqwest::blocking::RequestBuilder {
-        let mut content_type_found = false;
-        for (key, value) in self.headers.iter() {
-            if key.to_lowercase() == "content-type" {
-                content_type_found = true;
-                match value.as_str() {
-                    "application/json" => {
-                        self.content_type = value.clone();
-                        let payload_json: Value = serde_json::from_str(&self.effective_payload)
-                            .unwrap_or(serde_json::json!({}));
-                        return request.json(&payload_json);
-                    }
-                    "application/x-www-form-urlencoded" => {
-                        self.content_type = value.clone();
-                        let url_encoded_data =
-                            serde_json::from_str(self.effective_payload.as_str())
-                                .unwrap_or(serde_json::json!({}));
-                        return request.form(&url_encoded_data);
-                    }
-                    "multipart/form-data" => {
-                        self.content_type = value.clone();
-                        let form_data = serde_json::from_str(self.effective_payload.as_str())
-                            .unwrap_or(serde_json::json!({}));
-                        return self.prepare_multipart_data(request, &form_data);
-                    }
-                    _ => {
-                        eprintln!("Unsupported content type: {}", value);
-                    }
-                }
-                break;
+        let ct_lower = self
+            .headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == "content-type")
+            .map(|(_, v)| v.to_lowercase());
+
+        match ct_lower.as_deref() {
+            Some("application/json") => {
+                self.content_type = "application/json".to_string();
+                let payload_json: Value =
+                    serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
+                request.json(&payload_json)
+            }
+            Some("application/x-www-form-urlencoded") => {
+                self.content_type = "application/x-www-form-urlencoded".to_string();
+                let url_encoded_data =
+                    serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
+                request.form(&url_encoded_data)
+            }
+            Some("multipart/form-data") => {
+                self.content_type = "multipart/form-data".to_string();
+                let form_data =
+                    serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
+                self.prepare_multipart_data(request, &form_data)
+            }
+            None if self.effective_payload.contains("form-data") => {
+                self.content_type = "multipart/form-data".to_string();
+                let form_data =
+                    serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
+                self.prepare_multipart_data(request, &form_data)
+            }
+            other => {
+                eprintln!(
+                    "Unsupported or missing Content-Type: {:?}, defaulting to application/json",
+                    other
+                );
+                self.content_type = "application/json".to_string();
+                let payload_json: Value =
+                    serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
+                request.json(&payload_json)
             }
         }
-        // Default to JSON if no matching content type is found
-        if !content_type_found {
-            self.content_type = "application/json".to_string();
-            let payload_json: Value =
-                serde_json::from_str(&self.effective_payload).unwrap_or(serde_json::json!({}));
-            return request.json(&payload_json);
-        }
-        request
     }
 
     fn prepare_multipart_data(
@@ -746,6 +750,9 @@ impl TestCase {
         req: reqwest::blocking::RequestBuilder,
         data: &Value,
     ) -> reqwest::blocking::RequestBuilder {
+        use mime_guess::from_path;
+        use std::path::Path;
+
         let mut form = reqwest::blocking::multipart::Form::new();
         let mut effective_payload_parts = Vec::new();
 
@@ -789,18 +796,28 @@ impl TestCase {
                 let mut buffer = Vec::new();
                 file.read_to_end(&mut buffer).expect("Error reading file");
 
-                // Encode file contennt in base64
-                let encoded = base64::encode(&buffer);
+                let filename = Path::new(file_path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string();
+                let mime_type = from_path(file_path).first_or_octet_stream();
 
                 // Create a multipart part from the file content
-                let file_part =
-                    multipart::Part::bytes(buffer.clone()).file_name(file_path.to_string());
+                let file_part = multipart::Part::bytes(buffer.clone())
+                    .file_name(filename.clone())
+                    .mime_str(mime_type.as_ref())
+                    .unwrap();
                 form = form.part(field_name.to_string(), file_part);
 
-                // Add to effective payload parts representation
+                // Add to effective payload parts representation (no base64)
                 effective_payload_parts.push(format!(
-                "--boundary-placeholder\r\n\t\tContent-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n\t\tContent-Type: application/octet-stream\r\n\r\n\t\t{}",
-                field_name, file_path, encoded));
+                    "--boundary-placeholder\r\n\
+                    Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n\
+                    Content-Type: application/octet-stream\r\n\r\n\
+                    <binary content omitted for display>",
+                    field_name, file_path
+                ));
             }
         }
 
@@ -833,12 +850,12 @@ impl TestCase {
             }
             "multipart/form-data" => {
                 //println!("\tPayload: {}", self.effective_payload);
-                print_first_10_lines(&self.effective_payload);
+                print_first_n_lines(&self.effective_payload, 100);
             }
             content_type if content_type.starts_with("text/") => {
                 //let text = String::from_utf8_lossy(&self.effective_payload);
                 // Print the first 10 lines if possible
-                print_first_10_lines(&self.effective_payload);
+                print_first_n_lines(&self.effective_payload, 100);
             }
 
             _ => {
@@ -922,9 +939,9 @@ fn stop_progress(pb: &ProgressBar) {
     pb.finish_with_message("Done");
 }
 
-fn print_first_10_lines(text: &str) {
+fn print_first_n_lines(text: &str, n: usize) {
     let mut lines = text.lines();
-    for _ in 0..10 {
+    for _ in 0..n {
         if let Some(line) = lines.next() {
             println!("{}", line);
         } else {
