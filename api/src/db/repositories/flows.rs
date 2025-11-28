@@ -76,17 +76,40 @@ impl FlowRepository for SqlxFlowRepository {
         }
     }
 
-    async fn list_by_project(&self, project_id: &str) -> Result<Vec<Flow>, AppError> {
+    async fn list_by_project(&self, project_id: &str, pagination: Pagination) -> Result<PaginatedResponse<Flow>, AppError> {
+        // Get total count
+        let count_row = sqlx::query("SELECT COUNT(*) as count FROM flows WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let total: i64 = count_row.try_get("count")?;
+
+        // Calculate offset
+        let offset = (pagination.page.saturating_sub(1)) * pagination.per_page;
+
+        // Get paginated results
         let rows = sqlx::query(
             r#"SELECT id, project_id, name, description, graph_data, canvas_settings,
                version, created_at, updated_at
-               FROM flows WHERE project_id = ? ORDER BY created_at DESC"#
+               FROM flows WHERE project_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"#
         )
         .bind(project_id)
+        .bind(pagination.per_page as i64)
+        .bind(offset as i64)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter().map(row_to_flow).collect()
+        let flows: Result<Vec<Flow>, AppError> = rows.iter().map(row_to_flow).collect();
+
+        Ok(PaginatedResponse {
+            data: flows?,
+            pagination: PaginationMeta {
+                page: pagination.page,
+                per_page: pagination.per_page,
+                total: total as u64,
+                total_pages: ((total as f64) / (pagination.per_page as f64)).ceil() as u32,
+            },
+        })
     }
 
     async fn update(&self, id: &str, input: UpdateFlow) -> Result<Flow, AppError> {

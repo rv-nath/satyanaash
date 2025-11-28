@@ -87,18 +87,41 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         }
     }
 
-    async fn list_by_project(&self, project_id: &str) -> Result<Vec<TestCase>, AppError> {
+    async fn list_by_project(&self, project_id: &str, pagination: Pagination) -> Result<PaginatedResponse<TestCase>, AppError> {
+        // Get total count
+        let count_row = sqlx::query("SELECT COUNT(*) as count FROM test_cases WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let total: i64 = count_row.try_get("count")?;
+
+        // Calculate offset
+        let offset = (pagination.page.saturating_sub(1)) * pagination.per_page;
+
+        // Get paginated results
         let rows = sqlx::query(
             r#"SELECT id, project_id, name, given_condition, when_action, then_expected,
                method, endpoint, headers, payload, exports, assertion_script,
                created_at, updated_at
-               FROM test_cases WHERE project_id = ? ORDER BY created_at DESC"#
+               FROM test_cases WHERE project_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"#
         )
         .bind(project_id)
+        .bind(pagination.per_page as i64)
+        .bind(offset as i64)
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter().map(row_to_test_case).collect()
+        let test_cases: Result<Vec<TestCase>, AppError> = rows.iter().map(row_to_test_case).collect();
+
+        Ok(PaginatedResponse {
+            data: test_cases?,
+            pagination: PaginationMeta {
+                page: pagination.page,
+                per_page: pagination.per_page,
+                total: total as u64,
+                total_pages: ((total as f64) / (pagination.per_page as f64)).ceil() as u32,
+            },
+        })
     }
 
     async fn update(&self, id: &str, input: UpdateTestCase) -> Result<TestCase, AppError> {

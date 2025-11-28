@@ -1,7 +1,7 @@
 //! Test Cases API handlers
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -21,13 +21,14 @@ pub async fn create_test_case(
     Ok((StatusCode::CREATED, Json(test_case)))
 }
 
-/// GET /api/v1/projects/:project_id/test-cases - List all test cases for a project
+/// GET /api/v1/projects/:project_id/test-cases - List all test cases for a project (paginated)
 pub async fn list_test_cases(
     State(repo): State<Arc<dyn TestCaseRepository>>,
     Path(project_id): Path<String>,
-) -> Result<Json<Vec<TestCase>>, AppError> {
-    let test_cases = repo.list_by_project(&project_id).await?;
-    Ok(Json(test_cases))
+    Query(pagination): Query<Pagination>,
+) -> Result<Json<PaginatedResponse<TestCase>>, AppError> {
+    let response = repo.list_by_project(&project_id, pagination).await?;
+    Ok(Json(response))
 }
 
 /// GET /api/v1/test-cases/:id - Get a test case by ID

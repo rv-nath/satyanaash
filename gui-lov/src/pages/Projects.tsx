@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, FolderKanban, Clock, Play, Trash2, MoreVertical } from "lucide-react";
+import { Plus, FolderKanban, Clock, Play, Trash2, MoreVertical, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -10,63 +10,61 @@ import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  testCount: number;
-  groupCount: number;
-  lastModified: string;
-}
+import { useProjects, useCreateProject, useDeleteProject } from "@/hooks/useApi";
 
 const Projects = () => {
-  const [projects, setProjects] = useState<Project[]>([
-    {
-      id: "1",
-      name: "Auth API Tests",
-      description: "Authentication and authorization endpoint tests",
-      testCount: 24,
-      groupCount: 3,
-      lastModified: "2 hours ago",
-    },
-    {
-      id: "2",
-      name: "User Management",
-      description: "CRUD operations for user resources",
-      testCount: 18,
-      groupCount: 2,
-      lastModified: "1 day ago",
-    },
-  ]);
+  // Fetch projects from API
+  const { data: projects, isLoading, error } = useProjects();
+  const createProjectMutation = useCreateProject();
+  const deleteProjectMutation = useDeleteProject();
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [newProject, setNewProject] = useState({ name: "", description: "" });
 
-  const handleCreateProject = () => {
+  const handleCreateProject = async () => {
     if (!newProject.name.trim()) {
       toast.error("Project name is required");
       return;
     }
 
-    const project: Project = {
-      id: Date.now().toString(),
-      name: newProject.name,
-      description: newProject.description,
-      testCount: 0,
-      groupCount: 0,
-      lastModified: "Just now",
-    };
-
-    setProjects([...projects, project]);
-    setNewProject({ name: "", description: "" });
-    setIsCreateOpen(false);
-    toast.success("Project created successfully");
+    try {
+      await createProjectMutation.mutateAsync({
+        name: newProject.name,
+        description: newProject.description || undefined,
+      });
+      setNewProject({ name: "", description: "" });
+      setIsCreateOpen(false);
+      toast.success("Project created successfully");
+    } catch (err) {
+      toast.error("Failed to create project");
+      console.error(err);
+    }
   };
 
-  const handleDeleteProject = (id: string) => {
-    setProjects(projects.filter(p => p.id !== id));
-    toast.success("Project deleted");
+  const handleDeleteProject = async (id: string) => {
+    try {
+      await deleteProjectMutation.mutateAsync(id);
+      toast.success("Project deleted");
+    } catch (err) {
+      toast.error("Failed to delete project");
+      console.error(err);
+    }
+  };
+
+  // Format date for display
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins} minutes ago`;
+    if (diffHours < 24) return `${diffHours} hours ago`;
+    if (diffDays < 7) return `${diffDays} days ago`;
+    return date.toLocaleDateString();
   };
 
   return (
@@ -110,8 +108,19 @@ const Projects = () => {
                     rows={3}
                   />
                 </div>
-                <Button onClick={handleCreateProject} className="w-full">
-                  Create Project
+                <Button
+                  onClick={handleCreateProject}
+                  className="w-full"
+                  disabled={createProjectMutation.isPending}
+                >
+                  {createProjectMutation.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    "Create Project"
+                  )}
                 </Button>
               </div>
             </DialogContent>
@@ -126,7 +135,30 @@ const Projects = () => {
           <p className="text-muted-foreground">Manage your test projects and execution graphs</p>
         </div>
 
-        {projects.length === 0 ? (
+        {/* Loading State */}
+        {isLoading && (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+            <span className="ml-3 text-muted-foreground">Loading projects...</span>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && (
+          <Card className="p-8 text-center border-destructive">
+            <AlertCircle className="w-12 h-12 mx-auto mb-4 text-destructive" />
+            <h3 className="text-lg font-medium text-foreground mb-2">Failed to load projects</h3>
+            <p className="text-muted-foreground mb-4">
+              {error instanceof Error ? error.message : "Please check if the backend is running"}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Backend should be at: http://localhost:3001
+            </p>
+          </Card>
+        )}
+
+        {/* Empty State */}
+        {!isLoading && !error && projects?.length === 0 && (
           <Card className="p-12 text-center border-dashed">
             <FolderKanban className="w-16 h-16 mx-auto mb-4 text-muted-foreground" />
             <h3 className="text-lg font-medium text-foreground mb-2">No projects yet</h3>
@@ -136,7 +168,10 @@ const Projects = () => {
               Create Project
             </Button>
           </Card>
-        ) : (
+        )}
+
+        {/* Projects Grid */}
+        {!isLoading && !error && projects && projects.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {projects.map((project, index) => (
               <motion.div
@@ -154,7 +189,7 @@ const Projects = () => {
                             {project.name}
                           </h3>
                           <p className="text-sm text-muted-foreground line-clamp-2">
-                            {project.description}
+                            {project.description || "No description"}
                           </p>
                         </div>
                         <DropdownMenu>
@@ -181,13 +216,11 @@ const Projects = () => {
                       <div className="space-y-2 mb-4">
                         <div className="flex items-center gap-2 text-sm">
                           <Play className="w-4 h-4 text-primary" />
-                          <span className="text-muted-foreground">{project.testCount} tests</span>
-                          <span className="text-muted-foreground">·</span>
-                          <span className="text-muted-foreground">{project.groupCount} groups</span>
+                          <span className="text-muted-foreground">Project ID: {project.id.slice(0, 8)}...</span>
                         </div>
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           <Clock className="w-4 h-4" />
-                          <span>Modified {project.lastModified}</span>
+                          <span>Modified {formatDate(project.updated_at)}</span>
                         </div>
                       </div>
 

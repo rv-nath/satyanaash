@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { 
-  ArrowLeft, Play, Pause, RotateCcw, Settings, CheckCircle2, Download, ChevronDown, Bug
+import {
+  ArrowLeft, Play, Pause, RotateCcw, Settings, CheckCircle2, Download, ChevronDown, Bug, Loader2, AlertCircle, Cloud, CloudOff, Save
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,10 +10,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { 
-  ResizableHandle, 
-  ResizablePanel, 
-  ResizablePanelGroup 
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup
 } from "@/components/ui/resizable";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
@@ -25,25 +25,44 @@ import { TestCaseDialog } from "@/components/TestCaseDialog";
 import { TestInventory } from "@/components/TestInventory";
 import { FlowsList } from "@/components/FlowsList";
 import { FlowValidator } from "@/components/FlowValidator";
+import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useExecuteFlow, useCreateTestCase, useUpdateTestCase, useDeleteTestCase } from "@/hooks/useApi";
+import { Card } from "@/components/ui/card";
 
 const ProjectDetailContent = () => {
   const { id } = useParams();
-  const { 
-    testGroups, 
+  const {
+    project,
+    projectId,
+    testGroups,
     nodes,
     edges,
     activeFlowId,
+    setActiveFlowId,
     showConsole,
     setShowConsole,
-    toggleGroup, 
-    addTestGroup, 
+    toggleGroup,
+    addTestGroup,
     updateTestGroup,
     deleteTestGroup,
-    addTestCase, 
+    addTestCase,
     updateTestCase,
     deleteTestCase,
-    exportFlowJSON
+    exportFlowJSON,
+    saveStatus,
+    lastSaved,
+    saveError
   } = useTestProject();
+
+  // API mutations for flows
+  const createFlowMutation = useCreateFlow();
+  const updateFlowMutation = useUpdateFlow();
+  const deleteFlowMutation = useDeleteFlow();
+  const executeFlowMutation = useExecuteFlow();
+
+  // API mutations for test cases
+  const createTestCaseMutation = useCreateTestCase();
+  const updateTestCaseMutation = useUpdateTestCase();
+  const deleteTestCaseMutation = useDeleteTestCase();
   
   const [isExecuting, setIsExecuting] = useState(false);
   const [consoleLogs, setConsoleLogs] = useState<Array<{ timestamp: string; message: string; type: "info" | "success" | "error" }>>([
@@ -57,41 +76,58 @@ const ProjectDetailContent = () => {
   const [editingGroup, setEditingGroup] = useState<{ id: string; name: string; description?: string } | null>(null);
   const [editingTestCase, setEditingTestCase] = useState<{ id: string; name: string; method: any; endpoint?: string } | null>(null);
 
-  const handleExecute = (mode: "run" | "debug" = "run") => {
+  const handleExecute = async (mode: "run" | "debug" = "run") => {
+    if (!activeFlowId) {
+      toast.error("No flow selected to execute");
+      return;
+    }
+
     setIsExecuting(true);
-    const log = { 
-      timestamp: new Date().toISOString(), 
-      message: `Starting ${mode === "debug" ? "debug" : "test"} execution...`, 
-      type: "info" as const 
-    };
-    setConsoleLogs(prev => [...prev, log]);
-    
-    // Simulate test execution
-    setTimeout(() => {
-      setConsoleLogs(prev => [...prev, { 
-        timestamp: new Date().toISOString(), 
-        message: "✓ POST /login - Valid credentials (201ms)", 
-        type: "success" 
-      }]);
-    }, 500);
+    setConsoleLogs(prev => [...prev, {
+      timestamp: new Date().toISOString(),
+      message: `Starting ${mode === "debug" ? "debug" : "test"} execution...`,
+      type: "info" as const
+    }]);
 
-    setTimeout(() => {
-      setConsoleLogs(prev => [...prev, { 
-        timestamp: new Date().toISOString(), 
-        message: "✓ POST /login - Invalid password (156ms)", 
-        type: "success" 
-      }]);
-    }, 1000);
+    try {
+      const response = await executeFlowMutation.mutateAsync({
+        id: activeFlowId,
+        data: { debug_mode: mode === "debug" }
+      });
 
-    setTimeout(() => {
+      // Log execution results
+      setConsoleLogs(prev => [...prev, {
+        timestamp: new Date().toISOString(),
+        message: `Execution completed in ${response.duration_ms}ms`,
+        type: "info"
+      }]);
+
+      if (response.stats) {
+        const { passed, failed, errors, total } = response.stats;
+        const resultType = failed === 0 && errors === 0 ? "success" : "error";
+        setConsoleLogs(prev => [...prev, {
+          timestamp: new Date().toISOString(),
+          message: `Results: ${passed}/${total} passed, ${failed} failed, ${errors} errors`,
+          type: resultType
+        }]);
+      }
+
+      if (response.status === 'completed') {
+        toast.success("Test execution complete");
+      } else {
+        toast.error(`Execution finished with status: ${response.status}`);
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Execution failed";
+      setConsoleLogs(prev => [...prev, {
+        timestamp: new Date().toISOString(),
+        message: `Error: ${errorMsg}`,
+        type: "error"
+      }]);
+      toast.error("Test execution failed");
+    } finally {
       setIsExecuting(false);
-      setConsoleLogs(prev => [...prev, { 
-        timestamp: new Date().toISOString(), 
-        message: "Execution complete: 2 passed, 0 failed", 
-        type: "success" 
-      }]);
-      toast.success("Test execution complete");
-    }, 1500);
+    }
   };
 
   const handleExportFlow = () => {
@@ -130,8 +166,45 @@ const ProjectDetailContent = () => {
             </Button>
           </Link>
           <div>
-            <h1 className="text-lg font-semibold font-mono text-foreground">Auth API Tests</h1>
-            <p className="text-xs text-muted-foreground">24 tests · 3 groups</p>
+            <h1 className="text-lg font-semibold font-mono text-foreground">
+              {project?.name || 'Project'}
+            </h1>
+            <p className="text-xs text-muted-foreground">
+              {testGroups.length} flow{testGroups.length !== 1 ? 's' : ''}
+            </p>
+          </div>
+          {/* Save Status Indicator */}
+          <div className="flex items-center gap-2 text-xs ml-4 px-2 py-1 rounded bg-muted/50">
+            {saveStatus === 'idle' && (
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <Cloud className="w-3 h-3" />
+                All changes saved
+              </span>
+            )}
+            {saveStatus === 'saving' && (
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Saving...
+              </span>
+            )}
+            {saveStatus === 'pending' && (
+              <span className="flex items-center gap-1.5 text-warning">
+                <Save className="w-3 h-3" />
+                Unsaved changes
+              </span>
+            )}
+            {saveStatus === 'saved' && (
+              <span className="flex items-center gap-1.5 text-success">
+                <CheckCircle2 className="w-3 h-3" />
+                Saved
+              </span>
+            )}
+            {saveStatus === 'error' && (
+              <span className="flex items-center gap-1.5 text-destructive" title={saveError || 'Save failed'}>
+                <CloudOff className="w-3 h-3" />
+                Save failed
+              </span>
+            )}
           </div>
         </div>
 
@@ -223,16 +296,26 @@ const ProjectDetailContent = () => {
                     setTestCaseDialogOpen(true);
                   }}
                   onEditTestCase={(test) => {
-                    setEditingTestCase({ 
-                      id: test.id, 
-                      name: test.name, 
+                    setEditingTestCase({
+                      id: test.id,
+                      name: test.name,
                       method: test.method,
-                      endpoint: test.endpoint 
+                      endpoint: test.endpoint
                     });
                     setSelectedGroupId(test.groupId);
                     setTestCaseDialogOpen(true);
                   }}
-                  onDeleteTestCase={deleteTestCase}
+                  onDeleteTestCase={async (testCaseId) => {
+                    if (!projectId) return;
+                    try {
+                      await deleteTestCaseMutation.mutateAsync({ id: testCaseId, projectId });
+                      deleteTestCase(testCaseId);
+                      toast.success("Test case deleted");
+                    } catch (err) {
+                      toast.error("Failed to delete test case");
+                      console.error(err);
+                    }
+                  }}
                 />
               </TabsContent>
               
@@ -243,7 +326,17 @@ const ProjectDetailContent = () => {
                     setEditingGroup({ id: group.id, name: group.name, description: group.description });
                     setGroupDialogOpen(true);
                   }}
-                  onDeleteGroup={deleteTestGroup}
+                  onDeleteGroup={async (flowId) => {
+                    if (!projectId) return;
+                    try {
+                      await deleteFlowMutation.mutateAsync({ id: flowId, projectId });
+                      deleteTestGroup(flowId);
+                      toast.success("Flow deleted");
+                    } catch (err) {
+                      toast.error("Failed to delete flow");
+                      console.error(err);
+                    }
+                  }}
                   onAddTestCaseToGroup={(groupId) => {
                     setSelectedGroupId(groupId);
                     setTestCaseDialogOpen(true);
@@ -284,11 +377,49 @@ const ProjectDetailContent = () => {
           setGroupDialogOpen(open);
           if (!open) setEditingGroup(null);
         }}
-        onSubmit={(data) => {
+        onSubmit={async (data) => {
           if (editingGroup) {
-            updateTestGroup(editingGroup.id, data);
+            // Update existing flow via API
+            try {
+              await updateFlowMutation.mutateAsync({
+                id: editingGroup.id,
+                data: { name: data.name, description: data.description },
+                projectId: projectId || ''
+              });
+              updateTestGroup(editingGroup.id, data);
+              toast.success("Flow updated successfully");
+            } catch (err) {
+              toast.error("Failed to update flow");
+              console.error(err);
+            }
           } else {
-            addTestGroup(data);
+            // Create new flow via API
+            if (!projectId) {
+              toast.error("Project ID not found");
+              return;
+            }
+            try {
+              const newFlow = await createFlowMutation.mutateAsync({
+                projectId,
+                data: {
+                  name: data.name,
+                  description: data.description,
+                  graph_data: {
+                    nodes: [
+                      { id: `start-new`, type: 'start', position: { x: 250, y: 50 }, data: { label: 'Start' } },
+                      { id: `end-new`, type: 'end', position: { x: 250, y: 480 }, data: { label: 'End' } },
+                    ],
+                    edges: []
+                  }
+                }
+              });
+              // Set the new flow as active
+              setActiveFlowId(newFlow.id);
+              toast.success("Flow created successfully");
+            } catch (err) {
+              toast.error("Failed to create flow");
+              console.error(err);
+            }
           }
         }}
         initialData={editingGroup || undefined}
@@ -304,11 +435,50 @@ const ProjectDetailContent = () => {
             setSelectedGroupId("");
           }
         }}
-        onSubmit={(data) => {
+        onSubmit={async (data) => {
+          if (!projectId) {
+            toast.error("Project ID not found");
+            return;
+          }
+
+          // Map frontend data to API format
+          // Note: payload stays as string (backend expects String), headers gets parsed (backend expects JSON Value)
+          const apiData = {
+            name: data.name,
+            method: data.method,
+            endpoint: data.endpoint || '',
+            headers: data.headers ? JSON.parse(data.headers) : undefined,
+            payload: data.payload || undefined,  // Keep as string - backend expects Option<String>
+            assertion_script: data.postTestScript || undefined,
+          };
+
           if (editingTestCase) {
-            updateTestCase(editingTestCase.id, data);
+            // Update existing test case via API
+            try {
+              await updateTestCaseMutation.mutateAsync({
+                id: editingTestCase.id,
+                data: apiData,
+                projectId
+              });
+              updateTestCase(editingTestCase.id, data);
+              toast.success("Test case updated");
+            } catch (err) {
+              toast.error("Failed to update test case");
+              console.error(err);
+            }
           } else {
-            addTestCase(data);
+            // Create new test case via API
+            try {
+              await createTestCaseMutation.mutateAsync({
+                projectId,
+                data: apiData
+              });
+              addTestCase(data);
+              toast.success("Test case created");
+            } catch (err) {
+              toast.error("Failed to create test case");
+              console.error(err);
+            }
           }
         }}
         groupId={selectedGroupId}
@@ -330,8 +500,45 @@ const ProjectDetailContent = () => {
 };
 
 const ProjectDetail = () => {
+  const { id } = useParams();
+  const { data: project, isLoading: projectLoading, error: projectError } = useProject(id || '');
+  const { data: flows, isLoading: flowsLoading } = useFlows(id || '');
+
+  // Loading state
+  if (projectLoading || flowsLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-4" />
+          <p className="text-muted-foreground">Loading project...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (projectError) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <Card className="p-8 text-center border-destructive max-w-md">
+          <AlertCircle className="w-12 h-12 mx-auto mb-4 text-destructive" />
+          <h3 className="text-lg font-medium text-foreground mb-2">Failed to load project</h3>
+          <p className="text-muted-foreground mb-4">
+            {projectError instanceof Error ? projectError.message : "Project not found"}
+          </p>
+          <Link to="/">
+            <Button>
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Projects
+            </Button>
+          </Link>
+        </Card>
+      </div>
+    );
+  }
+
   return (
-    <TestProjectProvider>
+    <TestProjectProvider projectId={id} project={project} initialFlows={flows}>
       <ProjectDetailContent />
     </TestProjectProvider>
   );

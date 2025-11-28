@@ -1,7 +1,9 @@
-import { createContext, useContext, useState, ReactNode, useCallback } from "react";
+import { createContext, useContext, useState, ReactNode, useCallback, useEffect } from "react";
 import { Node, Edge } from "@xyflow/react";
 import { useHistory } from "@/hooks/useHistory";
+import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
 import { toast } from "sonner";
+import type { Project, Flow as ApiFlow } from "@/lib/api/types";
 
 export interface TestCase {
   id: string;
@@ -21,6 +23,7 @@ export interface TestGroup {
   description?: string;
   testCases: TestCase[];
   expanded: boolean;
+  version: number; // For optimistic locking
   // Internal flow graph for the group
   internalNodes?: Node[];
   internalEdges?: Edge[];
@@ -29,6 +32,8 @@ export interface TestGroup {
 export type NodeType = 'start' | 'end' | 'testCase' | 'group';
 
 interface TestProjectContextType {
+  project: Project | null;
+  projectId: string | null;
   testGroups: TestGroup[];
   nodes: Node[];
   edges: Edge[];
@@ -38,6 +43,11 @@ interface TestProjectContextType {
   edgeType: 'default' | 'straight' | 'step' | 'smoothstep';
   activeFlowId: string | null;
   setActiveFlowId: (id: string | null) => void;
+  // Auto-save status
+  saveStatus: SaveStatus;
+  lastSaved: Date | null;
+  saveError: string | null;
+  manualSave: () => Promise<void>;
   addTestGroup: (group: Omit<TestGroup, "id" | "testCases" | "expanded">) => void;
   updateTestGroup: (id: string, updates: Partial<TestGroup>) => void;
   deleteTestGroup: (id: string) => void;
@@ -75,96 +85,103 @@ export const useTestProject = () => {
   return context;
 };
 
-export const TestProjectProvider = ({ children }: { children: ReactNode }) => {
+interface TestProjectProviderProps {
+  children: ReactNode;
+  projectId?: string;
+  project?: Project;
+  initialFlows?: ApiFlow[];
+}
+
+// Helper: Convert API Flow to internal TestGroup
+function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
+  const nodes = flow.graph_data?.nodes?.map(n => ({
+    id: n.id,
+    type: n.type,  // API uses 'type' (backend serde rename)
+    position: n.position,
+    data: n.data,
+  })) || [
+    { id: `start-${flow.id}`, type: "start", position: { x: 250, y: 50 }, data: { label: "Start" } },
+    { id: `end-${flow.id}`, type: "end", position: { x: 250, y: 480 }, data: { label: "End" } },
+  ];
+
+  const edges = flow.graph_data?.edges?.map(e => ({
+    id: e.id,
+    source: e.source,
+    target: e.target,
+    label: e.label,
+  })) || [];
+
+  return {
+    id: flow.id,
+    name: flow.name,
+    description: flow.description || undefined,
+    expanded: true,
+    version: flow.version,
+    internalNodes: nodes,
+    internalEdges: edges,
+    testCases: [],
+  };
+}
+
+// Default test groups when no flows from API
+const defaultTestGroups: TestGroup[] = [];
+
+export const TestProjectProvider = ({
+  children,
+  projectId,
+  project,
+  initialFlows
+}: TestProjectProviderProps) => {
   const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [showConsole, setShowConsole] = useState(true);
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [edgeType, setEdgeType] = useState<'default' | 'straight' | 'step' | 'smoothstep'>('default');
-  const [activeFlowId, setActiveFlowId] = useState<string | null>("g1");
+
+  // Initialize from API flows or use defaults
+  const initialTestGroups = initialFlows?.map(apiFlowToTestGroup) || defaultTestGroups;
+  const [activeFlowId, setActiveFlowId] = useState<string | null>(
+    initialTestGroups.length > 0 ? initialTestGroups[0].id : null
+  );
   const history = useHistory<TestGroup[]>(50);
-  const [testGroups, setTestGroups] = useState<TestGroup[]>([
-    {
-      id: "g1",
-      name: "Authentication Flow",
-      description: "User authentication tests",
-      expanded: true,
-      internalNodes: [
-        {
-          id: "start-1",
-          type: "start",
-          position: { x: 250, y: 50 },
-          data: { label: "Start" },
-        },
-        {
-          id: "end-1",
-          type: "end",
-          position: { x: 250, y: 480 },
-          data: { label: "End" },
-        },
-      ],
-      internalEdges: [],
-      testCases: [
-        { 
-          id: "t1", 
-          name: "POST /login - Valid credentials", 
-          method: "POST", 
-          endpoint: "/api/login", 
-          payload: '{"username": "test@example.com", "password": "password123"}',
-          postTestScript: 'SAT.assert(SAT.response.status === 200, "Login should return 200");',
-          groupId: "g1" 
-        },
-        { 
-          id: "t2", 
-          name: "POST /login - Invalid password", 
-          method: "POST", 
-          endpoint: "/api/login", 
-          payload: '{"username": "test@example.com", "password": "wrong"}',
-          postTestScript: 'SAT.assert(SAT.response.status === 401, "Invalid login should return 401");',
-          groupId: "g1" 
-        },
-        { 
-          id: "t3", 
-          name: "GET /user/profile - Authenticated", 
-          method: "GET", 
-          endpoint: "/api/user/profile",
-          preTestScript: '// JWT token should be set from previous login',
-          groupId: "g1" 
-        },
-      ],
-    },
-    {
-      id: "g2",
-      name: "User Management",
-      description: "CRUD operations for users",
-      expanded: false,
-      internalNodes: [
-        {
-          id: "start-2",
-          type: "start",
-          position: { x: 250, y: 50 },
-          data: { label: "Start" },
-        },
-        {
-          id: "end-2",
-          type: "end",
-          position: { x: 250, y: 480 },
-          data: { label: "End" },
-        },
-      ],
-      internalEdges: [],
-      testCases: [
-        { id: "t4", name: "POST /users - Create user", method: "POST", endpoint: "/api/users", groupId: "g2" },
-        { id: "t5", name: "GET /users/:id - Fetch user", method: "GET", endpoint: "/api/users/:id", groupId: "g2" },
-        { id: "t6", name: "PUT /users/:id - Update user", method: "PUT", endpoint: "/api/users/:id", groupId: "g2" },
-        { id: "t7", name: "DELETE /users/:id - Delete user", method: "DELETE", endpoint: "/api/users/:id", groupId: "g2" },
-      ],
-    },
-  ]);
+  const [testGroups, setTestGroups] = useState<TestGroup[]>(initialTestGroups);
+
+  // Sync with API flows when they change
+  useEffect(() => {
+    if (initialFlows) {
+      const newGroups = initialFlows.map(apiFlowToTestGroup);
+      setTestGroups(newGroups);
+      if (newGroups.length > 0 && !activeFlowId) {
+        setActiveFlowId(newGroups[0].id);
+      }
+    }
+  }, [initialFlows]);
 
   // Get active flow's nodes and edges
   const activeFlow = testGroups.find(g => g.id === activeFlowId);
   const nodes = activeFlow?.internalNodes || [];
   const edges = activeFlow?.internalEdges || [];
+
+  // Get flow version from active flow for optimistic locking
+  const flowVersion = activeFlow?.version ?? 1;
+
+  // Callback to update flow version after save
+  const handleVersionUpdate = useCallback((newVersion: number) => {
+    if (!activeFlowId) return;
+    setTestGroups(groups => groups.map(g =>
+      g.id === activeFlowId ? { ...g, version: newVersion } : g
+    ));
+  }, [activeFlowId]);
+
+  // Auto-save hook - watches nodes/edges changes and persists to backend
+  const { status: saveStatus, lastSaved, error: saveError, save: manualSave } = useAutoSave({
+    flowId: activeFlowId,
+    version: flowVersion,
+    nodes,
+    edges,
+    debounceMs: 2000,
+    enabled: !!activeFlowId,
+    onVersionUpdate: handleVersionUpdate,
+  });
 
   const setNodes = useCallback((newNodes: Node[]) => {
     if (!activeFlowId) return;
@@ -184,7 +201,7 @@ export const TestProjectProvider = ({ children }: { children: ReactNode }) => {
     setTestGroups(updatedGroups);
   }, [activeFlowId, testGroups, history]);
 
-  const addTestGroup = useCallback((group: Omit<TestGroup, "id" | "testCases" | "expanded">) => {
+  const addTestGroup = useCallback((group: Omit<TestGroup, "id" | "testCases" | "expanded" | "version">) => {
     history.pushState(testGroups, `Add group: ${group.name}`);
     const newGroupId = `g${Date.now()}`;
     const newGroup: TestGroup = {
@@ -192,6 +209,7 @@ export const TestProjectProvider = ({ children }: { children: ReactNode }) => {
       id: newGroupId,
       testCases: [],
       expanded: true,
+      version: 1,
       internalNodes: [
         {
           id: `start-${newGroupId}`,
@@ -471,6 +489,8 @@ export const TestProjectProvider = ({ children }: { children: ReactNode }) => {
   return (
     <TestProjectContext.Provider
       value={{
+        project: project || null,
+        projectId: projectId || null,
         testGroups,
         nodes,
         edges,
@@ -480,6 +500,10 @@ export const TestProjectProvider = ({ children }: { children: ReactNode }) => {
         edgeType,
         activeFlowId,
         setActiveFlowId,
+        saveStatus,
+        lastSaved,
+        saveError,
+        manualSave,
         addTestGroup,
         updateTestGroup,
         deleteTestGroup,

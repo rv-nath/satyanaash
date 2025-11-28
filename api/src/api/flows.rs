@@ -1,7 +1,7 @@
 //! Flows API handlers
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -21,13 +21,14 @@ pub async fn create_flow(
     Ok((StatusCode::CREATED, Json(flow)))
 }
 
-/// GET /api/v1/projects/:project_id/flows - List all flows for a project
+/// GET /api/v1/projects/:project_id/flows - List all flows for a project (paginated)
 pub async fn list_flows(
     State(repo): State<Arc<dyn FlowRepository>>,
     Path(project_id): Path<String>,
-) -> Result<Json<Vec<Flow>>, AppError> {
-    let flows = repo.list_by_project(&project_id).await?;
-    Ok(Json(flows))
+    Query(pagination): Query<Pagination>,
+) -> Result<Json<PaginatedResponse<Flow>>, AppError> {
+    let response = repo.list_by_project(&project_id, pagination).await?;
+    Ok(Json(response))
 }
 
 /// GET /api/v1/flows/:id - Get a flow by ID

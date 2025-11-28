@@ -1,9 +1,10 @@
-import { FileCode, Plus, Edit2, Trash2, MoreVertical } from "lucide-react";
+import { FileCode, Plus, Edit2, Trash2, MoreVertical, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useTestProject } from "@/contexts/TestProjectContext";
+import { useTestCases } from "@/hooks/useApi";
 
 interface TestInventoryProps {
   onAddTestCase: () => void;
@@ -12,16 +13,23 @@ interface TestInventoryProps {
 }
 
 export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase }: TestInventoryProps) => {
-  const { testGroups } = useTestProject();
+  const { projectId, testGroups, activeFlowId } = useTestProject();
 
-  // Flatten all tests from all groups
-  const allTests = testGroups.flatMap(group => 
-    group.testCases.map(test => ({
-      ...test,
-      groupName: group.name,
-      groupId: group.id
-    }))
-  );
+  // Fetch test cases from API
+  const { data: apiTestCases, isLoading } = useTestCases(projectId || '');
+
+  // Map API test cases to UI format
+  const allTests = (apiTestCases || []).map(tc => ({
+    id: tc.id,
+    name: tc.name,
+    method: tc.method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
+    endpoint: tc.endpoint,
+    headers: tc.headers ? JSON.stringify(tc.headers) : undefined,
+    payload: tc.payload || undefined,
+    postTestScript: tc.assertion_script || undefined,
+    groupName: "Project Tests",  // Test cases belong to project, not flows
+    groupId: activeFlowId || testGroups[0]?.id || ""  // Default to active flow for UI
+  }));
 
   const getMethodColor = (method: string) => {
     const colors: Record<string, string> = {
@@ -63,7 +71,11 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
       {/* Test List */}
       <ScrollArea className="flex-1">
         <div className="p-2">
-          {allTests.length === 0 ? (
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : allTests.length === 0 ? (
             <div className="text-center py-12 px-4">
               <FileCode className="w-12 h-12 text-muted-foreground/50 mx-auto mb-3" />
               <p className="text-sm text-muted-foreground mb-1">No tests yet</p>
