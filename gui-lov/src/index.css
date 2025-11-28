@@ -1,0 +1,154 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 220 15% 12%;
+    --foreground: 180 5% 96%;
+
+    --card: 220 16% 15%;
+    --card-foreground: 180 5% 96%;
+
+    --popover: 220 18% 14%;
+    --popover-foreground: 180 5% 96%;
+
+    --primary: 172 66% 50%;
+    --primary-foreground: 220 15% 8%;
+
+    --secondary: 220 14% 20%;
+    --secondary-foreground: 180 5% 96%;
+
+    --muted: 220 14% 18%;
+    --muted-foreground: 180 5% 65%;
+
+    --accent: 172 66% 50%;
+    --accent-foreground: 220 15% 8%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 180 5% 96%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 180 5% 96%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 220 15% 8%;
+
+    --border: 220 14% 22%;
+    --input: 220 14% 22%;
+    --ring: 172 66% 50%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 220 16% 13%;
+    --sidebar-foreground: 180 5% 85%;
+    --sidebar-primary: 172 66% 50%;
+    --sidebar-primary-foreground: 220 15% 8%;
+    --sidebar-accent: 220 14% 18%;
+    --sidebar-accent-foreground: 180 5% 96%;
+    --sidebar-border: 220 14% 20%;
+    --sidebar-ring: 172 66% 50%;
+
+    --console-background: 220 18% 10%;
+    --console-text: 180 5% 85%;
+
+    --graph-background: 220 15% 11%;
+    --node-group: 260 60% 55%;
+    --node-test: 172 66% 50%;
+    --node-border: 220 14% 30%;
+    --edge-default: 220 14% 40%;
+    --edge-success: 142 71% 45%;
+    --edge-failure: 0 72% 51%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  /* React Flow Handle Improvements */
+  .react-flow__handle {
+    width: 16px;
+    height: 16px;
+    border: 2px solid hsl(var(--background));
+    border-radius: 50%;
+  }
+
+  .react-flow__handle:hover {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 4px hsl(var(--primary) / 0.3);
+  }
+
+  .react-flow__handle-connecting {
+    background: hsl(var(--primary));
+  }
+
+  .react-flow__handle-valid {
+    background: hsl(var(--success));
+    box-shadow: 0 0 0 4px hsl(var(--success) / 0.3);
+  }
+
+  /* MiniMap Styling */
+  .react-flow__minimap {
+    border-radius: 0.5rem;
+  }
+
+  .react-flow__minimap-mask {
+    fill: hsl(var(--primary) / 0.2);
+    stroke: hsl(var(--primary));
+    stroke-width: 2;
+  }
+
+  .react-flow__minimap-node {
+    stroke: hsl(var(--border));
+    stroke-width: 1;
+  }
+
+  /* Controls Styling - Zoom In/Out Buttons */
+  .react-flow-controls-wrapper .react-flow__controls,
+  .react-flow__panel.react-flow__controls {
+    background: hsl(var(--card) / 0.95) !important;
+    border: 1px solid hsl(var(--border)) !important;
+    border-radius: 0.5rem !important;
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3), 0 4px 6px -4px rgb(0 0 0 / 0.3) !important;
+    backdrop-filter: blur(8px) !important;
+    overflow: hidden !important;
+  }
+
+  .react-flow-controls-wrapper .react-flow__controls-button,
+  .react-flow__panel.react-flow__controls button {
+    background: transparent !important;
+    border: none !important;
+    border-bottom: 1px solid hsl(var(--border)) !important;
+    color: hsl(var(--foreground)) !important;
+    transition: background-color 0.2s ease !important;
+    width: 32px !important;
+    height: 32px !important;
+  }
+
+  .react-flow-controls-wrapper .react-flow__controls-button:hover,
+  .react-flow__panel.react-flow__controls button:hover {
+    background: hsl(var(--accent) / 0.5) !important;
+  }
+
+  .react-flow-controls-wrapper .react-flow__controls-button:last-child,
+  .react-flow__panel.react-flow__controls button:last-child {
+    border-bottom: none !important;
+  }
+
+  .react-flow-controls-wrapper .react-flow__controls-button svg,
+  .react-flow__panel.react-flow__controls button svg {
+    fill: hsl(var(--foreground)) !important;
+    max-width: 16px !important;
+    max-height: 16px !important;
+  }
+}

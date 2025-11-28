@@ -1,0 +1,242 @@
+//! Flow repository implementation using SQLx AnyPool
+
+use async_trait::async_trait;
+use chrono::Utc;
+use sqlx::{AnyPool, Row};
+use uuid::Uuid;
+
+use crate::db::models::*;
+use crate::error::AppError;
+use super::FlowRepository;
+
+/// SQLx-based flow repository
+pub struct SqlxFlowRepository {
+    pool: AnyPool,
+}
+
+impl SqlxFlowRepository {
+    pub fn new(pool: AnyPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl FlowRepository for SqlxFlowRepository {
+    async fn create(&self, project_id: &str, input: CreateFlow) -> Result<Flow, AppError> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let graph_data = input.graph_data.unwrap_or_default();
+        let graph_data_json = serde_json::to_string(&graph_data)?;
+        let canvas_settings_json = serde_json::to_string(&input.canvas_settings)?;
+
+        sqlx::query(
+            r#"INSERT INTO flows (
+                id, project_id, name, description, graph_data, canvas_settings,
+                version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+        )
+        .bind(&id)
+        .bind(project_id)
+        .bind(&input.name)
+        .bind(&input.description)
+        .bind(&graph_data_json)
+        .bind(&canvas_settings_json)
+        .bind(1i32)
+        .bind(now.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(Flow {
+            id,
+            project_id: project_id.to_string(),
+            name: input.name,
+            description: input.description,
+            graph_data,
+            canvas_settings: input.canvas_settings,
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<Flow>, AppError> {
+        let row = sqlx::query(
+            r#"SELECT id, project_id, name, description, graph_data, canvas_settings,
+               version, created_at, updated_at
+               FROM flows WHERE id = ?"#
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(row_to_flow(&row)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_by_project(&self, project_id: &str) -> Result<Vec<Flow>, AppError> {
+        let rows = sqlx::query(
+            r#"SELECT id, project_id, name, description, graph_data, canvas_settings,
+               version, created_at, updated_at
+               FROM flows WHERE project_id = ? ORDER BY created_at DESC"#
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(row_to_flow).collect()
+    }
+
+    async fn update(&self, id: &str, input: UpdateFlow) -> Result<Flow, AppError> {
+        // First get existing flow
+        let existing = self.get_by_id(id).await?
+            .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", id)))?;
+
+        // Check version for optimistic locking
+        if existing.version != input.version {
+            return Err(AppError::VersionConflict {
+                expected: input.version,
+                actual: existing.version,
+            });
+        }
+
+        let now = Utc::now();
+        let name = input.name.unwrap_or(existing.name);
+        let description = input.description.or(existing.description);
+        let canvas_settings = input.canvas_settings.unwrap_or(existing.canvas_settings);
+        let canvas_settings_json = serde_json::to_string(&canvas_settings)?;
+        let new_version = existing.version + 1;
+
+        sqlx::query(
+            r#"UPDATE flows SET
+               name = ?, description = ?, canvas_settings = ?,
+               version = ?, updated_at = ?
+               WHERE id = ? AND version = ?"#
+        )
+        .bind(&name)
+        .bind(&description)
+        .bind(&canvas_settings_json)
+        .bind(new_version)
+        .bind(now.to_rfc3339())
+        .bind(id)
+        .bind(input.version)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(Flow {
+            id: id.to_string(),
+            project_id: existing.project_id,
+            name,
+            description,
+            graph_data: existing.graph_data,
+            canvas_settings,
+            version: new_version,
+            created_at: existing.created_at,
+            updated_at: now,
+        })
+    }
+
+    async fn update_graph(&self, id: &str, input: UpdateGraphData) -> Result<Flow, AppError> {
+        // First get existing flow
+        let existing = self.get_by_id(id).await?
+            .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", id)))?;
+
+        // Check version for optimistic locking
+        if existing.version != input.version {
+            return Err(AppError::VersionConflict {
+                expected: input.version,
+                actual: existing.version,
+            });
+        }
+
+        let now = Utc::now();
+        let graph_data_json = serde_json::to_string(&input.graph_data)?;
+        let new_version = existing.version + 1;
+
+        sqlx::query(
+            r#"UPDATE flows SET
+               graph_data = ?, version = ?, updated_at = ?
+               WHERE id = ? AND version = ?"#
+        )
+        .bind(&graph_data_json)
+        .bind(new_version)
+        .bind(now.to_rfc3339())
+        .bind(id)
+        .bind(input.version)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(Flow {
+            id: id.to_string(),
+            project_id: existing.project_id,
+            name: existing.name,
+            description: existing.description,
+            graph_data: input.graph_data,
+            canvas_settings: existing.canvas_settings,
+            version: new_version,
+            created_at: existing.created_at,
+            updated_at: now,
+        })
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), AppError> {
+        let result = sqlx::query("DELETE FROM flows WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("Flow {} not found", id)));
+        }
+
+        Ok(())
+    }
+
+    async fn find_existing_ids(&self, ids: &[String]) -> Result<std::collections::HashSet<String>, AppError> {
+        if ids.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        // Build query with placeholders
+        let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
+        let query = format!(
+            "SELECT id FROM flows WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+
+        // Build and execute query
+        let mut q = sqlx::query_scalar::<_, String>(&query);
+        for id in ids {
+            q = q.bind(id);
+        }
+
+        let existing: Vec<String> = q.fetch_all(&self.pool).await?;
+        Ok(existing.into_iter().collect())
+    }
+}
+
+/// Convert a database row to a Flow
+fn row_to_flow(row: &sqlx::any::AnyRow) -> Result<Flow, AppError> {
+    let graph_data_str: String = row.try_get("graph_data")?;
+    let canvas_settings_str: String = row.try_get("canvas_settings")?;
+    let created_str: String = row.try_get("created_at")?;
+    let updated_str: String = row.try_get("updated_at")?;
+
+    Ok(Flow {
+        id: row.try_get("id")?,
+        project_id: row.try_get("project_id")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
+        graph_data: serde_json::from_str(&graph_data_str)?,
+        canvas_settings: serde_json::from_str(&canvas_settings_str)?,
+        version: row.try_get("version")?,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .with_timezone(&Utc),
+        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_str)
+            .map_err(|e| AppError::Internal(e.to_string()))?
+            .with_timezone(&Utc),
+    })
+}

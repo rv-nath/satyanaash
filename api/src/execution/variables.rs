@@ -1,0 +1,221 @@
+//! Variable interpolation and execution context management
+//!
+//! Resolution order (highest priority first):
+//! 1. Execution variables (passed in execute request)
+//! 2. Environment variables (from project settings)
+//! 3. Context variables (exports from previous test cases)
+//! 4. Built-in variables ($UUID, $Timestamp, etc.)
+
+use std::collections::HashMap;
+use regex::Regex;
+use serde_json::Value;
+use chrono::Utc;
+use uuid::Uuid;
+
+use crate::error::AppError;
+
+/// Execution context that holds all variables during flow execution
+#[derive(Debug, Clone)]
+pub struct ExecutionContext {
+    /// Variables passed in the execute request
+    execution_vars: HashMap<String, Value>,
+    /// Environment variables from project settings
+    environment: HashMap<String, Value>,
+    /// Accumulated exports from test cases during execution
+    context: HashMap<String, Value>,
+}
+
+impl ExecutionContext {
+    /// Create a new execution context
+    pub fn new(execution_vars: HashMap<String, Value>, environment: HashMap<String, Value>) -> Self {
+        Self {
+            execution_vars,
+            environment,
+            context: HashMap::new(),
+        }
+    }
+
+    /// Resolve a variable by name using the resolution order
+    pub fn resolve(&self, name: &str) -> Option<&Value> {
+        self.execution_vars.get(name)
+            .or_else(|| self.environment.get(name))
+            .or_else(|| self.context.get(name))
+    }
+
+    /// Set a context variable (from test case exports)
+    pub fn set(&mut self, name: &str, value: Value) {
+        self.context.insert(name.to_string(), value);
+    }
+
+    /// Get all context variables (accumulated exports)
+    pub fn get_context(&self) -> &HashMap<String, Value> {
+        &self.context
+    }
+
+    /// Interpolate variables in a string template
+    /// Syntax: {{variableName}} or {{$BuiltIn}}
+    pub fn interpolate(&self, template: &str) -> Result<String, AppError> {
+        let re = Regex::new(r"\{\{(\$?[\w]+)(?:\(([^)]*)\))?\}\}")
+            .map_err(|e| AppError::Internal(format!("Regex error: {}", e)))?;
+
+        let result = re.replace_all(template, |caps: &regex::Captures| {
+            let name = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let args = caps.get(2).map(|m| m.as_str());
+
+            if name.starts_with('$') {
+                // Built-in variable
+                self.generate_builtin(name, args)
+            } else {
+                // Regular variable
+                match self.resolve(name) {
+                    Some(value) => value_to_string(value),
+                    None => format!("{{{{{}}}}}", name), // Keep as-is if not found
+                }
+            }
+        });
+
+        Ok(result.to_string())
+    }
+
+    /// Interpolate variables in a JSON value
+    pub fn interpolate_json(&self, value: &Value) -> Result<Value, AppError> {
+        match value {
+            Value::String(s) => {
+                let interpolated = self.interpolate(s)?;
+                // Try to parse as JSON in case it was a number/bool placeholder
+                match serde_json::from_str(&interpolated) {
+                    Ok(v) => Ok(v),
+                    Err(_) => Ok(Value::String(interpolated)),
+                }
+            }
+            Value::Object(map) => {
+                let mut result = serde_json::Map::new();
+                for (k, v) in map {
+                    let key = self.interpolate(k)?;
+                    let value = self.interpolate_json(v)?;
+                    result.insert(key, value);
+                }
+                Ok(Value::Object(result))
+            }
+            Value::Array(arr) => {
+                let result: Result<Vec<Value>, AppError> = arr.iter()
+                    .map(|v| self.interpolate_json(v))
+                    .collect();
+                Ok(Value::Array(result?))
+            }
+            // Other types pass through unchanged
+            _ => Ok(value.clone()),
+        }
+    }
+
+    /// Generate a built-in variable value
+    fn generate_builtin(&self, name: &str, args: Option<&str>) -> String {
+        match name {
+            "$UUID" => Uuid::new_v4().to_string(),
+            "$Timestamp" => Utc::now().timestamp().to_string(),
+            "$TimestampMs" => Utc::now().timestamp_millis().to_string(),
+            "$ISODate" => Utc::now().to_rfc3339(),
+            "$RandomEmail" => format!("test_{}@example.com", Uuid::new_v4().simple()),
+            "$RandomInt" => {
+                if let Some(args) = args {
+                    let parts: Vec<&str> = args.split(',').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(min), Ok(max)) = (parts[0].trim().parse::<i64>(), parts[1].trim().parse::<i64>()) {
+                            return (min + (rand_simple() % (max - min + 1))).to_string();
+                        }
+                    }
+                }
+                (rand_simple() % 1000).to_string()
+            }
+            "$RandomString" => {
+                let len = args.and_then(|a| a.parse::<usize>().ok()).unwrap_or(10);
+                generate_random_string(len)
+            }
+            _ => format!("{{{{{}}}}}", name), // Unknown built-in, keep as-is
+        }
+    }
+}
+
+/// Convert a JSON value to a string for interpolation
+fn value_to_string(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        _ => value.to_string(), // Arrays/objects become JSON strings
+    }
+}
+
+/// Simple random number generator (no external dependency)
+fn rand_simple() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos() as i64;
+    nanos.abs()
+}
+
+/// Generate a random alphanumeric string
+fn generate_random_string(len: usize) -> String {
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    (0..len)
+        .map(|_| {
+            let idx = (rand_simple() as usize) % CHARSET.len();
+            CHARSET[idx] as char
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_priority() {
+        let mut exec_vars = HashMap::new();
+        exec_vars.insert("token".to_string(), Value::String("exec_token".to_string()));
+
+        let mut env_vars = HashMap::new();
+        env_vars.insert("token".to_string(), Value::String("env_token".to_string()));
+        env_vars.insert("baseUrl".to_string(), Value::String("http://api.test".to_string()));
+
+        let mut ctx = ExecutionContext::new(exec_vars, env_vars);
+        ctx.set("token", Value::String("ctx_token".to_string()));
+        ctx.set("userId", Value::String("123".to_string()));
+
+        // Execution vars have highest priority
+        assert_eq!(ctx.resolve("token"), Some(&Value::String("exec_token".to_string())));
+        // Environment vars are second
+        assert_eq!(ctx.resolve("baseUrl"), Some(&Value::String("http://api.test".to_string())));
+        // Context vars are third
+        assert_eq!(ctx.resolve("userId"), Some(&Value::String("123".to_string())));
+        // Not found returns None
+        assert_eq!(ctx.resolve("notfound"), None);
+    }
+
+    #[test]
+    fn test_interpolate() {
+        let mut env_vars = HashMap::new();
+        env_vars.insert("baseUrl".to_string(), Value::String("http://api.test".to_string()));
+        env_vars.insert("userId".to_string(), Value::Number(42.into()));
+
+        let ctx = ExecutionContext::new(HashMap::new(), env_vars);
+
+        let result = ctx.interpolate("{{baseUrl}}/users/{{userId}}").unwrap();
+        assert_eq!(result, "http://api.test/users/42");
+
+        // Unknown variables stay as-is
+        let result = ctx.interpolate("{{unknown}}/test").unwrap();
+        assert_eq!(result, "{{unknown}}/test");
+    }
+
+    #[test]
+    fn test_builtin_uuid() {
+        let ctx = ExecutionContext::new(HashMap::new(), HashMap::new());
+        let result = ctx.interpolate("id={{$UUID}}").unwrap();
+        assert!(result.starts_with("id="));
+        assert!(result.len() > 10); // UUID is 36 chars
+    }
+}
