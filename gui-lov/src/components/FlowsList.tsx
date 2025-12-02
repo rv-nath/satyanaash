@@ -1,4 +1,5 @@
 import { FolderTree, Plus, Edit2, Trash2, MoreVertical, ChevronRight, FileCode } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -8,11 +9,17 @@ interface FlowsListProps {
   onAddGroup: () => void;
   onEditGroup: (group: any) => void;
   onDeleteGroup: (groupId: string) => void;
-  onAddTestCaseToGroup: (groupId: string) => void;
 }
 
-export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup, onAddTestCaseToGroup }: FlowsListProps) => {
-  const { testGroups, activeFlowId, setActiveFlowId } = useTestProject();
+export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup }: FlowsListProps) => {
+  const { id: projectId } = useParams();
+  const navigate = useNavigate();
+  const { testGroups, activeFlowId, sidebarTab } = useTestProject();
+
+  // Navigate to flow - this closes any open editor and switches to canvas
+  const handleFlowClick = (flowId: string) => {
+    navigate(`/project/${projectId}?flow=${flowId}&tab=${sidebarTab}`);
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -54,8 +61,8 @@ export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup, onAddTestCas
           ) : (
             testGroups.map((group) => (
               <div key={group.id} className="mb-2">
-                <div 
-                  onClick={() => setActiveFlowId(group.id)}
+                <div
+                  onClick={() => handleFlowClick(group.id)}
                   className={`flex items-center gap-2 px-3 py-2 hover:bg-sidebar-accent rounded-md transition-colors group cursor-pointer ${
                     activeFlowId === group.id ? 'bg-sidebar-accent border-l-2 border-primary' : ''
                   }`}
@@ -75,10 +82,6 @@ export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup, onAddTestCas
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => onAddTestCaseToGroup(group.id)}>
-                        <Plus className="w-3 h-3 mr-2" />
-                        Add Test Case
-                      </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => onEditGroup(group)}>
                         <Edit2 className="w-3 h-3 mr-2" />
                         Edit Flow

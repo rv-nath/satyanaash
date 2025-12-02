@@ -14,12 +14,16 @@ import { useTestProject } from "@/contexts/TestProjectContext";
 import { getUpstreamVariables } from "@/lib/variableUtils";
 import { preTestSnippets, postTestSnippets, getSnippetsByCategory } from "@/lib/testSnippets";
 import { Plus, Code2, BookOpen } from "lucide-react";
+import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/components/HeadersEditor";
 
 interface TestCaseDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (data: { 
-    name: string; 
+  onSubmit: (data: {
+    name: string;
+    givenCondition?: string;
+    whenAction?: string;
+    thenExpected?: string;
     method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
     endpoint?: string;
     headers?: string;
@@ -30,8 +34,11 @@ interface TestCaseDialogProps {
   }) => void;
   groupId: string;
   nodeId?: string; // For editing existing node
-  initialData?: { 
-    name: string; 
+  initialData?: {
+    name: string;
+    givenCondition?: string;
+    whenAction?: string;
+    thenExpected?: string;
     method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
     endpoint?: string;
     headers?: string;
@@ -53,15 +60,17 @@ export const TestCaseDialog = ({
 }: TestCaseDialogProps) => {
   const { nodes, edges } = useTestProject();
   const [name, setName] = useState("");
+  const [givenCondition, setGivenCondition] = useState("");
+  const [whenAction, setWhenAction] = useState("");
+  const [thenExpected, setThenExpected] = useState("");
   const [method, setMethod] = useState<"GET" | "POST" | "PUT" | "DELETE" | "PATCH">("GET");
   const [endpoint, setEndpoint] = useState("");
-  const [headers, setHeaders] = useState("");
+  const [headers, setHeaders] = useState<HeaderRow[]>([]);
   const [payload, setPayload] = useState("");
   const [preTestScript, setPreTestScript] = useState("");
   const [postTestScript, setPostTestScript] = useState("");
-  
+
   const endpointRef = useRef<HTMLInputElement>(null);
-  const headersRef = useRef<HTMLTextAreaElement>(null);
   const payloadRef = useRef<HTMLTextAreaElement>(null);
   const preTestRef = useRef<HTMLTextAreaElement>(null);
   const postTestRef = useRef<HTMLTextAreaElement>(null);
@@ -71,21 +80,19 @@ export const TestCaseDialog = ({
 
   const insertVariable = (varName: string, fieldRef: React.RefObject<HTMLInputElement | HTMLTextAreaElement>) => {
     if (!fieldRef.current) return;
-    
+
     const input = fieldRef.current;
     const start = input.selectionStart || 0;
     const end = input.selectionEnd || 0;
-    const currentValue = fieldRef === endpointRef ? endpoint : fieldRef === headersRef ? headers : payload;
+    const currentValue = fieldRef === endpointRef ? endpoint : payload;
     const newValue = currentValue.slice(0, start) + `{{${varName}}}` + currentValue.slice(end);
-    
+
     if (fieldRef === endpointRef) {
       setEndpoint(newValue);
-    } else if (fieldRef === headersRef) {
-      setHeaders(newValue);
     } else {
       setPayload(newValue);
     }
-    
+
     // Set cursor position after inserted variable
     setTimeout(() => {
       input.focus();
@@ -128,17 +135,23 @@ export const TestCaseDialog = ({
   useEffect(() => {
     if (initialData) {
       setName(initialData.name);
+      setGivenCondition(initialData.givenCondition || "");
+      setWhenAction(initialData.whenAction || "");
+      setThenExpected(initialData.thenExpected || "");
       setMethod(initialData.method);
       setEndpoint(initialData.endpoint || "");
-      setHeaders(initialData.headers || "");
+      setHeaders(jsonToHeaders(initialData.headers || ""));
       setPayload(initialData.payload || "");
       setPreTestScript(initialData.preTestScript || "");
       setPostTestScript(initialData.postTestScript || "");
     } else {
       setName("");
+      setGivenCondition("");
+      setWhenAction("");
+      setThenExpected("");
       setMethod("GET");
       setEndpoint("");
-      setHeaders("");
+      setHeaders(jsonToHeaders(""));
       setPayload("");
       setPreTestScript("");
       setPostTestScript("");
@@ -153,15 +166,8 @@ export const TestCaseDialog = ({
       return;
     }
 
-    // Validate headers JSON if provided
-    if (headers.trim()) {
-      try {
-        JSON.parse(headers);
-      } catch (e) {
-        toast.error("Invalid JSON in headers");
-        return;
-      }
-    }
+    // Convert headers to JSON string
+    const headersJson = headersToJson(headers);
 
     // Validate JSON payload if provided
     if (hasPayload && payload.trim()) {
@@ -173,21 +179,21 @@ export const TestCaseDialog = ({
       }
     }
 
-    onSubmit({ 
-      name, 
-      method, 
-      endpoint, 
-      headers: headers.trim() || undefined,
+    onSubmit({
+      name,
+      method,
+      endpoint,
+      headers: headersJson || undefined,
       payload: hasPayload ? payload : undefined,
       preTestScript,
       postTestScript,
-      groupId 
+      groupId
     });
-    
+
     setName("");
     setMethod("GET");
     setEndpoint("");
-    setHeaders("");
+    setHeaders(jsonToHeaders(""));
     setPayload("");
     setPreTestScript("");
     setPostTestScript("");
@@ -297,47 +303,14 @@ export const TestCaseDialog = ({
 
             {/* Headers */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="headers">Headers (JSON)</Label>
-                {availableVars.length > 0 && (
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button variant="ghost" size="sm" className="h-6 text-xs">
-                        <Plus className="h-3 w-3 mr-1" />
-                        Insert Var
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="w-56 p-2" align="end">
-                      <div className="space-y-1">
-                        {availableVars.map((v, idx) => (
-                          <Button
-                            key={idx}
-                            variant="ghost"
-                            size="sm"
-                            className="w-full justify-start text-xs font-mono h-8"
-                            onClick={() => insertVariable(v.name, headersRef)}
-                          >
-                            {v.name}
-                            <span className="ml-auto text-[10px] text-muted-foreground truncate max-w-[100px]">
-                              {v.nodeName}
-                            </span>
-                          </Button>
-                        ))}
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                )}
-              </div>
-              <Textarea
-                ref={headersRef}
-                id="headers"
-                value={headers}
-                onChange={(e) => setHeaders(e.target.value)}
-                placeholder='{"Authorization": "Bearer {{authToken}}", "Content-Type": "application/json"}'
-                className="font-mono text-sm min-h-[80px]"
+              <Label>Headers</Label>
+              <HeadersEditor
+                headers={headers}
+                onChange={setHeaders}
+                availableVars={availableVars}
               />
               <p className="text-xs text-muted-foreground">
-                Optional. Define custom HTTP headers with variable substitution.
+                Add HTTP headers. Use the typeahead to discover common headers.
               </p>
             </div>
 

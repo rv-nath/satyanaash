@@ -1,15 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Node, Edge } from "@xyflow/react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertCircle, AlertTriangle, CheckCircle2, X } from "lucide-react";
-import { extractVariables, getAllUsedVariables, getAllOutputVariables } from "@/lib/variableUtils";
+import { AlertCircle, AlertTriangle, CheckCircle2, X, Loader2 } from "lucide-react";
+import { useValidateFlow } from "@/hooks/useApi";
+import { ValidationIssue as ApiValidationIssue } from "@/lib/api/types";
+import { nodesToApi, edgesToApi } from "@/lib/graphUtils";
 
 export interface ValidationIssue {
   type: 'error' | 'warning';
-  category: 'variable' | 'topology' | 'flow';
+  code: string;
   nodeId?: string;
   message: string;
 }
@@ -18,187 +20,63 @@ interface FlowValidatorProps {
   nodes: Node[];
   edges: Edge[];
   testGroups: any[];
+  activeFlowId: string | null;
   onClose: () => void;
   onJumpToNode?: (nodeId: string) => void;
 }
 
-export const FlowValidator = ({ nodes, edges, testGroups, onClose, onJumpToNode }: FlowValidatorProps) => {
+export const FlowValidator = ({ nodes, edges, testGroups, activeFlowId, onClose, onJumpToNode }: FlowValidatorProps) => {
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
+  const [isValidating, setIsValidating] = useState(false);
+  const validateFlowMutation = useValidateFlow();
+
+  const validateFlow = useCallback(async () => {
+    if (!activeFlowId) {
+      setIssues([{
+        type: 'error',
+        code: 'NO_FLOW',
+        message: 'No flow selected for validation',
+      }]);
+      return;
+    }
+
+    setIsValidating(true);
+    try {
+      // Send current canvas state to backend for validation
+      const result = await validateFlowMutation.mutateAsync({
+        id: activeFlowId,
+        data: {
+          nodes: nodesToApi(nodes),
+          edges: edgesToApi(edges),
+        },
+      });
+
+      // Combine errors and warnings from backend response
+      const allIssues = [...(result.errors || []), ...(result.warnings || [])];
+
+      // Map backend issues to frontend format
+      const mappedIssues: ValidationIssue[] = allIssues.map((issue: ApiValidationIssue) => ({
+        type: issue.severity,
+        code: issue.code,
+        nodeId: issue.node_id,
+        message: issue.message,
+      }));
+
+      setIssues(mappedIssues);
+    } catch (error) {
+      setIssues([{
+        type: 'error',
+        code: 'API_ERROR',
+        message: `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      }]);
+    } finally {
+      setIsValidating(false);
+    }
+  }, [activeFlowId, nodes, edges, validateFlowMutation]);
 
   useEffect(() => {
     validateFlow();
-  }, [nodes, edges]);
-
-  const validateFlow = () => {
-    const newIssues: ValidationIssue[] = [];
-
-    // 1. Check for undefined variables
-    const allOutputVars = getAllOutputVariables(nodes);
-    const outputVarNames = new Set(allOutputVars.map(v => v.name));
-
-    nodes.forEach(node => {
-      if (node.type === 'start' || node.type === 'end') return;
-
-      const testCase = node.data as any;
-      const usedVars = getAllUsedVariables({
-        endpoint: testCase.endpoint as string | undefined,
-        payload: testCase.payload as string | undefined,
-        preTestScript: testCase.preTestScript as string | undefined,
-        postTestScript: testCase.postTestScript as string | undefined,
-      });
-
-      usedVars.forEach(varName => {
-        if (!outputVarNames.has(varName)) {
-          newIssues.push({
-            type: 'error',
-            category: 'variable',
-            nodeId: node.id,
-            message: `Variable "{{${varName}}}" is used but never defined in any upstream node`,
-          });
-        }
-      });
-    });
-
-    // 2. Check for start/end nodes
-    const startNodes = nodes.filter(n => n.type === 'start');
-    const endNodes = nodes.filter(n => n.type === 'end');
-
-    if (startNodes.length === 0) {
-      newIssues.push({
-        type: 'error',
-        category: 'topology',
-        message: 'Flow must have exactly one Start node',
-      });
-    } else if (startNodes.length > 1) {
-      newIssues.push({
-        type: 'error',
-        category: 'topology',
-        message: `Flow has ${startNodes.length} Start nodes, should have exactly one`,
-      });
-    }
-
-    if (endNodes.length === 0) {
-      newIssues.push({
-        type: 'error',
-        category: 'topology',
-        message: 'Flow must have exactly one End node',
-      });
-    } else if (endNodes.length > 1) {
-      newIssues.push({
-        type: 'error',
-        category: 'topology',
-        message: `Flow has ${endNodes.length} End nodes, should have exactly one`,
-      });
-    }
-
-    // 3. Check for orphan nodes (no incoming or outgoing edges)
-    nodes.forEach(node => {
-      if (node.type === 'start' || node.type === 'end') return;
-
-      const hasIncoming = edges.some(e => e.target === node.id);
-      const hasOutgoing = edges.some(e => e.source === node.id);
-
-      if (!hasIncoming && !hasOutgoing) {
-        newIssues.push({
-          type: 'warning',
-          category: 'topology',
-          nodeId: node.id,
-          message: `Node "${node.data.label || node.id}" is orphaned (no connections)`,
-        });
-      } else if (!hasIncoming && node.type !== 'start') {
-        newIssues.push({
-          type: 'warning',
-          category: 'flow',
-          nodeId: node.id,
-          message: `Node "${node.data.label || node.id}" has no incoming connections`,
-        });
-      }
-    });
-
-    // 4. Check for unreachable nodes (not connected to start)
-    if (startNodes.length === 1) {
-      const reachableNodes = findReachableNodes(startNodes[0].id, edges);
-      nodes.forEach(node => {
-        if (node.type !== 'start' && !reachableNodes.has(node.id)) {
-          newIssues.push({
-            type: 'warning',
-            category: 'flow',
-            nodeId: node.id,
-            message: `Node "${node.data.label || node.id}" is unreachable from Start node`,
-          });
-        }
-      });
-    }
-
-    // 5. Check for cyclic dependencies
-    const cycles = detectCycles(nodes, edges);
-    if (cycles.length > 0) {
-      newIssues.push({
-        type: 'error',
-        category: 'flow',
-        message: `Detected ${cycles.length} cycle(s) in the flow. Cycles can cause infinite loops.`,
-      });
-    }
-
-    setIssues(newIssues);
-  };
-
-  const findReachableNodes = (startNodeId: string, edges: Edge[]): Set<string> => {
-    const reachable = new Set<string>();
-    const visited = new Set<string>();
-
-    const traverse = (nodeId: string) => {
-      if (visited.has(nodeId)) return;
-      visited.add(nodeId);
-      reachable.add(nodeId);
-
-      edges.forEach(edge => {
-        if (edge.source === nodeId) {
-          traverse(edge.target);
-        }
-      });
-    };
-
-    traverse(startNodeId);
-    return reachable;
-  };
-
-  const detectCycles = (nodes: Node[], edges: Edge[]): string[][] => {
-    const cycles: string[][] = [];
-    const visited = new Set<string>();
-    const recStack = new Set<string>();
-    const path: string[] = [];
-
-    const dfs = (nodeId: string): boolean => {
-      visited.add(nodeId);
-      recStack.add(nodeId);
-      path.push(nodeId);
-
-      const outgoingEdges = edges.filter(e => e.source === nodeId);
-      for (const edge of outgoingEdges) {
-        if (!visited.has(edge.target)) {
-          if (dfs(edge.target)) return true;
-        } else if (recStack.has(edge.target)) {
-          // Cycle detected
-          const cycleStart = path.indexOf(edge.target);
-          cycles.push([...path.slice(cycleStart), edge.target]);
-          return true;
-        }
-      }
-
-      path.pop();
-      recStack.delete(nodeId);
-      return false;
-    };
-
-    nodes.forEach(node => {
-      if (!visited.has(node.id)) {
-        dfs(node.id);
-      }
-    });
-
-    return cycles;
-  };
+  }, []);
 
   const errorCount = issues.filter(i => i.type === 'error').length;
   const warningCount = issues.filter(i => i.type === 'warning').length;
@@ -210,7 +88,9 @@ export const FlowValidator = ({ nodes, edges, testGroups, onClose, onJumpToNode 
           <div className="flex-1">
             <CardTitle className="text-lg flex items-center gap-2">
               Validation Results
-              {issues.length === 0 ? (
+              {isValidating ? (
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              ) : issues.length === 0 ? (
                 <CheckCircle2 className="h-5 w-5 text-success" />
               ) : errorCount > 0 ? (
                 <AlertCircle className="h-5 w-5 text-destructive" />
@@ -219,7 +99,9 @@ export const FlowValidator = ({ nodes, edges, testGroups, onClose, onJumpToNode 
               )}
             </CardTitle>
             <CardDescription className="text-sm mt-1">
-              {issues.length === 0 ? (
+              {isValidating ? (
+                "Validating flow..."
+              ) : issues.length === 0 ? (
                 "No issues found"
               ) : (
                 <div className="flex gap-2 mt-1">
@@ -237,7 +119,12 @@ export const FlowValidator = ({ nodes, edges, testGroups, onClose, onJumpToNode 
       <CardContent className="p-0">
         <ScrollArea className="h-[calc(100vh-240px)]">
           <div className="px-4 pb-4 space-y-2">
-            {issues.length === 0 ? (
+            {isValidating ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <Loader2 className="h-12 w-12 mx-auto mb-2 animate-spin" />
+                <p className="text-sm">Validating flow...</p>
+              </div>
+            ) : issues.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
                 <CheckCircle2 className="h-12 w-12 mx-auto mb-2 text-success" />
                 <p className="text-sm">All checks passed!</p>
@@ -263,7 +150,7 @@ export const FlowValidator = ({ nodes, edges, testGroups, onClose, onJumpToNode 
                       <p className="text-xs leading-relaxed">{issue.message}</p>
                       <div className="flex gap-2">
                         <Badge variant="outline" className="text-xs h-5">
-                          {issue.category}
+                          {issue.code}
                         </Badge>
                         {issue.nodeId && onJumpToNode && (
                           <Button
@@ -285,8 +172,15 @@ export const FlowValidator = ({ nodes, edges, testGroups, onClose, onJumpToNode 
         </ScrollArea>
         
         <div className="p-4 border-t border-border bg-muted/20 flex justify-end">
-          <Button variant="outline" size="sm" onClick={validateFlow}>
-            Re-validate
+          <Button variant="outline" size="sm" onClick={validateFlow} disabled={isValidating}>
+            {isValidating ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                Validating...
+              </>
+            ) : (
+              'Re-validate'
+            )}
           </Button>
         </div>
       </CardContent>
@@ -294,25 +188,3 @@ export const FlowValidator = ({ nodes, edges, testGroups, onClose, onJumpToNode 
   );
 };
 
-export const getValidationStatus = (nodes: Node[], edges: Edge[]) => {
-  // Quick validation check without full details
-  const hasStart = nodes.some(n => n.type === 'start');
-  const hasEnd = nodes.some(n => n.type === 'end');
-  
-  if (!hasStart || !hasEnd) {
-    return { status: 'error' as const, message: 'Missing start or end node' };
-  }
-
-  const orphanNodes = nodes.filter(n => {
-    if (n.type === 'start' || n.type === 'end') return false;
-    const hasIncoming = edges.some(e => e.target === n.id);
-    const hasOutgoing = edges.some(e => e.source === n.id);
-    return !hasIncoming && !hasOutgoing;
-  });
-
-  if (orphanNodes.length > 0) {
-    return { status: 'warning' as const, message: `${orphanNodes.length} orphan node(s)` };
-  }
-
-  return { status: 'valid' as const, message: 'Flow is valid' };
-};

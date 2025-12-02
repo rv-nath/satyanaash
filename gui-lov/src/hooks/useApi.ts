@@ -17,6 +17,7 @@ import type {
   CreateFlowRequest,
   UpdateFlowRequest,
   UpdateGraphRequest,
+  ValidateFlowRequest,
   ExecuteFlowRequest,
 } from '@/lib/api';
 
@@ -69,9 +70,11 @@ export function useUpdateProject() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: UpdateProjectRequest }) =>
       projectsApi.update(id, data),
-    onSuccess: (_, { id }) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects });
-      queryClient.invalidateQueries({ queryKey: queryKeys.project(id) });
+    onSuccess: (updatedProject) => {
+      // Update single project cache directly with response data (no refetch needed)
+      queryClient.setQueryData(queryKeys.project(updatedProject.id), updatedProject);
+      // Invalidate list only (exact match to avoid prefix matching)
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
     },
   });
 }
@@ -213,10 +216,11 @@ export function useDeleteFlow() {
   });
 }
 
-/** Validate a flow's graph structure */
+/** Validate a flow's graph structure (optionally with current unsaved graph) */
 export function useValidateFlow() {
   return useMutation({
-    mutationFn: (id: string) => flowsApi.validate(id),
+    mutationFn: ({ id, data }: { id: string; data?: ValidateFlowRequest }) =>
+      flowsApi.validate(id, data),
   });
 }
 

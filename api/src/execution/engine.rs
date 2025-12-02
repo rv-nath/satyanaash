@@ -41,6 +41,7 @@ impl std::fmt::Display for NodeStatus {
 pub struct NodeResult {
     pub node_id: String,
     pub test_case_id: Option<String>,
+    pub test_case_name: Option<String>,
     pub status: NodeStatus,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +70,7 @@ pub enum ExecutionEvent {
         node_id: String,
         node_type: String,
         test_case_id: Option<String>,
+        test_case_name: Option<String>,
     },
     /// Node execution completed
     NodeCompleted {
@@ -118,15 +120,41 @@ pub struct ExecutionEngine {
     http: HttpExecutor,
     assertions: AssertionEngine,
     debug_mode: bool,
+    base_url: Option<String>,
 }
 
 impl ExecutionEngine {
     /// Create a new execution engine
-    pub fn new(debug_mode: bool) -> Self {
+    pub fn new(debug_mode: bool, base_url: Option<String>) -> Self {
+        // Normalize base URL: remove trailing slash if present
+        let base_url = base_url.map(|u| u.trim_end_matches('/').to_string());
+
         Self {
             http: HttpExecutor::new(),
             assertions: AssertionEngine::new(),
             debug_mode,
+            base_url,
+        }
+    }
+
+    /// Build the full URL by prepending base_url to relative paths
+    fn build_url(&self, endpoint: &str) -> String {
+        // If endpoint already has a protocol, use it as-is
+        if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            return endpoint.to_string();
+        }
+
+        // Prepend base URL if available
+        if let Some(ref base) = self.base_url {
+            // Ensure proper joining (base has no trailing /, endpoint starts with /)
+            if endpoint.starts_with('/') {
+                format!("{}{}", base, endpoint)
+            } else {
+                format!("{}/{}", base, endpoint)
+            }
+        } else {
+            // No base URL - return as-is (will fail with helpful error in http executor)
+            endpoint.to_string()
         }
     }
 
@@ -326,6 +354,7 @@ impl ExecutionEngine {
                 return NodeResult {
                     node_id: node.id.clone(),
                     test_case_id: None,
+                    test_case_name: None,
                     status: NodeStatus::Error,
                     duration_ms: start.elapsed().as_millis() as u64,
                     request: None,
@@ -336,15 +365,6 @@ impl ExecutionEngine {
                 };
             }
         };
-
-        // Emit node started event
-        if let Some(tx) = event_tx {
-            let _ = tx.send(ExecutionEvent::NodeStarted {
-                node_id: node.id.clone(),
-                node_type: "testCase".to_string(),
-                test_case_id: Some(tc_id.clone()),
-            }).await;
-        }
 
         // Fetch test case (from cache or DB)
         let test_case = if let Some(tc) = tc_cache.get(&tc_id) {
@@ -359,6 +379,7 @@ impl ExecutionEngine {
                     return NodeResult {
                         node_id: node.id.clone(),
                         test_case_id: Some(tc_id),
+                        test_case_name: None,
                         status: NodeStatus::Error,
                         duration_ms: start.elapsed().as_millis() as u64,
                         request: None,
@@ -372,6 +393,7 @@ impl ExecutionEngine {
                     return NodeResult {
                         node_id: node.id.clone(),
                         test_case_id: Some(tc_id),
+                        test_case_name: None,
                         status: NodeStatus::Error,
                         duration_ms: start.elapsed().as_millis() as u64,
                         request: None,
@@ -384,17 +406,28 @@ impl ExecutionEngine {
             }
         };
 
+        // Emit node started event (now we have the test case name)
+        if let Some(tx) = event_tx {
+            let _ = tx.send(ExecutionEvent::NodeStarted {
+                node_id: node.id.clone(),
+                node_type: "testCase".to_string(),
+                test_case_id: Some(tc_id.clone()),
+                test_case_name: Some(test_case.name.clone()),
+            }).await;
+        }
+
         if self.debug_mode {
             logs.push(format!("Executing test case: {}", test_case.name));
         }
 
-        // Interpolate endpoint URL
-        let url = match ctx.interpolate(&test_case.endpoint) {
+        // Interpolate endpoint URL and prepend base URL if needed
+        let endpoint = match ctx.interpolate(&test_case.endpoint) {
             Ok(u) => u,
             Err(e) => {
                 return NodeResult {
                     node_id: node.id.clone(),
                     test_case_id: Some(tc_id),
+                    test_case_name: Some(test_case.name.clone()),
                     status: NodeStatus::Error,
                     duration_ms: start.elapsed().as_millis() as u64,
                     request: None,
@@ -405,6 +438,9 @@ impl ExecutionEngine {
                 };
             }
         };
+
+        // Build full URL (prepends base_url for relative paths)
+        let url = self.build_url(&endpoint);
 
         if self.debug_mode {
             logs.push(format!("URL: {} {}", test_case.method, url));
@@ -430,6 +466,7 @@ impl ExecutionEngine {
                     return NodeResult {
                         node_id: node.id.clone(),
                         test_case_id: Some(tc_id),
+                        test_case_name: Some(test_case.name.clone()),
                         status: NodeStatus::Error,
                         duration_ms: start.elapsed().as_millis() as u64,
                         request: None,
@@ -464,6 +501,7 @@ impl ExecutionEngine {
                 return NodeResult {
                     node_id: node.id.clone(),
                     test_case_id: Some(tc_id),
+                    test_case_name: Some(test_case.name.clone()),
                     status: NodeStatus::Error,
                     duration_ms: start.elapsed().as_millis() as u64,
                     request: Some(request_log), // Include request even on failure
@@ -498,6 +536,7 @@ impl ExecutionEngine {
                     return NodeResult {
                         node_id: node.id.clone(),
                         test_case_id: Some(tc_id),
+                        test_case_name: Some(test_case.name.clone()),
                         status: NodeStatus::Error,
                         duration_ms: start.elapsed().as_millis() as u64,
                         request: Some(http_result.request),
@@ -533,6 +572,7 @@ impl ExecutionEngine {
         NodeResult {
             node_id: node.id.clone(),
             test_case_id: Some(tc_id),
+            test_case_name: Some(test_case.name.clone()),
             status,
             duration_ms: start.elapsed().as_millis() as u64,
             request: Some(http_result.request),
@@ -634,7 +674,7 @@ impl ExecutionEngine {
 
 impl Default for ExecutionEngine {
     fn default() -> Self {
-        Self::new(false)
+        Self::new(false, None)
     }
 }
 
@@ -676,8 +716,16 @@ mod tests {
         async fn get_by_id(&self, id: &str) -> Result<Option<TestCase>, AppError> {
             Ok(self.test_cases.get(id).cloned())
         }
-        async fn list_by_project(&self, _project_id: &str) -> Result<Vec<TestCase>, AppError> {
-            Ok(self.test_cases.values().cloned().collect())
+        async fn list_by_project(&self, _project_id: &str, _pagination: crate::db::models::Pagination) -> Result<crate::db::models::PaginatedResponse<TestCase>, AppError> {
+            Ok(crate::db::models::PaginatedResponse {
+                data: self.test_cases.values().cloned().collect(),
+                pagination: crate::db::models::PaginationMeta {
+                    page: 1,
+                    per_page: 100,
+                    total: self.test_cases.len() as u64,
+                    total_pages: 1,
+                },
+            })
         }
         async fn update(&self, _id: &str, _input: crate::db::models::UpdateTestCase) -> Result<TestCase, AppError> {
             unimplemented!()
@@ -772,10 +820,10 @@ mod tests {
 
     #[test]
     fn test_engine_creation() {
-        let engine = ExecutionEngine::new(false);
+        let engine = ExecutionEngine::new(false, None);
         assert!(!engine.debug_mode);
 
-        let engine_debug = ExecutionEngine::new(true);
+        let engine_debug = ExecutionEngine::new(true, None);
         assert!(engine_debug.debug_mode);
     }
 
@@ -785,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_find_next_node_success_edge() {
-        let engine = ExecutionEngine::new(false);
+        let engine = ExecutionEngine::new(false, None);
         let flow = make_flow("flow1", vec![
             make_node("start", "start", serde_json::json!({})),
             make_node("tc1", "testCase", serde_json::json!({"testCaseId": "tc1"})),
@@ -808,7 +856,7 @@ mod tests {
 
     #[test]
     fn test_find_next_node_default_edge() {
-        let engine = ExecutionEngine::new(false);
+        let engine = ExecutionEngine::new(false, None);
         let flow = make_flow("flow1", vec![
             make_node("start", "start", serde_json::json!({})),
             make_node("tc1", "testCase", serde_json::json!({})),
@@ -825,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_find_next_node_no_type_edge() {
-        let engine = ExecutionEngine::new(false);
+        let engine = ExecutionEngine::new(false, None);
         let flow = make_flow("flow1", vec![
             make_node("start", "start", serde_json::json!({})),
             make_node("tc1", "testCase", serde_json::json!({})),
@@ -842,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_find_next_node_no_edges() {
-        let engine = ExecutionEngine::new(false);
+        let engine = ExecutionEngine::new(false, None);
         let flow = make_flow("flow1", vec![
             make_node("end", "end", serde_json::json!({})),
         ], vec![]);
@@ -857,7 +905,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_empty_flow_no_start() {
-        let engine = ExecutionEngine::new(false);
+        let engine = ExecutionEngine::new(false, None);
         let repo = MockTestCaseRepository::new();
 
         // Flow with no START node
@@ -883,7 +931,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_flow_start_to_end() {
-        let engine = ExecutionEngine::new(false);
+        let engine = ExecutionEngine::new(false, None);
         let repo = MockTestCaseRepository::new();
 
         // Simple flow: START -> END (no test cases)
@@ -910,7 +958,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_flow_missing_test_case() {
-        let engine = ExecutionEngine::new(true);
+        let engine = ExecutionEngine::new(true, None);
         let repo = MockTestCaseRepository::new(); // Empty repo
 
         // Flow references a test case that doesn't exist
@@ -941,7 +989,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_flow_node_missing_test_case_id() {
-        let engine = ExecutionEngine::new(true);
+        let engine = ExecutionEngine::new(true, None);
         let repo = MockTestCaseRepository::new();
 
         // testCase node without testCaseId in data
@@ -973,7 +1021,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_flow_with_variables() {
-        let engine = ExecutionEngine::new(true);
+        let engine = ExecutionEngine::new(true, None);
 
         // Create test case with variable in endpoint
         let tc = TestCase {
@@ -1031,7 +1079,7 @@ mod tests {
 
     #[test]
     fn test_process_exports_simple() {
-        let engine = ExecutionEngine::new(true);
+        let engine = ExecutionEngine::new(true, None);
 
         let tc = TestCase {
             id: "tc1".to_string(),
@@ -1076,7 +1124,7 @@ mod tests {
 
     #[test]
     fn test_process_exports_no_json() {
-        let engine = ExecutionEngine::new(true);
+        let engine = ExecutionEngine::new(true, None);
 
         let tc = TestCase {
             id: "tc1".to_string(),
@@ -1106,7 +1154,7 @@ mod tests {
 
     #[test]
     fn test_process_exports_empty_exports() {
-        let engine = ExecutionEngine::new(true);
+        let engine = ExecutionEngine::new(true, None);
 
         let tc = TestCase {
             id: "tc1".to_string(),

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 interface GroupNodeData {
   label: string;
   testCaseCount: number;
-  groupId: string;
+  flowId: string;  // Flow reference - backend uses this for circular dependency validation
 }
 
 interface GroupNodeProps {
@@ -86,7 +86,7 @@ export const GroupNode = memo(({ data }: GroupNodeProps) => {
       </div>
 
       <GroupEditorDialog
-        groupId={data.groupId}
+        groupId={data.flowId}
         groupName={data.label}
         open={isEditorOpen}
         onOpenChange={setIsEditorOpen}

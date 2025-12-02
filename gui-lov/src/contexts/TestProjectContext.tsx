@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode, useCallback, useEffect } from "react";
-import { Node, Edge } from "@xyflow/react";
+import { Node, Edge, Viewport } from "@xyflow/react";
+import { useSearchParams } from "react-router-dom";
 import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
 import { toast } from "sonner";
@@ -17,6 +18,12 @@ export interface TestCase {
   groupId: string;
 }
 
+export interface EdgeSettings {
+  edgeType: 'default' | 'straight' | 'step' | 'smoothstep';
+  showEdgeLabels: boolean;
+  viewport?: Viewport;
+}
+
 export interface TestGroup {
   id: string;
   name: string;
@@ -27,9 +34,14 @@ export interface TestGroup {
   // Internal flow graph for the group
   internalNodes?: Node[];
   internalEdges?: Edge[];
+  // Edge settings per flow
+  edgeSettings?: EdgeSettings;
 }
 
 export type NodeType = 'start' | 'end' | 'testCase' | 'group';
+
+export type ActiveTab = 'canvas' | 'tests';
+export type SidebarTab = 'tests' | 'flows';
 
 interface TestProjectContextType {
   project: Project | null;
@@ -43,6 +55,17 @@ interface TestProjectContextType {
   edgeType: 'default' | 'straight' | 'step' | 'smoothstep';
   activeFlowId: string | null;
   setActiveFlowId: (id: string | null) => void;
+  // Selection and editing state for test cases
+  selectedTestCaseId: string | null;
+  setSelectedTestCaseId: (id: string | null) => void;
+  editingTestCaseId: string | null; // null = not editing, '__new__' = create mode, otherwise = edit mode
+  setEditingTestCaseId: (id: string | null) => void;
+  activeTab: ActiveTab;
+  setActiveTab: (tab: ActiveTab) => void;
+  sidebarTab: SidebarTab;
+  setSidebarTab: (tab: SidebarTab) => void;
+  openTestCaseEditor: (testCaseId?: string) => void; // No arg = create mode
+  closeTestCaseEditor: () => void;
   // Auto-save status
   saveStatus: SaveStatus;
   lastSaved: Date | null;
@@ -61,6 +84,8 @@ interface TestProjectContextType {
   setShowConsole: (show: boolean) => void;
   setSnapToGrid: (snap: boolean) => void;
   setEdgeType: (type: 'default' | 'straight' | 'step' | 'smoothstep') => void;
+  setViewport: (viewport: Viewport) => void;
+  getViewport: () => Viewport | undefined;
   syncNodeToSidebar: (nodeId: string, data: any) => void;
   addNodeToCanvas: (nodeType: NodeType, data: any, position: { x: number; y: number }) => void;
   updateGroupFlow: (groupId: string, nodes: Node[], edges: Edge[]) => void;
@@ -92,14 +117,32 @@ interface TestProjectProviderProps {
   initialFlows?: ApiFlow[];
 }
 
+// Default edge settings
+const defaultEdgeSettings: EdgeSettings = {
+  edgeType: 'default',
+  showEdgeLabels: true,
+};
+
 // Helper: Convert API Flow to internal TestGroup
 function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
-  const nodes = flow.graph_data?.nodes?.map(n => ({
-    id: n.id,
-    type: n.type,  // API uses 'type' (backend serde rename)
-    position: n.position,
-    data: n.data,
-  })) || [
+  // Track seen IDs to detect and fix duplicates from old data
+  const seenIds = new Set<string>();
+
+  const nodes = flow.graph_data?.nodes?.map(n => {
+    let nodeId = n.id;
+    // If we've seen this ID before, generate a unique one
+    if (seenIds.has(nodeId)) {
+      nodeId = `${n.type}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    }
+    seenIds.add(nodeId);
+
+    return {
+      id: nodeId,
+      type: n.type,  // API uses 'type' (backend serde rename)
+      position: n.position,
+      data: n.data,
+    };
+  }) || [
     { id: `start-${flow.id}`, type: "start", position: { x: 250, y: 50 }, data: { label: "Start" } },
     { id: `end-${flow.id}`, type: "end", position: { x: 250, y: 480 }, data: { label: "End" } },
   ];
@@ -111,6 +154,16 @@ function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
     label: e.label,
   })) || [];
 
+  // Parse edge settings from canvas_settings
+  const canvasSettings = flow.canvas_settings || {};
+  const edgeSettings: EdgeSettings = {
+    edgeType: (canvasSettings.edgeType as EdgeSettings['edgeType']) || defaultEdgeSettings.edgeType,
+    showEdgeLabels: canvasSettings.showEdgeLabels !== undefined
+      ? Boolean(canvasSettings.showEdgeLabels)
+      : defaultEdgeSettings.showEdgeLabels,
+    viewport: canvasSettings.viewport as Viewport | undefined,
+  };
+
   return {
     id: flow.id,
     name: flow.name,
@@ -119,6 +172,7 @@ function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
     version: flow.version,
     internalNodes: nodes,
     internalEdges: edges,
+    edgeSettings,
     testCases: [],
   };
 }
@@ -132,16 +186,69 @@ export const TestProjectProvider = ({
   project,
   initialFlows
 }: TestProjectProviderProps) => {
-  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showConsole, setShowConsole] = useState(true);
   const [snapToGrid, setSnapToGrid] = useState(false);
-  const [edgeType, setEdgeType] = useState<'default' | 'straight' | 'step' | 'smoothstep'>('default');
 
   // Initialize from API flows or use defaults
   const initialTestGroups = initialFlows?.map(apiFlowToTestGroup) || defaultTestGroups;
-  const [activeFlowId, setActiveFlowId] = useState<string | null>(
-    initialTestGroups.length > 0 ? initialTestGroups[0].id : null
+
+  // Get flow ID from URL, fallback to first flow
+  const urlFlowId = searchParams.get('flow');
+  const initialFlowId = urlFlowId && initialTestGroups.some(g => g.id === urlFlowId)
+    ? urlFlowId
+    : (initialTestGroups.length > 0 ? initialTestGroups[0].id : null);
+
+  const [activeFlowId, setActiveFlowIdState] = useState<string | null>(initialFlowId);
+
+  // Wrapper to update URL when active flow changes
+  const setActiveFlowId = useCallback((id: string | null) => {
+    setActiveFlowIdState(id);
+    if (id) {
+      setSearchParams(prev => {
+        const newParams = new URLSearchParams(prev);
+        newParams.set('flow', id);
+        return newParams;
+      }, { replace: true });
+    } else {
+      setSearchParams(prev => {
+        const newParams = new URLSearchParams(prev);
+        newParams.delete('flow');
+        return newParams;
+      }, { replace: true });
+    }
+  }, [setSearchParams]);
+
+  // Selection and editing state for test cases
+  const [selectedTestCaseId, setSelectedTestCaseId] = useState<string | null>(null);
+  const [editingTestCaseId, setEditingTestCaseId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('canvas');
+
+  // Sidebar tab from URL, default to 'tests'
+  const urlTab = searchParams.get('tab') as SidebarTab | null;
+  const [sidebarTab, setSidebarTabState] = useState<SidebarTab>(
+    urlTab === 'flows' ? 'flows' : 'tests'
   );
+
+  // Wrapper to update URL when sidebar tab changes
+  const setSidebarTab = useCallback((tab: SidebarTab) => {
+    setSidebarTabState(tab);
+    setSearchParams(prev => {
+      const newParams = new URLSearchParams(prev);
+      newParams.set('tab', tab);
+      return newParams;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  // Sync sidebarTab with URL when URL changes
+  useEffect(() => {
+    const urlTabCurrent = searchParams.get('tab') as SidebarTab | null;
+    const newTab = urlTabCurrent === 'flows' ? 'flows' : 'tests';
+    if (newTab !== sidebarTab) {
+      setSidebarTabState(newTab);
+    }
+  }, [searchParams]);
+
   const history = useHistory<TestGroup[]>(50);
   const [testGroups, setTestGroups] = useState<TestGroup[]>(initialTestGroups);
 
@@ -156,10 +263,24 @@ export const TestProjectProvider = ({
     }
   }, [initialFlows]);
 
-  // Get active flow's nodes and edges
+  // Sync activeFlowId with URL when URL changes (e.g., from navigation)
+  useEffect(() => {
+    const urlFlowIdCurrent = searchParams.get('flow');
+    if (urlFlowIdCurrent && urlFlowIdCurrent !== activeFlowId) {
+      // Validate the flow exists before setting
+      if (testGroups.some(g => g.id === urlFlowIdCurrent)) {
+        setActiveFlowIdState(urlFlowIdCurrent);
+      }
+    }
+  }, [searchParams, testGroups, activeFlowId]);
+
+  // Get active flow's nodes, edges, and edge settings
   const activeFlow = testGroups.find(g => g.id === activeFlowId);
   const nodes = activeFlow?.internalNodes || [];
   const edges = activeFlow?.internalEdges || [];
+  const edgeSettings = activeFlow?.edgeSettings || defaultEdgeSettings;
+  const edgeType = edgeSettings.edgeType;
+  const showEdgeLabels = edgeSettings.showEdgeLabels;
 
   // Get flow version from active flow for optimistic locking
   const flowVersion = activeFlow?.version ?? 1;
@@ -172,12 +293,13 @@ export const TestProjectProvider = ({
     ));
   }, [activeFlowId]);
 
-  // Auto-save hook - watches nodes/edges changes and persists to backend
+  // Auto-save hook - watches nodes/edges/edgeSettings changes and persists to backend
   const { status: saveStatus, lastSaved, error: saveError, save: manualSave } = useAutoSave({
     flowId: activeFlowId,
     version: flowVersion,
     nodes,
     edges,
+    edgeSettings,
     debounceMs: 2000,
     enabled: !!activeFlowId,
     onVersionUpdate: handleVersionUpdate,
@@ -185,21 +307,64 @@ export const TestProjectProvider = ({
 
   const setNodes = useCallback((newNodes: Node[]) => {
     if (!activeFlowId) return;
-    const updatedGroups = testGroups.map(g => 
-      g.id === activeFlowId ? { ...g, internalNodes: newNodes } : g
-    );
-    history.pushState(testGroups, "Move nodes");
-    setTestGroups(updatedGroups);
-  }, [activeFlowId, testGroups, history]);
+    // Use functional update to avoid stale closure issues
+    setTestGroups(currentGroups => {
+      history.pushState(currentGroups, "Move nodes");
+      return currentGroups.map(g =>
+        g.id === activeFlowId ? { ...g, internalNodes: newNodes } : g
+      );
+    });
+  }, [activeFlowId, history]);
 
   const setEdges = useCallback((newEdges: Edge[]) => {
     if (!activeFlowId) return;
-    const updatedGroups = testGroups.map(g => 
-      g.id === activeFlowId ? { ...g, internalEdges: newEdges } : g
+    // Use functional update to avoid stale closure issues
+    setTestGroups(currentGroups => {
+      history.pushState(currentGroups, "Update connections");
+      return currentGroups.map(g =>
+        g.id === activeFlowId ? { ...g, internalEdges: newEdges } : g
+      );
+    });
+  }, [activeFlowId, history]);
+
+  // Edge settings setters - update the active flow's edgeSettings
+  const setEdgeType = useCallback((type: EdgeSettings['edgeType']) => {
+    if (!activeFlowId) return;
+    const updatedGroups = testGroups.map(g =>
+      g.id === activeFlowId
+        ? { ...g, edgeSettings: { ...(g.edgeSettings || defaultEdgeSettings), edgeType: type } }
+        : g
     );
-    history.pushState(testGroups, "Update connections");
+    history.pushState(testGroups, "Change edge type");
     setTestGroups(updatedGroups);
   }, [activeFlowId, testGroups, history]);
+
+  const setShowEdgeLabels = useCallback((show: boolean) => {
+    if (!activeFlowId) return;
+    const updatedGroups = testGroups.map(g =>
+      g.id === activeFlowId
+        ? { ...g, edgeSettings: { ...(g.edgeSettings || defaultEdgeSettings), showEdgeLabels: show } }
+        : g
+    );
+    history.pushState(testGroups, "Toggle edge labels");
+    setTestGroups(updatedGroups);
+  }, [activeFlowId, testGroups, history]);
+
+  // Viewport setter - no history push as it's called frequently during pan/zoom
+  const setViewport = useCallback((viewport: Viewport) => {
+    if (!activeFlowId) return;
+    setTestGroups(groups => groups.map(g =>
+      g.id === activeFlowId
+        ? { ...g, edgeSettings: { ...(g.edgeSettings || defaultEdgeSettings), viewport } }
+        : g
+    ));
+  }, [activeFlowId]);
+
+  // Get viewport for current flow
+  const getViewport = useCallback((): Viewport | undefined => {
+    const activeFlow = testGroups.find(g => g.id === activeFlowId);
+    return activeFlow?.edgeSettings?.viewport;
+  }, [testGroups, activeFlowId]);
 
   const addTestGroup = useCallback((group: Omit<TestGroup, "id" | "testCases" | "expanded" | "version">) => {
     history.pushState(testGroups, `Add group: ${group.name}`);
@@ -225,6 +390,7 @@ export const TestProjectProvider = ({
         },
       ],
       internalEdges: [],
+      edgeSettings: defaultEdgeSettings,
     };
     setTestGroups([...testGroups, newGroup]);
     setActiveFlowId(newGroupId);
@@ -309,9 +475,18 @@ export const TestProjectProvider = ({
 
   const addNodeToCanvas = useCallback((nodeType: NodeType, data: any, position: { x: number; y: number }) => {
     if (!activeFlowId) return;
+
+    // Prevent dropping a flow into itself (circular reference)
+    if (nodeType === 'group' && data.flowId === activeFlowId) {
+      toast.error("Cannot add a flow into itself");
+      return;
+    }
+
     history.pushState(testGroups, `Add node: ${data.label || nodeType}`);
+    // Always generate a unique node ID (allows same test case multiple times in flow)
+    // The testCaseId/groupId is preserved in data for reference
     const newNode: Node = {
-      id: data.testCaseId || data.groupId || `${nodeType}-${Date.now()}`,
+      id: `${nodeType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       type: nodeType,
       position,
       data,
@@ -486,6 +661,25 @@ export const TestProjectProvider = ({
     };
   }, [testGroups]);
 
+  // Helper functions for test case editor
+  const openTestCaseEditor = useCallback((testCaseId?: string) => {
+    if (testCaseId) {
+      // Edit mode
+      setSelectedTestCaseId(testCaseId);
+      setEditingTestCaseId(testCaseId);
+    } else {
+      // Create mode - use special marker
+      setSelectedTestCaseId(null);
+      setEditingTestCaseId('__new__');
+    }
+    setActiveTab('tests');
+  }, []);
+
+  const closeTestCaseEditor = useCallback(() => {
+    setEditingTestCaseId(null);
+    setActiveTab('canvas');
+  }, []);
+
   return (
     <TestProjectContext.Provider
       value={{
@@ -500,6 +694,16 @@ export const TestProjectProvider = ({
         edgeType,
         activeFlowId,
         setActiveFlowId,
+        selectedTestCaseId,
+        setSelectedTestCaseId,
+        editingTestCaseId,
+        setEditingTestCaseId,
+        activeTab,
+        setActiveTab,
+        sidebarTab,
+        setSidebarTab,
+        openTestCaseEditor,
+        closeTestCaseEditor,
         saveStatus,
         lastSaved,
         saveError,
@@ -517,6 +721,8 @@ export const TestProjectProvider = ({
         setShowConsole,
         setSnapToGrid,
         setEdgeType,
+        setViewport,
+        getViewport,
         syncNodeToSidebar,
         addNodeToCanvas,
         updateGroupFlow,

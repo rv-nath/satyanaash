@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import {
   ReactFlow,
   Background,
@@ -12,8 +12,10 @@ import {
   ReactFlowProvider,
   Node,
   ConnectionMode,
+  Viewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Cloud, CloudOff, Loader2, Save, CheckCircle2 } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { TestCaseNode, StartNode, EndNode, GroupNode } from "./CustomNodes";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -32,7 +34,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, saveStatus, saveError, setViewport, getViewport } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
   const [edges, setEdgesState, onEdgesChange] = useEdgesState(contextEdges);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
@@ -40,7 +42,10 @@ const TestCanvasContent = () => {
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
   const [showEdgeTypeDialog, setShowEdgeTypeDialog] = useState(false);
-  const { fitView } = useReactFlow();
+  const { fitView, setViewport: setReactFlowViewport, getViewport: getReactFlowViewport } = useReactFlow();
+  const viewportDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const isRestoringViewportRef = useRef(false);
+  const lastActiveFlowIdRef = useRef<string | null>(null);
 
   // Apply edge type to all edges
   const edgesWithType = edges.map(edge => ({
@@ -76,6 +81,48 @@ const TestCanvasContent = () => {
   useEffect(() => {
     setEdgesState(contextEdges);
   }, [contextEdges, setEdgesState]);
+
+  // Restore viewport when active flow changes
+  useEffect(() => {
+    if (!activeFlowId || activeFlowId === lastActiveFlowIdRef.current) return;
+    lastActiveFlowIdRef.current = activeFlowId;
+
+    // Get saved viewport for this flow
+    const savedViewport = getViewport();
+    if (savedViewport) {
+      isRestoringViewportRef.current = true;
+      setReactFlowViewport(savedViewport, { duration: 200 });
+      // Reset flag after animation
+      setTimeout(() => {
+        isRestoringViewportRef.current = false;
+      }, 250);
+    }
+  }, [activeFlowId, getViewport, setReactFlowViewport]);
+
+  // Handle viewport changes (debounced to avoid too many saves)
+  const handleMoveEnd = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
+    // Skip if we're restoring viewport (not a user action)
+    if (isRestoringViewportRef.current) return;
+
+    // Clear existing debounce timer
+    if (viewportDebounceRef.current) {
+      clearTimeout(viewportDebounceRef.current);
+    }
+
+    // Debounce viewport save to avoid excessive saves during pan/zoom
+    viewportDebounceRef.current = setTimeout(() => {
+      setViewport(viewport);
+    }, 500);
+  }, [setViewport]);
+
+  // Cleanup viewport debounce timer
+  useEffect(() => {
+    return () => {
+      if (viewportDebounceRef.current) {
+        clearTimeout(viewportDebounceRef.current);
+      }
+    };
+  }, []);
 
   // Sync local state changes back to context immediately after changes settle
   const handleNodesChange = useCallback((changes: any) => {
@@ -243,8 +290,12 @@ const TestCanvasContent = () => {
         return;
       }
 
-      // Delete nodes/edges
-      if (event.key === 'Delete' || event.key === 'Backspace') {
+      // Delete nodes/edges (check both event.key and event.code for cross-browser support)
+      const isDelete = event.key === 'Delete' || event.code === 'Delete';
+      const isBackspace = event.key === 'Backspace' || event.code === 'Backspace';
+
+      if (isDelete || isBackspace) {
+        event.preventDefault();
         if (selectedNode) {
           deleteNode(selectedNode.id);
           setSelectedNode(null);
@@ -335,15 +386,50 @@ const TestCanvasContent = () => {
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      {/* Active Flow Header */}
+      {/* Active Flow Header with Save Status */}
       {activeFlow && (
         <div className="absolute top-4 left-4 z-10 bg-card/95 backdrop-blur border border-border rounded-lg px-4 py-2 shadow-lg">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-            <div>
-              <div className="text-sm font-semibold text-foreground">{activeFlow.name}</div>
-              {activeFlow.description && (
-                <div className="text-xs text-muted-foreground">{activeFlow.description}</div>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+              <div>
+                <div className="text-sm font-semibold text-foreground">{activeFlow.name}</div>
+                {activeFlow.description && (
+                  <div className="text-xs text-muted-foreground">{activeFlow.description}</div>
+                )}
+              </div>
+            </div>
+            <div className="h-4 w-px bg-border" />
+            <div className="text-xs">
+              {saveStatus === 'idle' && (
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  <Cloud className="w-3.5 h-3.5" />
+                  Saved
+                </span>
+              )}
+              {saveStatus === 'saving' && (
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Saving...
+                </span>
+              )}
+              {saveStatus === 'pending' && (
+                <span className="flex items-center gap-1.5 text-warning">
+                  <Save className="w-3.5 h-3.5" />
+                  Unsaved
+                </span>
+              )}
+              {saveStatus === 'saved' && (
+                <span className="flex items-center gap-1.5 text-success">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Saved
+                </span>
+              )}
+              {saveStatus === 'error' && (
+                <span className="flex items-center gap-1.5 text-destructive" title={saveError || 'Save failed'}>
+                  <CloudOff className="w-3.5 h-3.5" />
+                  Failed
+                </span>
               )}
             </div>
           </div>
@@ -392,9 +478,10 @@ const TestCanvasContent = () => {
         onEdgeMouseEnter={handleEdgeMouseEnter}
         onEdgeMouseLeave={handleEdgeMouseLeave}
         onPaneClick={handlePaneClick}
+        onMoveEnd={handleMoveEnd}
         nodeTypes={nodeTypes}
         onInit={setReactFlowInstance}
-        fitView
+        fitView={!getViewport()}
         edgesReconnectable={true}
         edgesFocusable={true}
         connectionMode={ConnectionMode.Loose}

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  ArrowLeft, Play, Pause, RotateCcw, Settings, CheckCircle2, Download, ChevronDown, Bug, Loader2, AlertCircle, Cloud, CloudOff, Save
+  ArrowLeft, Play, Pause, RotateCcw, Settings, CheckCircle2, Download, ChevronDown, Bug, Loader2, AlertCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,15 +21,19 @@ import TestCanvas from "@/components/TestCanvas";
 import ConsolePanel from "@/components/ConsolePanel";
 import { TestProjectProvider, useTestProject } from "@/contexts/TestProjectContext";
 import { TestGroupDialog } from "@/components/TestGroupDialog";
-import { TestCaseDialog } from "@/components/TestCaseDialog";
 import { TestInventory } from "@/components/TestInventory";
 import { FlowsList } from "@/components/FlowsList";
 import { FlowValidator } from "@/components/FlowValidator";
-import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useExecuteFlow, useCreateTestCase, useUpdateTestCase, useDeleteTestCase } from "@/hooks/useApi";
+import { TestCaseEditor } from "@/components/TestCaseEditor";
+import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateProject } from "@/hooks/useApi";
+import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
+import { useExecutionStream } from "@/hooks/useExecutionStream";
 import { Card } from "@/components/ui/card";
 
 const ProjectDetailContent = () => {
-  const { id } = useParams();
+  const { id, testId } = useParams();  // testId comes from /project/:id/test/:testId route
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const {
     project,
     projectId,
@@ -38,43 +42,58 @@ const ProjectDetailContent = () => {
     edges,
     activeFlowId,
     setActiveFlowId,
+    sidebarTab,
+    setSidebarTab,
     showConsole,
     setShowConsole,
-    toggleGroup,
-    addTestGroup,
     updateTestGroup,
     deleteTestGroup,
-    addTestCase,
-    updateTestCase,
     deleteTestCase,
-    exportFlowJSON,
-    saveStatus,
-    lastSaved,
-    saveError
+    exportFlowJSON
   } = useTestProject();
+
+  // Determine if we're in edit mode from URL (testId from route)
+  const isEditing = !!testId;
+  const editingTestCaseId = testId === 'new' ? '__new__' : testId;
+
+  // Navigation-based editor open/close
+  const openTestCaseEditor = (testCaseId?: string) => {
+    const path = testCaseId
+      ? `/project/${id}/test/${testCaseId}`
+      : `/project/${id}/test/new`;
+    // Only keep tab param when editing (test cases are project-level, not flow-specific)
+    const tabParam = searchParams.get('tab');
+    const queryString = tabParam ? `?tab=${tabParam}` : '';
+    navigate(`${path}${queryString}`);
+  };
+
+  const closeTestCaseEditor = () => {
+    // Restore flow param when returning to canvas
+    const tabParam = searchParams.get('tab');
+    const params = new URLSearchParams();
+    if (activeFlowId) params.set('flow', activeFlowId);
+    if (tabParam) params.set('tab', tabParam);
+    navigate(`/project/${id}?${params.toString()}`);
+  };
 
   // API mutations for flows
   const createFlowMutation = useCreateFlow();
   const updateFlowMutation = useUpdateFlow();
   const deleteFlowMutation = useDeleteFlow();
-  const executeFlowMutation = useExecuteFlow();
 
   // API mutations for test cases
-  const createTestCaseMutation = useCreateTestCase();
-  const updateTestCaseMutation = useUpdateTestCase();
   const deleteTestCaseMutation = useDeleteTestCase();
-  
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [consoleLogs, setConsoleLogs] = useState<Array<{ timestamp: string; message: string; type: "info" | "success" | "error" }>>([
-    { timestamp: new Date().toISOString(), message: "Ready to execute tests", type: "info" }
-  ]);
+
+  // SSE streaming for real-time execution logs
+  const { logs: consoleLogs, isExecuting, execute: executeFlow, clearLogs } = useExecutionStream();
 
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
-  const [testCaseDialogOpen, setTestCaseDialogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);
-  const [selectedGroupId, setSelectedGroupId] = useState<string>("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<{ id: string; name: string; description?: string } | null>(null);
-  const [editingTestCase, setEditingTestCase] = useState<{ id: string; name: string; method: any; endpoint?: string } | null>(null);
+
+  // API mutation for project settings
+  const updateProjectMutation = useUpdateProject();
 
   const handleExecute = async (mode: "run" | "debug" = "run") => {
     if (!activeFlowId) {
@@ -82,52 +101,11 @@ const ProjectDetailContent = () => {
       return;
     }
 
-    setIsExecuting(true);
-    setConsoleLogs(prev => [...prev, {
-      timestamp: new Date().toISOString(),
-      message: `Starting ${mode === "debug" ? "debug" : "test"} execution...`,
-      type: "info" as const
-    }]);
+    // Show console panel when executing
+    setShowConsole(true);
 
-    try {
-      const response = await executeFlowMutation.mutateAsync({
-        id: activeFlowId,
-        data: { debug_mode: mode === "debug" }
-      });
-
-      // Log execution results
-      setConsoleLogs(prev => [...prev, {
-        timestamp: new Date().toISOString(),
-        message: `Execution completed in ${response.duration_ms}ms`,
-        type: "info"
-      }]);
-
-      if (response.stats) {
-        const { passed, failed, errors, total } = response.stats;
-        const resultType = failed === 0 && errors === 0 ? "success" : "error";
-        setConsoleLogs(prev => [...prev, {
-          timestamp: new Date().toISOString(),
-          message: `Results: ${passed}/${total} passed, ${failed} failed, ${errors} errors`,
-          type: resultType
-        }]);
-      }
-
-      if (response.status === 'completed') {
-        toast.success("Test execution complete");
-      } else {
-        toast.error(`Execution finished with status: ${response.status}`);
-      }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : "Execution failed";
-      setConsoleLogs(prev => [...prev, {
-        timestamp: new Date().toISOString(),
-        message: `Error: ${errorMsg}`,
-        type: "error"
-      }]);
-      toast.error("Test execution failed");
-    } finally {
-      setIsExecuting(false);
-    }
+    // Execute using SSE streaming - logs are handled by the hook
+    await executeFlow(activeFlowId, { debug_mode: mode === "debug" });
   };
 
   const handleExportFlow = () => {
@@ -172,39 +150,6 @@ const ProjectDetailContent = () => {
             <p className="text-xs text-muted-foreground">
               {testGroups.length} flow{testGroups.length !== 1 ? 's' : ''}
             </p>
-          </div>
-          {/* Save Status Indicator */}
-          <div className="flex items-center gap-2 text-xs ml-4 px-2 py-1 rounded bg-muted/50">
-            {saveStatus === 'idle' && (
-              <span className="flex items-center gap-1.5 text-muted-foreground">
-                <Cloud className="w-3 h-3" />
-                All changes saved
-              </span>
-            )}
-            {saveStatus === 'saving' && (
-              <span className="flex items-center gap-1.5 text-muted-foreground">
-                <Loader2 className="w-3 h-3 animate-spin" />
-                Saving...
-              </span>
-            )}
-            {saveStatus === 'pending' && (
-              <span className="flex items-center gap-1.5 text-warning">
-                <Save className="w-3 h-3" />
-                Unsaved changes
-              </span>
-            )}
-            {saveStatus === 'saved' && (
-              <span className="flex items-center gap-1.5 text-success">
-                <CheckCircle2 className="w-3 h-3" />
-                Saved
-              </span>
-            )}
-            {saveStatus === 'error' && (
-              <span className="flex items-center gap-1.5 text-destructive" title={saveError || 'Save failed'}>
-                <CloudOff className="w-3 h-3" />
-                Save failed
-              </span>
-            )}
           </div>
         </div>
 
@@ -270,7 +215,7 @@ const ProjectDetailContent = () => {
           <Button variant="outline" size="icon">
             <RotateCcw className="w-4 h-4" />
           </Button>
-          <Button variant="outline" size="icon">
+          <Button variant="outline" size="icon" onClick={() => setSettingsOpen(true)}>
             <Settings className="w-4 h-4" />
           </Button>
         </div>
@@ -281,7 +226,7 @@ const ProjectDetailContent = () => {
         {/* Left Panel with Tabs */}
         <ResizablePanel defaultSize={35} minSize={25} maxSize={45}>
           <div className="h-full bg-sidebar border-r border-sidebar-border">
-            <Tabs defaultValue="tests" className="h-full flex flex-col">
+            <Tabs value={sidebarTab} onValueChange={(v) => setSidebarTab(v as 'tests' | 'flows')} className="h-full flex flex-col">
               <div className="border-b border-sidebar-border px-4 pt-4">
                 <TabsList className="w-full">
                   <TabsTrigger value="tests" className="flex-1">Tests</TabsTrigger>
@@ -292,18 +237,12 @@ const ProjectDetailContent = () => {
               <TabsContent value="tests" className="flex-1 mt-0">
                 <TestInventory
                   onAddTestCase={() => {
-                    setSelectedGroupId(activeFlowId || testGroups[0]?.id || "");
-                    setTestCaseDialogOpen(true);
+                    // Open editor in create mode
+                    openTestCaseEditor();
                   }}
                   onEditTestCase={(test) => {
-                    setEditingTestCase({
-                      id: test.id,
-                      name: test.name,
-                      method: test.method,
-                      endpoint: test.endpoint
-                    });
-                    setSelectedGroupId(test.groupId);
-                    setTestCaseDialogOpen(true);
+                    // Open editor in edit mode
+                    openTestCaseEditor(test.id);
                   }}
                   onDeleteTestCase={async (testCaseId) => {
                     if (!projectId) return;
@@ -337,10 +276,6 @@ const ProjectDetailContent = () => {
                       console.error(err);
                     }
                   }}
-                  onAddTestCaseToGroup={(groupId) => {
-                    setSelectedGroupId(groupId);
-                    setTestCaseDialogOpen(true);
-                  }}
                 />
               </TabsContent>
             </Tabs>
@@ -349,9 +284,19 @@ const ProjectDetailContent = () => {
 
         <ResizableHandle />
 
-        {/* Canvas & Console */}
+        {/* Canvas & Console / Test Case Editor */}
         <ResizablePanel defaultSize={80}>
-          {showConsole ? (
+          {isEditing ? (
+            // Full-screen test case editor (create or edit mode)
+            <TestCaseEditor
+              testCaseId={testId === 'new' ? undefined : testId}
+              onClose={closeTestCaseEditor}
+              onCreated={(newId) => {
+                // After creation, switch to edit mode with the new ID
+                openTestCaseEditor(newId);
+              }}
+            />
+          ) : showConsole ? (
             <ResizablePanelGroup direction="vertical">
               {/* Canvas */}
               <ResizablePanel defaultSize={65} minSize={30}>
@@ -362,7 +307,7 @@ const ProjectDetailContent = () => {
 
               {/* Console */}
               <ResizablePanel defaultSize={35} minSize={20}>
-                <ConsolePanel logs={consoleLogs} onClose={() => setShowConsole(false)} />
+                <ConsolePanel logs={consoleLogs} onClose={() => setShowConsole(false)} onClear={clearLogs} />
               </ResizablePanel>
             </ResizablePanelGroup>
           ) : (
@@ -426,73 +371,28 @@ const ProjectDetailContent = () => {
         mode={editingGroup ? "edit" : "create"}
       />
 
-      <TestCaseDialog
-        open={testCaseDialogOpen}
-        onOpenChange={(open) => {
-          setTestCaseDialogOpen(open);
-          if (!open) {
-            setEditingTestCase(null);
-            setSelectedGroupId("");
-          }
-        }}
-        onSubmit={async (data) => {
-          if (!projectId) {
-            toast.error("Project ID not found");
-            return;
-          }
-
-          // Map frontend data to API format
-          // Note: payload stays as string (backend expects String), headers gets parsed (backend expects JSON Value)
-          const apiData = {
-            name: data.name,
-            method: data.method,
-            endpoint: data.endpoint || '',
-            headers: data.headers ? JSON.parse(data.headers) : undefined,
-            payload: data.payload || undefined,  // Keep as string - backend expects Option<String>
-            assertion_script: data.postTestScript || undefined,
-          };
-
-          if (editingTestCase) {
-            // Update existing test case via API
-            try {
-              await updateTestCaseMutation.mutateAsync({
-                id: editingTestCase.id,
-                data: apiData,
-                projectId
-              });
-              updateTestCase(editingTestCase.id, data);
-              toast.success("Test case updated");
-            } catch (err) {
-              toast.error("Failed to update test case");
-              console.error(err);
-            }
-          } else {
-            // Create new test case via API
-            try {
-              await createTestCaseMutation.mutateAsync({
-                projectId,
-                data: apiData
-              });
-              addTestCase(data);
-              toast.success("Test case created");
-            } catch (err) {
-              toast.error("Failed to create test case");
-              console.error(err);
-            }
-          }
-        }}
-        groupId={selectedGroupId}
-        nodeId={editingTestCase?.id}
-        initialData={editingTestCase || undefined}
-        mode={editingTestCase ? "edit" : "create"}
-      />
-
       {validatorOpen && (
         <FlowValidator
           nodes={nodes}
           edges={edges}
           testGroups={testGroups}
+          activeFlowId={activeFlowId}
           onClose={() => setValidatorOpen(false)}
+        />
+      )}
+
+      {project && (
+        <ProjectSettingsDialog
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          project={project}
+          onSave={async (settings) => {
+            if (!projectId) return;
+            await updateProjectMutation.mutateAsync({
+              id: projectId,
+              data: { settings },
+            });
+          }}
         />
       )}
     </div>

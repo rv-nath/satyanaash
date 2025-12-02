@@ -18,6 +18,9 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Projects />} />
           <Route path="/project/:id" element={<ProjectDetail />} />
+          {/* Test case editor routes - same component, different URL for state persistence */}
+          <Route path="/project/:id/test/new" element={<ProjectDetail />} />
+          <Route path="/project/:id/test/:testId" element={<ProjectDetail />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

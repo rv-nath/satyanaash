@@ -40,3 +40,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rhai = { version = "1.23", features = ["sync"] }  # Rust-native scripting for assertions
 jsonpath-rust = "1.0"                              # JSONPath for variable extraction
 regex = "1"                                        # Variable interpolation
+
+# SSE Streaming
+async-stream = "0.3"                               # For SSE stream generation
+futures = "0.3"                                    # Stream utilities

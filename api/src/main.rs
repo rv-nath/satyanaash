@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/projects/{id}", get(projects::get_project))
         .route("/api/v1/projects/{id}", patch(projects::update_project))
         .route("/api/v1/projects/{id}", delete(projects::delete_project))
-        .with_state(project_repo);
+        .with_state(project_repo.clone());
 
     // Build test case routes
     let test_case_routes = Router::new()
@@ -85,14 +85,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/flows/{id}", delete(flows::delete_flow))
         .with_state(flow_repo.clone());
 
-    // Build execution routes (needs both flow and test case repos)
+    // Build execution routes (needs flow, test case, and project repos)
     let execution_state = ExecutionState {
         flow_repo,
         tc_repo: test_case_repo.clone(),
+        project_repo: project_repo.clone(),
     };
     let execution_routes = Router::new()
         .route("/api/v1/flows/{id}/validate", post(executions::validate_flow))
         .route("/api/v1/flows/{id}/execute", post(executions::execute_flow))
+        .route("/api/v1/flows/{id}/execute-stream", post(executions::execute_flow_stream))
         .with_state(execution_state);
 
     // Build router

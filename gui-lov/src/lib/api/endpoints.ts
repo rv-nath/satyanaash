@@ -15,6 +15,7 @@ import type {
   UpdateFlowRequest,
   UpdateGraphRequest,
   ValidationResult,
+  ValidateFlowRequest,
   ExecuteFlowRequest,
   ExecutionResponse,
 } from './types';
@@ -105,8 +106,9 @@ export const flowsApi = {
   /** Delete a flow */
   delete: (id: string) => apiClient.delete(`/flows/${id}`),
 
-  /** Validate a flow's graph structure */
-  validate: (id: string) => apiClient.post<ValidationResult>(`/flows/${id}/validate`),
+  /** Validate a flow's graph structure (optionally with unsaved graph data) */
+  validate: (id: string, data?: ValidateFlowRequest) =>
+    apiClient.post<ValidationResult>(`/flows/${id}/validate`, data || {}),
 
   /** Execute a flow */
   execute: (id: string, data?: ExecuteFlowRequest) =>

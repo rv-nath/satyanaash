@@ -7,7 +7,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Node, Edge } from '@xyflow/react';
 import { useUpdateFlowGraph } from './useApi';
-import type { FlowNode, FlowEdge } from '@/lib/api/types';
+import { nodesToApi, edgesToApi } from '@/lib/graphUtils';
+import type { EdgeSettings } from '@/contexts/TestProjectContext';
 
 export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
 
@@ -16,6 +17,7 @@ interface UseAutoSaveOptions {
   version: number;
   nodes: Node[];
   edges: Edge[];
+  edgeSettings?: EdgeSettings;
   debounceMs?: number;
   enabled?: boolean;
   onVersionUpdate?: (newVersion: number) => void;
@@ -26,33 +28,6 @@ interface UseAutoSaveReturn {
   lastSaved: Date | null;
   error: string | null;
   save: () => Promise<void>;  // Manual save trigger
-}
-
-/**
- * Convert React Flow nodes to API format
- */
-function nodesToApi(nodes: Node[]): FlowNode[] {
-  return nodes.map(node => ({
-    id: node.id,
-    type: node.type as 'start' | 'end' | 'testCase' | 'group',
-    position: { x: node.position.x, y: node.position.y },
-    data: node.data as Record<string, unknown>,
-    width: node.measured?.width,
-    height: node.measured?.height,
-  }));
-}
-
-/**
- * Convert React Flow edges to API format
- */
-function edgesToApi(edges: Edge[]): FlowEdge[] {
-  return edges.map(edge => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    edge_type: edge.data?.type as 'success' | 'failure' | 'default' | undefined,
-    label: edge.label as string | undefined,
-  }));
 }
 
 /**
@@ -67,6 +42,7 @@ export function useAutoSave({
   version,
   nodes,
   edges,
+  edgeSettings,
   debounceMs = 2000,
   enabled = true,
   onVersionUpdate,
@@ -80,6 +56,7 @@ export function useAutoSave({
   // Track previous values to detect changes
   const prevNodesRef = useRef<string>('');
   const prevEdgesRef = useRef<string>('');
+  const prevEdgeSettingsRef = useRef<string>('');
   const currentVersionRef = useRef(version);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
@@ -113,10 +90,21 @@ export function useAutoSave({
       const apiNodes = nodesToApi(nodes);
       const apiEdges = edgesToApi(edges);
 
+      // Build canvas_settings from edgeSettings
+      const canvasSettings: Record<string, unknown> = {};
+      if (edgeSettings) {
+        canvasSettings.edgeType = edgeSettings.edgeType;
+        canvasSettings.showEdgeLabels = edgeSettings.showEdgeLabels;
+        if (edgeSettings.viewport) {
+          canvasSettings.viewport = edgeSettings.viewport;
+        }
+      }
+
       const result = await updateGraphMutation.mutateAsync({
         id: flowId,
         data: {
           graph_data: { nodes: apiNodes, edges: apiEdges },
+          canvas_settings: canvasSettings,
           version: currentVersionRef.current,
         },
       });
@@ -146,7 +134,7 @@ export function useAutoSave({
         console.error('[AutoSave] Save failed:', err);
       }
     }
-  }, [flowId, nodes, edges, updateGraphMutation, onVersionUpdate]);
+  }, [flowId, nodes, edges, edgeSettings, updateGraphMutation, onVersionUpdate]);
 
   // Watch for changes and trigger debounced save
   useEffect(() => {
@@ -154,12 +142,14 @@ export function useAutoSave({
 
     const nodesJson = JSON.stringify(nodesToApi(nodes));
     const edgesJson = JSON.stringify(edgesToApi(edges));
+    const edgeSettingsJson = JSON.stringify(edgeSettings || {});
 
     // First time seeing data - just initialize refs, don't save
     if (!isInitializedRef.current) {
       if (nodes.length > 0) {
         prevNodesRef.current = nodesJson;
         prevEdgesRef.current = edgesJson;
+        prevEdgeSettingsRef.current = edgeSettingsJson;
         isInitializedRef.current = true;
         skipCountRef.current = 2; // Skip next 2 renders (React Flow measures nodes)
         console.log('[AutoSave] Initialized with', nodes.length, 'nodes, skipping next 2 changes');
@@ -170,21 +160,23 @@ export function useAutoSave({
     // Check if anything changed from last known state
     const nodesChanged = hasChanges(nodesJson, prevNodesRef.current);
     const edgesChanged = hasChanges(edgesJson, prevEdgesRef.current);
+    const edgeSettingsChanged = hasChanges(edgeSettingsJson, prevEdgeSettingsRef.current);
 
-    if (!nodesChanged && !edgesChanged) return;
+    if (!nodesChanged && !edgesChanged && !edgeSettingsChanged) return;
 
     // Update refs to current state
     prevNodesRef.current = nodesJson;
     prevEdgesRef.current = edgesJson;
+    prevEdgeSettingsRef.current = edgeSettingsJson;
 
-    // Skip initial changes from React Flow measuring nodes
-    if (skipCountRef.current > 0) {
+    // Skip initial changes from React Flow measuring nodes (but not for edge settings)
+    if (skipCountRef.current > 0 && !edgeSettingsChanged) {
       skipCountRef.current--;
       console.log('[AutoSave] Skipping initial change, remaining:', skipCountRef.current);
       return;
     }
 
-    console.log('[AutoSave] User change detected - nodes:', nodesChanged, 'edges:', edgesChanged);
+    console.log('[AutoSave] User change detected - nodes:', nodesChanged, 'edges:', edgesChanged, 'edgeSettings:', edgeSettingsChanged);
 
     // Clear existing timer
     if (debounceTimerRef.current) {
@@ -200,7 +192,7 @@ export function useAutoSave({
       performSave();
     }, debounceMs);
 
-  }, [nodes, edges, flowId, enabled, debounceMs, performSave]);
+  }, [nodes, edges, edgeSettings, flowId, enabled, debounceMs, performSave]);
 
   // Reset initialization when flow changes
   useEffect(() => {
@@ -208,6 +200,7 @@ export function useAutoSave({
     skipCountRef.current = 0;
     prevNodesRef.current = '';
     prevEdgesRef.current = '';
+    prevEdgeSettingsRef.current = '';
   }, [flowId]);
 
   return {

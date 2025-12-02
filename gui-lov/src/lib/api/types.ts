@@ -126,6 +126,7 @@ export interface UpdateFlowRequest {
 
 export interface UpdateGraphRequest {
   graph_data: GraphData;
+  canvas_settings?: Record<string, unknown>;
   version: number;
 }
 
@@ -140,7 +141,13 @@ export interface ValidationIssue {
 
 export interface ValidationResult {
   valid: boolean;
-  issues: ValidationIssue[];
+  errors: ValidationIssue[];
+  warnings: ValidationIssue[];
+}
+
+export interface ValidateFlowRequest {
+  nodes?: unknown[];
+  edges?: unknown[];
 }
 
 // ============ Execution ============

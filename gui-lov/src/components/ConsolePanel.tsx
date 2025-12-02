@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Terminal, X } from "lucide-react";
+import { Terminal, X, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface ConsoleLog {
@@ -12,9 +12,10 @@ interface ConsoleLog {
 interface ConsolePanelProps {
   logs: ConsoleLog[];
   onClose?: () => void;
+  onClear?: () => void;
 }
 
-const ConsolePanel = ({ logs, onClose }: ConsolePanelProps) => {
+const ConsolePanel = ({ logs, onClose, onClear }: ConsolePanelProps) => {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -54,9 +55,14 @@ const ConsolePanel = ({ logs, onClose }: ConsolePanelProps) => {
             {logs.length} {logs.length === 1 ? "entry" : "entries"}
           </span>
         </div>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
-          <X className="w-3 h-3" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClear} title="Clear console">
+            <Trash2 className="w-3 h-3" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose} title="Close console">
+            <X className="w-3 h-3" />
+          </Button>
+        </div>
       </div>
 
       <ScrollArea className="flex-1" ref={scrollRef}>

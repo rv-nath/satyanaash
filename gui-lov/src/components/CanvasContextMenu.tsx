@@ -11,7 +11,10 @@ interface CanvasContextMenuProps {
 }
 
 export const CanvasContextMenu = ({ x, y, onClose, canvasPosition, selectedNode, onConfigureNode }: CanvasContextMenuProps) => {
-  const { testGroups, addNodeToCanvas } = useTestProject();
+  const { testGroups, addNodeToCanvas, activeFlowId } = useTestProject();
+
+  // Filter out the current flow - can't add a flow into itself (prevents recursion)
+  const availableFlows = testGroups.filter(g => g.id !== activeFlowId);
 
   const handleAddNode = (type: 'start' | 'end', label: string) => {
     addNodeToCanvas(type, { label }, canvasPosition);
@@ -22,7 +25,7 @@ export const CanvasContextMenu = ({ x, y, onClose, canvasPosition, selectedNode,
     addNodeToCanvas('group', {
       label: group.name,
       testCaseCount: group.testCases.length,
-      groupId: group.id,
+      flowId: group.id,  // Backend expects flowId for circular dependency validation
     }, canvasPosition);
     onClose();
   };
@@ -82,7 +85,7 @@ export const CanvasContextMenu = ({ x, y, onClose, canvasPosition, selectedNode,
           Add Test Entities
         </div>
         
-        {testGroups.map((group) => (
+        {availableFlows.map((group) => (
           <div key={group.id}>
             <button
               onClick={() => handleAddGroup(group)}

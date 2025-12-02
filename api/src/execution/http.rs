@@ -64,6 +64,14 @@ impl HttpExecutor {
     ) -> Result<HttpResult, AppError> {
         let start = Instant::now();
 
+        // Validate URL before attempting request
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(AppError::HttpError(format!(
+                "Invalid URL '{}': must start with http:// or https://. Did you forget to set a base URL variable?",
+                url
+            )));
+        }
+
         // Parse method
         let method = method.to_uppercase();
         let http_method = match method.as_str() {
@@ -111,7 +119,18 @@ impl HttpExecutor {
 
         // Execute request
         let response = request_builder.send().await
-            .map_err(|e| AppError::HttpError(format!("Request failed: {}", e)))?;
+            .map_err(|e| {
+                let reason = if e.is_connect() {
+                    format!("Connection failed to '{}': {}", url, e)
+                } else if e.is_timeout() {
+                    format!("Request timed out for '{}'", url)
+                } else if e.is_request() {
+                    format!("Invalid request to '{}': {}", url, e)
+                } else {
+                    format!("Request to '{}' failed: {}", url, e)
+                };
+                AppError::HttpError(reason)
+            })?;
 
         // Capture response
         let status = response.status().as_u16();

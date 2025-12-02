@@ -3,34 +3,72 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::sse::{Event, Sse},
     Json,
 };
+use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::db::repositories::{FlowRepository, TestCaseRepository};
+use crate::db::repositories::{FlowRepository, ProjectRepository, TestCaseRepository};
 use crate::error::AppError;
-use crate::execution::{ExecutionEngine, FlowExecutionResult};
+use crate::execution::{ExecutionEngine, ExecutionEvent, FlowExecutionResult};
 use crate::validation::{GraphValidator, ValidationResult};
 
-/// Shared state for execution endpoints (needs both repos)
+/// Shared state for execution endpoints (needs flow, test case, and project repos)
 #[derive(Clone)]
 pub struct ExecutionState {
     pub flow_repo: Arc<dyn FlowRepository>,
     pub tc_repo: Arc<dyn TestCaseRepository>,
+    pub project_repo: Arc<dyn ProjectRepository>,
+}
+
+/// Optional request body for validation - allows validating unsaved graph changes
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ValidateFlowRequest {
+    /// Graph nodes to validate (if not provided, uses saved graph)
+    #[serde(default)]
+    pub nodes: Option<Vec<serde_json::Value>>,
+    /// Graph edges to validate (if not provided, uses saved graph)
+    #[serde(default)]
+    pub edges: Option<Vec<serde_json::Value>>,
 }
 
 /// POST /api/v1/flows/:id/validate - Validate a flow's graph structure
 pub async fn validate_flow(
     State(state): State<ExecutionState>,
     Path(flow_id): Path<String>,
+    body: Option<Json<ValidateFlowRequest>>,
 ) -> Result<Json<ValidationResult>, AppError> {
-    // Fetch the flow
-    let flow = state.flow_repo.get_by_id(&flow_id).await?
+    // Fetch the flow (always needed for flow ID and metadata)
+    let mut flow = state.flow_repo.get_by_id(&flow_id).await?
         .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", flow_id)))?;
+
+    // If graph data provided in request, use it instead of saved data
+    if let Some(Json(req)) = body {
+        if req.nodes.is_some() || req.edges.is_some() {
+            // Parse the provided graph data
+            let nodes: Vec<crate::db::models::GraphNode> = req.nodes
+                .map(|n| serde_json::from_value(serde_json::Value::Array(n)))
+                .transpose()
+                .map_err(|e| AppError::BadRequest(format!("Invalid nodes format: {}", e)))?
+                .unwrap_or_else(|| flow.graph_data.nodes.clone());
+
+            let edges: Vec<crate::db::models::GraphEdge> = req.edges
+                .map(|e| serde_json::from_value(serde_json::Value::Array(e)))
+                .transpose()
+                .map_err(|e| AppError::BadRequest(format!("Invalid edges format: {}", e)))?
+                .unwrap_or_else(|| flow.graph_data.edges.clone());
+
+            flow.graph_data = crate::db::models::GraphData { nodes, edges };
+        }
+    }
 
     // Create validator with repository references
     let validator = GraphValidator::new(state.tc_repo.as_ref(), state.flow_repo.as_ref());
@@ -88,11 +126,20 @@ pub async fn execute_flow(
     let flow = state.flow_repo.get_by_id(&flow_id).await?
         .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", flow_id)))?;
 
+    // Fetch the project to get base URL from settings
+    let project = state.project_repo.get_by_id(&flow.project_id).await?
+        .ok_or_else(|| AppError::NotFound(format!("Project {} not found", flow.project_id)))?;
+
+    // Extract base URL from project settings
+    let base_url = project.settings.get("baseUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     // Generate execution ID
     let execution_id = Uuid::new_v4().to_string();
 
-    // Create execution engine
-    let engine = ExecutionEngine::new(input.debug_mode);
+    // Create execution engine with base URL
+    let engine = ExecutionEngine::new(input.debug_mode, base_url);
 
     // Execute the flow
     let result = engine.execute_flow(
@@ -137,4 +184,65 @@ fn convert_to_response(result: FlowExecutionResult, include_details: bool) -> Ex
             None
         },
     }
+}
+
+/// POST /api/v1/flows/:id/execute-stream - Execute a flow with SSE streaming
+///
+/// Returns a Server-Sent Events stream with real-time execution progress.
+/// Each event is a JSON-encoded ExecutionEvent.
+pub async fn execute_flow_stream(
+    State(state): State<ExecutionState>,
+    Path(flow_id): Path<String>,
+    Json(input): Json<StartExecutionRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    // Fetch the flow
+    let flow = state.flow_repo.get_by_id(&flow_id).await?
+        .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", flow_id)))?;
+
+    // Fetch the project to get base URL from settings
+    let project = state.project_repo.get_by_id(&flow.project_id).await?
+        .ok_or_else(|| AppError::NotFound(format!("Project {} not found", flow.project_id)))?;
+
+    // Extract base URL from project settings
+    let base_url = project.settings.get("baseUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Generate execution ID
+    let execution_id = Uuid::new_v4().to_string();
+
+    // Create mpsc channel for streaming events
+    let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(100);
+
+    // Clone values for the spawned task
+    let tc_repo = state.tc_repo.clone();
+    let exec_id = execution_id.clone();
+    let debug_mode = input.debug_mode;
+
+    // Spawn execution in background task
+    tokio::spawn(async move {
+        let engine = ExecutionEngine::new(debug_mode, base_url);
+        let _ = engine.execute_flow(
+            &exec_id,
+            &flow,
+            tc_repo.as_ref(),
+            input.environment,
+            input.variables,
+            Some(tx),
+        ).await;
+    });
+
+    // Convert mpsc receiver to SSE stream
+    let stream = async_stream::stream! {
+        while let Some(event) = rx.recv().await {
+            let json = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+            yield Ok(Event::default().data(json));
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive")
+    ))
 }
