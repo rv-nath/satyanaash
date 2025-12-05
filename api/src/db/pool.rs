@@ -53,6 +53,7 @@ async fn run_migrations(pool: &AnyPool) -> Result<(), sqlx::Error> {
         include_str!("../../migrations/002_test_cases.sql"),
         include_str!("../../migrations/003_flows.sql"),
         include_str!("../../migrations/004_executions.sql"),
+        include_str!("../../migrations/005_merge_canvas_settings.sql"),
     ];
 
     for sql in migrations {

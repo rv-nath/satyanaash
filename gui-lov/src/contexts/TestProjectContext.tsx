@@ -5,6 +5,7 @@ import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
 import { toast } from "sonner";
 import type { Project, Flow as ApiFlow } from "@/lib/api/types";
+import { generateUUID } from "@/lib/utils/uuid";
 
 export interface TestCase {
   id: string;
@@ -127,12 +128,16 @@ const defaultEdgeSettings: EdgeSettings = {
 function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
   // Track seen IDs to detect and fix duplicates from old data
   const seenIds = new Set<string>();
+  // Track ID remapping for updating edges when duplicates are found
+  const idRemap = new Map<string, string>();
 
   const nodes = flow.graph_data?.nodes?.map(n => {
     let nodeId = n.id;
     // If we've seen this ID before, generate a unique one
     if (seenIds.has(nodeId)) {
-      nodeId = `${n.type}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const newId = generateUUID();
+      idRemap.set(nodeId, newId);
+      nodeId = newId;
     }
     seenIds.add(nodeId);
 
@@ -143,19 +148,20 @@ function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
       data: n.data,
     };
   }) || [
-    { id: `start-${flow.id}`, type: "start", position: { x: 250, y: 50 }, data: { label: "Start" } },
-    { id: `end-${flow.id}`, type: "end", position: { x: 250, y: 480 }, data: { label: "End" } },
+    { id: generateUUID(), type: "start", position: { x: 250, y: 50 }, data: { label: "Start" } },
+    { id: generateUUID(), type: "end", position: { x: 250, y: 480 }, data: { label: "End" } },
   ];
 
   const edges = flow.graph_data?.edges?.map(e => ({
     id: e.id,
-    source: e.source,
-    target: e.target,
+    // Update source/target if they were remapped due to duplicates
+    source: idRemap.get(e.source) || e.source,
+    target: idRemap.get(e.target) || e.target,
     label: e.label,
   })) || [];
 
-  // Parse edge settings from canvas_settings
-  const canvasSettings = flow.canvas_settings || {};
+  // Parse edge settings from graph_data.canvas_settings
+  const canvasSettings = flow.graph_data?.canvas_settings || {};
   const edgeSettings: EdgeSettings = {
     edgeType: (canvasSettings.edgeType as EdgeSettings['edgeType']) || defaultEdgeSettings.edgeType,
     showEdgeLabels: canvasSettings.showEdgeLabels !== undefined
@@ -368,7 +374,7 @@ export const TestProjectProvider = ({
 
   const addTestGroup = useCallback((group: Omit<TestGroup, "id" | "testCases" | "expanded" | "version">) => {
     history.pushState(testGroups, `Add group: ${group.name}`);
-    const newGroupId = `g${Date.now()}`;
+    const newGroupId = generateUUID();
     const newGroup: TestGroup = {
       ...group,
       id: newGroupId,
@@ -377,13 +383,13 @@ export const TestProjectProvider = ({
       version: 1,
       internalNodes: [
         {
-          id: `start-${newGroupId}`,
+          id: generateUUID(),
           type: "start",
           position: { x: 250, y: 50 },
           data: { label: "Start" },
         },
         {
-          id: `end-${newGroupId}`,
+          id: generateUUID(),
           type: "end",
           position: { x: 250, y: 480 },
           data: { label: "End" },
@@ -416,7 +422,7 @@ export const TestProjectProvider = ({
     history.pushState(testGroups, `Add test: ${testCase.name}`);
     const newTestCase: TestCase = {
       ...testCase,
-      id: `t${Date.now()}`,
+      id: generateUUID(),
     };
 
     setTestGroups(testGroups.map(g => 
@@ -486,7 +492,7 @@ export const TestProjectProvider = ({
     // Always generate a unique node ID (allows same test case multiple times in flow)
     // The testCaseId/groupId is preserved in data for reference
     const newNode: Node = {
-      id: `${nodeType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: generateUUID(),
       type: nodeType,
       position,
       data,

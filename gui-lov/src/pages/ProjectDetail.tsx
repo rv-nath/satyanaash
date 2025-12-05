@@ -1,14 +1,27 @@
 import { useState } from "react";
 import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
+import { generateUUID } from "@/lib/utils/uuid";
 import {
-  ArrowLeft, Play, Pause, RotateCcw, Settings, CheckCircle2, Download, ChevronDown, Bug, Loader2, AlertCircle
+  ArrowLeft, Play, Settings, CheckCircle2, Download, Bug, Loader2, AlertCircle,
+  Undo2, Redo2, Cloud, CloudOff, Save, ChevronDown, Spline, Minus, ArrowRightToLine,
+  AlignStartHorizontal, AlignStartVertical, AlignEndVertical, AlignEndHorizontal,
+  AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 import {
   ResizableHandle,
@@ -49,8 +62,25 @@ const ProjectDetailContent = () => {
     updateTestGroup,
     deleteTestGroup,
     deleteTestCase,
-    exportFlowJSON
+    exportFlowJSON,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    saveStatus,
+    saveError,
+    // Canvas settings
+    showEdgeLabels,
+    setShowEdgeLabels,
+    snapToGrid,
+    setSnapToGrid,
+    edgeType,
+    setEdgeType,
+    alignNodes
   } = useTestProject();
+
+  // Derive active flow for header
+  const activeFlow = testGroups.find(g => g.id === activeFlowId);
 
   // Determine if we're in edit mode from URL (testId from route)
   const isEditing = !!testId;
@@ -91,6 +121,12 @@ const ProjectDetailContent = () => {
   const [validatorOpen, setValidatorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<{ id: string; name: string; description?: string } | null>(null);
+
+  // Inline editing state for flow name and description
+  const [editingFlowName, setEditingFlowName] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [tempName, setTempName] = useState("");
+  const [tempDescription, setTempDescription] = useState("");
 
   // API mutation for project settings
   const updateProjectMutation = useUpdateProject();
@@ -133,91 +169,331 @@ const ProjectDetailContent = () => {
     toast.success("Flow exported successfully");
   };
 
+  // Auto-create a new flow with generated name
+  const handleCreateFlow = async () => {
+    if (!projectId) {
+      toast.error("Project ID not found");
+      return;
+    }
+
+    // Generate next flow number based on existing flows
+    const existingNumbers = testGroups
+      .map(g => {
+        const match = g.name.match(/^Flow (\d+)$/);
+        return match ? parseInt(match[1], 10) : 0;
+      })
+      .filter(n => n > 0);
+    const nextNumber = existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
+    const flowName = `Flow ${nextNumber}`;
+
+    try {
+      const newFlow = await createFlowMutation.mutateAsync({
+        projectId,
+        data: {
+          name: flowName,
+          description: "",
+          graph_data: {
+            nodes: [
+              { id: generateUUID(), type: 'start', position: { x: 250, y: 50 }, data: { label: 'Start' } },
+              { id: generateUUID(), type: 'end', position: { x: 250, y: 480 }, data: { label: 'End' } },
+            ],
+            edges: []
+          }
+        }
+      });
+      setActiveFlowId(newFlow.id);
+      toast.success(`Created "${flowName}"`);
+    } catch (err) {
+      toast.error("Failed to create flow");
+      console.error(err);
+    }
+  };
+
+  // Inline editing handlers for flow name and description
+  const startEditingName = () => {
+    setTempName(activeFlow?.name || "");
+    setEditingFlowName(true);
+  };
+
+  const startEditingDescription = () => {
+    setTempDescription(activeFlow?.description || "");
+    setEditingDescription(true);
+  };
+
+  const handleSaveName = async () => {
+    if (!activeFlow || !tempName.trim()) {
+      setEditingFlowName(false);
+      return;
+    }
+    if (tempName !== activeFlow.name) {
+      try {
+        await updateFlowMutation.mutateAsync({
+          id: activeFlow.id,
+          data: { name: tempName, version: activeFlow.version },
+          projectId: id || ''
+        });
+        updateTestGroup(activeFlow.id, { name: tempName });
+      } catch (err) {
+        toast.error("Failed to update flow name");
+      }
+    }
+    setEditingFlowName(false);
+  };
+
+  const handleSaveDescription = async () => {
+    if (!activeFlow) {
+      setEditingDescription(false);
+      return;
+    }
+    if (tempDescription !== (activeFlow.description || "")) {
+      try {
+        await updateFlowMutation.mutateAsync({
+          id: activeFlow.id,
+          data: { description: tempDescription, version: activeFlow.version },
+          projectId: id || ''
+        });
+        updateTestGroup(activeFlow.id, { description: tempDescription });
+      } catch (err) {
+        toast.error("Failed to update description");
+      }
+    }
+    setEditingDescription(false);
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
       <header className="border-b border-border bg-card px-6 py-3 flex items-center justify-between">
+        {/* Left: Back + Contextual Title */}
         <div className="flex items-center gap-4">
           <Link to="/">
             <Button variant="ghost" size="icon">
               <ArrowLeft className="w-4 h-4" />
             </Button>
           </Link>
-          <div>
-            <h1 className="text-lg font-semibold font-mono text-foreground">
-              {project?.name || 'Project'}
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              {testGroups.length} flow{testGroups.length !== 1 ? 's' : ''}
-            </p>
+          <div className="flex items-center gap-3">
+            <div className="flex flex-col">
+              {/* Flow name row */}
+              <div className="flex items-center">
+                <span className="text-lg font-semibold font-mono text-foreground">
+                  {project?.name || 'Project'}
+                </span>
+                {!isEditing && activeFlow && (
+                  <>
+                    <span className="text-muted-foreground font-normal"> / </span>
+                    {editingFlowName ? (
+                      <Input
+                        value={tempName}
+                        onChange={(e) => setTempName(e.target.value)}
+                        onBlur={handleSaveName}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleSaveName();
+                          if (e.key === 'Escape') setEditingFlowName(false);
+                        }}
+                        className="h-7 w-48 text-lg font-semibold font-mono"
+                        autoFocus
+                      />
+                    ) : (
+                      <>
+                        <span className="text-lg font-semibold font-mono text-muted-foreground">{activeFlow.name}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 ml-1"
+                          onClick={startEditingName}
+                          title="Edit flow name"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </Button>
+                      </>
+                    )}
+                  </>
+                )}
+                {isEditing && testId === 'new' && (
+                  <span className="text-muted-foreground font-normal"> / New Test</span>
+                )}
+                {isEditing && testId !== 'new' && (
+                  <span className="text-muted-foreground font-normal"> / Edit Test</span>
+                )}
+              </div>
+
+              {/* Description row - only when flow active */}
+              {!isEditing && activeFlow && (
+                editingDescription ? (
+                  <Input
+                    value={tempDescription}
+                    onChange={(e) => setTempDescription(e.target.value)}
+                    onBlur={handleSaveDescription}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSaveDescription();
+                      if (e.key === 'Escape') setEditingDescription(false);
+                    }}
+                    className="h-5 text-xs w-64 mt-0.5"
+                    placeholder="Add description..."
+                    autoFocus
+                  />
+                ) : (
+                  <span
+                    className="text-xs text-muted-foreground cursor-pointer hover:text-foreground mt-0.5"
+                    onClick={startEditingDescription}
+                  >
+                    {activeFlow.description || "Add description..."}
+                  </span>
+                )
+              )}
+            </div>
+            {/* Save status - only when on canvas with flow */}
+            {!isEditing && activeFlow && (
+              <div className="text-xs">
+                {saveStatus === 'idle' && (
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    <Cloud className="w-3.5 h-3.5" />
+                  </span>
+                )}
+                {saveStatus === 'saving' && (
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  </span>
+                )}
+                {saveStatus === 'pending' && (
+                  <span className="flex items-center gap-1.5 text-warning">
+                    <Save className="w-3.5 h-3.5" />
+                  </span>
+                )}
+                {saveStatus === 'saved' && (
+                  <span className="flex items-center gap-1.5 text-success">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  </span>
+                )}
+                {saveStatus === 'error' && (
+                  <span className="flex items-center gap-1.5 text-destructive" title={saveError || 'Save failed'}>
+                    <CloudOff className="w-3.5 h-3.5" />
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setValidatorOpen(true)}
-            className="gap-2"
-          >
-            <CheckCircle2 className="w-4 h-4" />
-            Validate
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExportFlow}
-            disabled={!activeFlowId}
-            className="gap-2"
-          >
-            <Download className="w-4 h-4" />
-            Export JSON
-          </Button>
-          <DropdownMenu>
-            <div className="flex">
-              <Button
-                onClick={() => handleExecute("run")}
-                disabled={isExecuting}
-                className="gap-2 rounded-r-none"
-              >
-                {isExecuting ? (
-                  <>
-                    <Pause className="w-4 h-4" />
-                    Executing...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4" />
-                    Run Tests
-                  </>
-                )}
+        {/* Right: Contextual Actions */}
+        <div className="flex items-center gap-1">
+          {/* Canvas actions - only when on canvas with flow */}
+          {!isEditing && activeFlow && (
+            <>
+              {/* Run - prominent, first */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="default" size="sm" disabled={isExecuting} className="gap-1">
+                    {isExecuting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                    Run
+                    <ChevronDown className="w-3 h-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleExecute("run")}>
+                    <Play className="w-4 h-4 mr-2" /> Run
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleExecute("debug")}>
+                    <Bug className="w-4 h-4 mr-2" /> Debug
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <div className="h-5 w-px bg-border mx-2" />
+
+              {/* Undo/Redo group */}
+              <Button variant="ghost" size="icon" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">
+                <Undo2 className="w-4 h-4" />
               </Button>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  disabled={isExecuting}
-                  className="rounded-l-none border-l border-primary-foreground/20 px-2"
-                >
-                  <ChevronDown className="w-4 h-4" />
-                </Button>
-              </DropdownMenuTrigger>
-            </div>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleExecute("run")}>
-                <Play className="w-4 h-4 mr-2" />
-                Run
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleExecute("debug")}>
-                <Bug className="w-4 h-4 mr-2" />
-                Debug
+              <Button variant="ghost" size="icon" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)">
+                <Redo2 className="w-4 h-4" />
+              </Button>
+
+              <div className="h-5 w-px bg-border mx-2" />
+
+              {/* Validate/Export group */}
+              <Button variant="ghost" size="icon" onClick={() => setValidatorOpen(true)} title="Validate">
+                <CheckCircle2 className="w-4 h-4" />
+              </Button>
+              <Button variant="ghost" size="icon" onClick={handleExportFlow} title="Export JSON">
+                <Download className="w-4 h-4" />
+              </Button>
+
+              <div className="h-5 w-px bg-border mx-2" />
+            </>
+          )}
+
+          {/* Settings dropdown - merged canvas + project */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" title="Settings">
+                <Settings className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {/* Canvas settings - only when flow active */}
+              {!isEditing && activeFlow && (
+                <>
+                  <DropdownMenuLabel>Canvas</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem checked={showEdgeLabels} onCheckedChange={setShowEdgeLabels}>
+                    Show Edge Labels
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem checked={showConsole} onCheckedChange={setShowConsole}>
+                    Show Console
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem checked={snapToGrid} onCheckedChange={setSnapToGrid}>
+                    Snap to Grid (20px)
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Connector Style</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={edgeType} onValueChange={(value) => setEdgeType(value as any)}>
+                    <DropdownMenuRadioItem value="default">
+                      <Spline className="h-4 w-4 mr-2" /> Curved
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="straight">
+                      <Minus className="h-4 w-4 mr-2" /> Straight
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="smoothstep">
+                      <ArrowRightToLine className="h-4 w-4 mr-2" /> L-Shaped
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <AlignStartHorizontal className="h-4 w-4 mr-2" /> Align Nodes
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      <DropdownMenuItem onClick={() => alignNodes('left')}>
+                        <AlignStartVertical className="h-4 w-4 mr-2" /> Align Left
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => alignNodes('right')}>
+                        <AlignEndVertical className="h-4 w-4 mr-2" /> Align Right
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => alignNodes('top')}>
+                        <AlignStartHorizontal className="h-4 w-4 mr-2" /> Align Top
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => alignNodes('bottom')}>
+                        <AlignEndHorizontal className="h-4 w-4 mr-2" /> Align Bottom
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={() => alignNodes('center-h')}>
+                        <AlignVerticalJustifyCenter className="h-4 w-4 mr-2" /> Center Horizontally
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => alignNodes('center-v')}>
+                        <AlignHorizontalJustifyCenter className="h-4 w-4 mr-2" /> Center Vertically
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuLabel>Project</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+                <Settings className="w-4 h-4 mr-2" /> Project Settings...
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button variant="outline" size="icon">
-            <RotateCcw className="w-4 h-4" />
-          </Button>
-          <Button variant="outline" size="icon" onClick={() => setSettingsOpen(true)}>
-            <Settings className="w-4 h-4" />
-          </Button>
+
         </div>
       </header>
 
@@ -260,7 +536,7 @@ const ProjectDetailContent = () => {
               
               <TabsContent value="flows" className="flex-1 mt-0">
                 <FlowsList
-                  onAddGroup={() => setGroupDialogOpen(true)}
+                  onAddGroup={handleCreateFlow}
                   onEditGroup={(group) => {
                     setEditingGroup({ id: group.id, name: group.name, description: group.description });
                     setGroupDialogOpen(true);
@@ -323,52 +599,26 @@ const ProjectDetailContent = () => {
           if (!open) setEditingGroup(null);
         }}
         onSubmit={async (data) => {
-          if (editingGroup) {
-            // Update existing flow via API
-            try {
-              await updateFlowMutation.mutateAsync({
-                id: editingGroup.id,
-                data: { name: data.name, description: data.description },
-                projectId: projectId || ''
-              });
-              updateTestGroup(editingGroup.id, data);
-              toast.success("Flow updated successfully");
-            } catch (err) {
-              toast.error("Failed to update flow");
-              console.error(err);
-            }
-          } else {
-            // Create new flow via API
-            if (!projectId) {
-              toast.error("Project ID not found");
-              return;
-            }
-            try {
-              const newFlow = await createFlowMutation.mutateAsync({
-                projectId,
-                data: {
-                  name: data.name,
-                  description: data.description,
-                  graph_data: {
-                    nodes: [
-                      { id: `start-new`, type: 'start', position: { x: 250, y: 50 }, data: { label: 'Start' } },
-                      { id: `end-new`, type: 'end', position: { x: 250, y: 480 }, data: { label: 'End' } },
-                    ],
-                    edges: []
-                  }
-                }
-              });
-              // Set the new flow as active
-              setActiveFlowId(newFlow.id);
-              toast.success("Flow created successfully");
-            } catch (err) {
-              toast.error("Failed to create flow");
-              console.error(err);
-            }
+          if (!editingGroup) return;
+          // Get version from testGroups for optimistic locking
+          const flowToEdit = testGroups.find(g => g.id === editingGroup.id);
+          if (!flowToEdit) return;
+          // Update existing flow via API
+          try {
+            await updateFlowMutation.mutateAsync({
+              id: editingGroup.id,
+              data: { name: data.name, description: data.description, version: flowToEdit.version },
+              projectId: projectId || ''
+            });
+            updateTestGroup(editingGroup.id, data);
+            toast.success("Flow updated");
+          } catch (err) {
+            toast.error("Failed to update flow");
+            console.error(err);
           }
         }}
         initialData={editingGroup || undefined}
-        mode={editingGroup ? "edit" : "create"}
+        mode="edit"
       />
 
       {validatorOpen && (

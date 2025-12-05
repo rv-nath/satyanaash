@@ -66,7 +66,11 @@ pub async fn validate_flow(
                 .map_err(|e| AppError::BadRequest(format!("Invalid edges format: {}", e)))?
                 .unwrap_or_else(|| flow.graph_data.edges.clone());
 
-            flow.graph_data = crate::db::models::GraphData { nodes, edges };
+            flow.graph_data = crate::db::models::GraphData {
+                nodes,
+                edges,
+                canvas_settings: flow.graph_data.canvas_settings.clone(),
+            };
         }
     }
 

@@ -425,6 +425,7 @@ mod tests {
                 GraphEdge { id: "e1".to_string(), source: "start".to_string(), target: "tc1".to_string(), edge_type: None, data: serde_json::json!({}) },
                 GraphEdge { id: "e2".to_string(), source: "tc1".to_string(), target: "end".to_string(), edge_type: Some("success".to_string()), data: serde_json::json!({}) },
             ],
+            canvas_settings: serde_json::json!({}),
         };
 
         let reachable = find_reachable_nodes(&graph, "start");

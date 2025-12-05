@@ -14,12 +14,12 @@ interface TestGroupDialogProps {
   mode: "create" | "edit";
 }
 
-export const TestGroupDialog = ({ 
-  open, 
-  onOpenChange, 
-  onSubmit, 
+export const TestGroupDialog = ({
+  open,
+  onOpenChange,
+  onSubmit,
   initialData,
-  mode 
+  mode
 }: TestGroupDialogProps) => {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -36,7 +36,7 @@ export const TestGroupDialog = ({
 
   const handleSubmit = () => {
     if (!name.trim()) {
-      toast.error("Group name is required");
+      toast.error("Flow name is required");
       return;
     }
 
@@ -44,20 +44,19 @@ export const TestGroupDialog = ({
     setName("");
     setDescription("");
     onOpenChange(false);
-    toast.success(mode === "create" ? "Test group created" : "Test group updated");
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{mode === "create" ? "Create Test Group" : "Edit Test Group"}</DialogTitle>
+          <DialogTitle>{mode === "create" ? "Create Flow" : "Edit Flow"}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div className="space-y-2">
-            <Label htmlFor="group-name">Group Name</Label>
+            <Label htmlFor="flow-name">Name</Label>
             <Input
-              id="group-name"
+              id="flow-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g., Authentication Flow"
@@ -65,17 +64,17 @@ export const TestGroupDialog = ({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="group-description">Description (optional)</Label>
+            <Label htmlFor="flow-description">Description (optional)</Label>
             <Textarea
-              id="group-description"
+              id="flow-description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Brief description of this test group..."
+              placeholder="Brief description of this flow..."
               rows={3}
             />
           </div>
           <Button onClick={handleSubmit} className="w-full">
-            {mode === "create" ? "Create Group" : "Save Changes"}
+            {mode === "create" ? "Create Flow" : "Save Changes"}
           </Button>
         </div>
       </DialogContent>

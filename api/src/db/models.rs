@@ -53,19 +53,20 @@ pub struct Flow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub graph_data: GraphData,
-    pub canvas_settings: serde_json::Value,
     pub version: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-/// Graph data containing nodes and edges
+/// Graph data containing nodes, edges, and canvas settings
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GraphData {
     #[serde(default)]
     pub nodes: Vec<GraphNode>,
     #[serde(default)]
     pub edges: Vec<GraphEdge>,
+    #[serde(default = "default_canvas_settings")]
+    pub canvas_settings: serde_json::Value,
 }
 
 /// Graph node (start, end, testCase, group)
@@ -109,24 +110,20 @@ pub struct CreateFlow {
     pub description: Option<String>,
     #[serde(default)]
     pub graph_data: Option<GraphData>,
-    #[serde(default = "default_canvas_settings")]
-    pub canvas_settings: serde_json::Value,
 }
 
-/// Update flow request
+/// Update flow request (for name/description only, use update_graph for graph changes)
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateFlow {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
-    pub canvas_settings: Option<serde_json::Value>,
     /// Required for optimistic locking
     pub version: i32,
 }
 
-/// Update graph data request
+/// Update graph data request (includes canvas_settings inside graph_data)
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateGraphData {
     pub graph_data: GraphData,

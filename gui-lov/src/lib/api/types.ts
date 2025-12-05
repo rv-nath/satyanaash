@@ -94,9 +94,16 @@ export interface FlowEdge {
   label?: string;
 }
 
+export interface CanvasSettings {
+  edgeType?: 'default' | 'smoothstep' | 'step' | 'straight';
+  showEdgeLabels?: boolean;
+  viewport?: { x: number; y: number; zoom: number };
+}
+
 export interface GraphData {
   nodes: FlowNode[];
   edges: FlowEdge[];
+  canvas_settings?: CanvasSettings;
 }
 
 export interface Flow {
@@ -105,7 +112,6 @@ export interface Flow {
   name: string;
   description: string | null;
   graph_data: GraphData;
-  canvas_settings: Record<string, unknown>;
   version: number;
   created_at: string;
   updated_at: string;
@@ -115,18 +121,16 @@ export interface CreateFlowRequest {
   name: string;
   description?: string;
   graph_data?: GraphData;
-  canvas_settings?: Record<string, unknown>;
 }
 
 export interface UpdateFlowRequest {
   name?: string;
   description?: string;
-  canvas_settings?: Record<string, unknown>;
+  version: number;  // Required for optimistic locking
 }
 
 export interface UpdateGraphRequest {
-  graph_data: GraphData;
-  canvas_settings?: Record<string, unknown>;
+  graph_data: GraphData;  // canvas_settings is now inside graph_data
   version: number;
 }
 

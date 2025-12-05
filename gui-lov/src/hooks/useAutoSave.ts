@@ -103,8 +103,11 @@ export function useAutoSave({
       const result = await updateGraphMutation.mutateAsync({
         id: flowId,
         data: {
-          graph_data: { nodes: apiNodes, edges: apiEdges },
-          canvas_settings: canvasSettings,
+          graph_data: {
+            nodes: apiNodes,
+            edges: apiEdges,
+            canvas_settings: canvasSettings,
+          },
           version: currentVersionRef.current,
         },
       });

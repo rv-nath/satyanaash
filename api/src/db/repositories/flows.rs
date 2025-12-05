@@ -27,20 +27,18 @@ impl FlowRepository for SqlxFlowRepository {
         let now = Utc::now();
         let graph_data = input.graph_data.unwrap_or_default();
         let graph_data_json = serde_json::to_string(&graph_data)?;
-        let canvas_settings_json = serde_json::to_string(&input.canvas_settings)?;
 
         sqlx::query(
             r#"INSERT INTO flows (
                 id, project_id, name, description, graph_data, canvas_settings,
                 version, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+            ) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?)"#
         )
         .bind(&id)
         .bind(project_id)
         .bind(&input.name)
         .bind(&input.description)
         .bind(&graph_data_json)
-        .bind(&canvas_settings_json)
         .bind(1i32)
         .bind(now.to_rfc3339())
         .bind(now.to_rfc3339())
@@ -53,7 +51,6 @@ impl FlowRepository for SqlxFlowRepository {
             name: input.name,
             description: input.description,
             graph_data,
-            canvas_settings: input.canvas_settings,
             version: 1,
             created_at: now,
             updated_at: now,
@@ -62,7 +59,7 @@ impl FlowRepository for SqlxFlowRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<Option<Flow>, AppError> {
         let row = sqlx::query(
-            r#"SELECT id, project_id, name, description, graph_data, canvas_settings,
+            r#"SELECT id, project_id, name, description, graph_data,
                version, created_at, updated_at
                FROM flows WHERE id = ?"#
         )
@@ -89,7 +86,7 @@ impl FlowRepository for SqlxFlowRepository {
 
         // Get paginated results
         let rows = sqlx::query(
-            r#"SELECT id, project_id, name, description, graph_data, canvas_settings,
+            r#"SELECT id, project_id, name, description, graph_data,
                version, created_at, updated_at
                FROM flows WHERE project_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"#
         )
@@ -128,19 +125,16 @@ impl FlowRepository for SqlxFlowRepository {
         let now = Utc::now();
         let name = input.name.unwrap_or(existing.name);
         let description = input.description.or(existing.description);
-        let canvas_settings = input.canvas_settings.unwrap_or(existing.canvas_settings);
-        let canvas_settings_json = serde_json::to_string(&canvas_settings)?;
         let new_version = existing.version + 1;
 
         sqlx::query(
             r#"UPDATE flows SET
-               name = ?, description = ?, canvas_settings = ?,
+               name = ?, description = ?,
                version = ?, updated_at = ?
                WHERE id = ? AND version = ?"#
         )
         .bind(&name)
         .bind(&description)
-        .bind(&canvas_settings_json)
         .bind(new_version)
         .bind(now.to_rfc3339())
         .bind(id)
@@ -154,7 +148,6 @@ impl FlowRepository for SqlxFlowRepository {
             name,
             description,
             graph_data: existing.graph_data,
-            canvas_settings,
             version: new_version,
             created_at: existing.created_at,
             updated_at: now,
@@ -197,7 +190,6 @@ impl FlowRepository for SqlxFlowRepository {
             name: existing.name,
             description: existing.description,
             graph_data: input.graph_data,
-            canvas_settings: existing.canvas_settings,
             version: new_version,
             created_at: existing.created_at,
             updated_at: now,
@@ -243,7 +235,6 @@ impl FlowRepository for SqlxFlowRepository {
 /// Convert a database row to a Flow
 fn row_to_flow(row: &sqlx::any::AnyRow) -> Result<Flow, AppError> {
     let graph_data_str: String = row.try_get("graph_data")?;
-    let canvas_settings_str: String = row.try_get("canvas_settings")?;
     let created_str: String = row.try_get("created_at")?;
     let updated_str: String = row.try_get("updated_at")?;
 
@@ -253,7 +244,6 @@ fn row_to_flow(row: &sqlx::any::AnyRow) -> Result<Flow, AppError> {
         name: row.try_get("name")?,
         description: row.try_get("description")?,
         graph_data: serde_json::from_str(&graph_data_str)?,
-        canvas_settings: serde_json::from_str(&canvas_settings_str)?,
         version: row.try_get("version")?,
         created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
             .map_err(|e| AppError::Internal(e.to_string()))?

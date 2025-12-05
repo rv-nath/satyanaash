@@ -15,14 +15,11 @@ import {
   Viewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Cloud, CloudOff, Loader2, Save, CheckCircle2 } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { TestCaseNode, StartNode, EndNode, GroupNode } from "./CustomNodes";
 import { CanvasContextMenu } from "./CanvasContextMenu";
-import { CanvasSettings } from "./CanvasSettings";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { EdgeTypeDialog } from "./EdgeTypeDialog";
-import { UndoRedoControls } from "./UndoRedoControls";
 import { getLayoutedElements } from "@/lib/layoutUtils";
 import { useReactFlow } from "@xyflow/react";
 
@@ -34,7 +31,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, saveStatus, saveError, setViewport, getViewport } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
   const [edges, setEdgesState, onEdgesChange] = useEdgesState(contextEdges);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
@@ -386,56 +383,6 @@ const TestCanvasContent = () => {
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      {/* Active Flow Header with Save Status */}
-      {activeFlow && (
-        <div className="absolute top-4 left-4 z-10 bg-card/95 backdrop-blur border border-border rounded-lg px-4 py-2 shadow-lg">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-              <div>
-                <div className="text-sm font-semibold text-foreground">{activeFlow.name}</div>
-                {activeFlow.description && (
-                  <div className="text-xs text-muted-foreground">{activeFlow.description}</div>
-                )}
-              </div>
-            </div>
-            <div className="h-4 w-px bg-border" />
-            <div className="text-xs">
-              {saveStatus === 'idle' && (
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <Cloud className="w-3.5 h-3.5" />
-                  Saved
-                </span>
-              )}
-              {saveStatus === 'saving' && (
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Saving...
-                </span>
-              )}
-              {saveStatus === 'pending' && (
-                <span className="flex items-center gap-1.5 text-warning">
-                  <Save className="w-3.5 h-3.5" />
-                  Unsaved
-                </span>
-              )}
-              {saveStatus === 'saved' && (
-                <span className="flex items-center gap-1.5 text-success">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Saved
-                </span>
-              )}
-              {saveStatus === 'error' && (
-                <span className="flex items-center gap-1.5 text-destructive" title={saveError || 'Save failed'}>
-                  <CloudOff className="w-3.5 h-3.5" />
-                  Failed
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Empty State */}
       {!hasAnyNodes && activeFlow && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
@@ -462,8 +409,6 @@ const TestCanvasContent = () => {
         </div>
       )}
 
-      <UndoRedoControls />
-      <CanvasSettings onAutoLayout={handleAutoLayout} />
       <ReactFlow
         nodes={styledNodes}
         edges={styledEdges}
