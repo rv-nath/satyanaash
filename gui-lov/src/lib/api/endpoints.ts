@@ -18,6 +18,8 @@ import type {
   ValidateFlowRequest,
   ExecuteFlowRequest,
   ExecutionResponse,
+  TestCaseExecutionResult,
+  ExecuteTestCaseRequest,
 } from './types';
 
 // ============ Helper for paginated responses ============
@@ -77,6 +79,10 @@ export const testCasesApi = {
 
   /** Delete a test case */
   delete: (id: string) => apiClient.delete(`/test-cases/${id}`),
+
+  /** Execute a single test case */
+  execute: (id: string, data?: ExecuteTestCaseRequest) =>
+    apiClient.post<TestCaseExecutionResult>(`/test-cases/${id}/execute`, data || {}),
 };
 
 // ============ Flows API ============

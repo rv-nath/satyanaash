@@ -45,162 +45,130 @@ SAT.vars.testEmail = \`test_\${Date.now()}@example.com\`;`,
 ];
 
 export const postTestSnippets: CodeSnippet[] = [
+  // Status Validation
   {
-    category: "Authentication",
-    label: "Extract Auth Token",
-    description: "Save token from response for future requests",
-    code: `// Extract and save authentication token
-const response = SAT.response;
-SAT.vars.authToken = response.data.token;
-SAT.vars.refreshToken = response.data.refreshToken;`,
-  },
-  {
-    category: "Authentication",
-    label: "Extract User Data",
-    description: "Save user information from login response",
-    code: `// Extract user information
-const response = SAT.response;
-SAT.vars.userId = response.data.user.id;
-SAT.vars.userEmail = response.data.user.email;
-SAT.vars.userName = response.data.user.name;`,
-  },
-  {
-    category: "Status Validation",
-    label: "Validate Success (200)",
+    category: "Status Codes",
+    label: "Status 200 OK",
     description: "Assert successful response",
-    code: `// Validate successful response
-SAT.assert(
-  SAT.response.status === 200,
-  "Expected status 200 OK"
-);`,
+    code: `response.status == 200`,
   },
   {
-    category: "Status Validation",
-    label: "Validate Created (201)",
+    category: "Status Codes",
+    label: "Status 201 Created",
     description: "Assert resource created",
-    code: `// Validate resource created
-SAT.assert(
-  SAT.response.status === 201,
-  "Expected status 201 Created"
-);`,
+    code: `response.status == 201`,
   },
   {
-    category: "Status Validation",
-    label: "Validate Unauthorized (401)",
+    category: "Status Codes",
+    label: "Status 2xx Success",
+    description: "Any success status code",
+    code: `response.status >= 200 && response.status < 300`,
+  },
+  {
+    category: "Status Codes",
+    label: "Status 400 Bad Request",
+    description: "Assert validation error",
+    code: `response.status == 400`,
+  },
+  {
+    category: "Status Codes",
+    label: "Status 401 Unauthorized",
     description: "Assert authentication failure",
-    code: `// Validate unauthorized access
-SAT.assert(
-  SAT.response.status === 401,
-  "Expected status 401 Unauthorized"
-);`,
+    code: `response.status == 401`,
   },
   {
-    category: "Status Validation",
-    label: "Validate Not Found (404)",
+    category: "Status Codes",
+    label: "Status 404 Not Found",
     description: "Assert resource not found",
-    code: `// Validate resource not found
-SAT.assert(
-  SAT.response.status === 404,
-  "Expected status 404 Not Found"
-);`,
+    code: `response.status == 404`,
+  },
+  // JSON Field Checks
+  {
+    category: "JSON Validation",
+    label: "Check Field Exists",
+    description: "Verify a JSON field is present",
+    code: `response.status == 200 && response.json.id != ()`,
   },
   {
-    category: "Data Validation",
-    label: "Check Response Structure",
-    description: "Validate response has expected fields",
-    code: `// Validate response structure
-const response = SAT.response;
-SAT.assert(response.data, "Response should have data");
-SAT.assert(response.data.id, "Data should have id field");
-SAT.assert(response.data.name, "Data should have name field");`,
+    category: "JSON Validation",
+    label: "Check Field Value",
+    description: "Verify a JSON field has specific value",
+    code: `response.json.status == 200`,
   },
   {
-    category: "Data Validation",
-    label: "Validate Array Response",
-    description: "Check response is an array with items",
-    code: `// Validate array response
-const response = SAT.response;
-SAT.assert(Array.isArray(response.data), "Response should be an array");
-SAT.assert(response.data.length > 0, "Array should not be empty");`,
+    category: "JSON Validation",
+    label: "Check Nested Field",
+    description: "Access nested JSON property",
+    code: `response.json.data.user.id != ()`,
   },
   {
-    category: "Data Validation",
-    label: "Validate Email Format",
-    description: "Check email field is valid",
-    code: `// Validate email format
-const email = SAT.response.data.email;
-const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
-SAT.assert(
-  emailRegex.test(email),
-  \`Invalid email format: \${email}\`
-);`,
+    category: "JSON Validation",
+    label: "Check Boolean Field",
+    description: "Verify a boolean field is true",
+    code: `response.json.success == true`,
   },
   {
-    category: "Data Validation",
-    label: "Validate Required Fields",
-    description: "Check all required fields exist",
-    code: `// Validate required fields
-const data = SAT.response.data;
-const requiredFields = ['id', 'name', 'email', 'createdAt'];
-
-requiredFields.forEach(field => {
-  SAT.assert(
-    data[field] !== undefined && data[field] !== null,
-    \`Missing required field: \${field}\`
-  );
-});`,
+    category: "JSON Validation",
+    label: "Check Array Length",
+    description: "Verify array has items",
+    code: `response.json.items.len() > 0`,
   },
   {
-    category: "Error Handling",
-    label: "Check Error Message",
-    description: "Validate error response structure",
-    code: `// Validate error response
-const response = SAT.response;
-SAT.assert(response.error, "Response should contain error");
-SAT.assert(response.error.message, "Error should have message");
-console.log("Error message:", response.error.message);`,
+    category: "JSON Validation",
+    label: "Check Array Not Empty",
+    description: "Verify response array is not empty",
+    code: `response.status == 200 && response.json.len() > 0`,
+  },
+  // String Checks
+  {
+    category: "String Validation",
+    label: "String Contains",
+    description: "Check if field contains substring",
+    code: `response.json.message.contains("success")`,
   },
   {
-    category: "Error Handling",
-    label: "Validate Error Code",
-    description: "Check specific error code",
-    code: `// Validate specific error code
-const response = SAT.response;
-SAT.assert(
-  response.error?.code === "VALIDATION_ERROR",
-  "Expected validation error code"
-);`,
+    category: "String Validation",
+    label: "String Starts With",
+    description: "Check if field starts with prefix",
+    code: `response.json.id.starts_with("usr_")`,
   },
   {
-    category: "Performance",
-    label: "Check Response Time",
-    description: "Assert response time is acceptable",
-    code: `// Validate response time
-const responseTime = SAT.response.duration; // in ms
-SAT.assert(
-  responseTime < 1000,
-  \`Response too slow: \${responseTime}ms (expected < 1000ms)\`
-);`,
+    category: "String Validation",
+    label: "Email Contains @",
+    description: "Basic email validation",
+    code: `response.json.email.contains("@")`,
+  },
+  // Combined Assertions
+  {
+    category: "Combined Checks",
+    label: "Success with Token",
+    description: "Status 200 and has auth token",
+    code: `response.status == 200 && response.json.access_token != ()`,
   },
   {
-    category: "Data Extraction",
-    label: "Extract Multiple Values",
-    description: "Save multiple values from response",
-    code: `// Extract multiple values from response
-const response = SAT.response;
-SAT.vars.resourceId = response.data.id;
-SAT.vars.resourceName = response.data.name;
-SAT.vars.resourceUrl = response.data.url;
-SAT.vars.createdAt = response.data.createdAt;`,
+    category: "Combined Checks",
+    label: "Created with ID",
+    description: "Status 201 and has ID field",
+    code: `response.status == 201 && response.json.id != ()`,
   },
   {
-    category: "Data Extraction",
-    label: "Extract Nested Field",
-    description: "Access deeply nested response data",
-    code: `// Extract nested field
-const response = SAT.response;
-SAT.vars.userId = response.data?.user?.profile?.id;
-SAT.assert(SAT.vars.userId, "User ID should exist in nested structure");`,
+    category: "Combined Checks",
+    label: "Error with Message",
+    description: "Error status with message field",
+    code: `response.status >= 400 && response.json.message != ()`,
+  },
+  // Numeric Checks
+  {
+    category: "Numeric Validation",
+    label: "Number Greater Than",
+    description: "Check numeric field is above threshold",
+    code: `response.json.count > 0`,
+  },
+  {
+    category: "Numeric Validation",
+    label: "Number In Range",
+    description: "Check numeric field is within range",
+    code: `response.json.age >= 18 && response.json.age <= 100`,
   },
 ];
 

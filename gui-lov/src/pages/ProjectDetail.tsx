@@ -37,6 +37,9 @@ import { TestGroupDialog } from "@/components/TestGroupDialog";
 import { TestInventory } from "@/components/TestInventory";
 import { FlowsList } from "@/components/FlowsList";
 import { FlowValidator } from "@/components/FlowValidator";
+import { ValidationBadge } from "@/components/ValidationBadge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
 import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateProject } from "@/hooks/useApi";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
@@ -69,6 +72,10 @@ const ProjectDetailContent = () => {
     canRedo,
     saveStatus,
     saveError,
+    // Validation status
+    validationStatus,
+    validationErrors,
+    validationWarnings,
     // Canvas settings
     showEdgeLabels,
     setShowEdgeLabels,
@@ -412,9 +419,50 @@ const ProjectDetailContent = () => {
               <div className="h-5 w-px bg-border mx-2" />
 
               {/* Validate/Export group */}
-              <Button variant="ghost" size="icon" onClick={() => setValidatorOpen(true)} title="Validate">
-                <CheckCircle2 className="w-4 h-4" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setValidatorOpen(true)}
+                    className="relative"
+                  >
+                    <CheckCircle2 className={cn(
+                      "w-4 h-4",
+                      validationStatus === 'validating' && "animate-pulse",
+                      validationStatus === 'valid' && "text-green-500",
+                      validationStatus === 'invalid' && "text-destructive"
+                    )} />
+                    <ValidationBadge
+                      errorCount={validationErrors.length}
+                      warningCount={validationWarnings.length}
+                    />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs">
+                  {validationStatus === 'validating' ? (
+                    <p>Validating...</p>
+                  ) : validationStatus === 'valid' ? (
+                    <p>Flow is valid</p>
+                  ) : validationErrors.length > 0 || validationWarnings.length > 0 ? (
+                    <div className="space-y-1">
+                      <p className="font-medium">
+                        {validationErrors.length} error{validationErrors.length !== 1 ? 's' : ''}, {validationWarnings.length} warning{validationWarnings.length !== 1 ? 's' : ''}
+                      </p>
+                      <ul className="text-xs space-y-0.5">
+                        {[...validationErrors, ...validationWarnings].slice(0, 3).map((issue, i) => (
+                          <li key={i} className="truncate">• {issue.message}</li>
+                        ))}
+                        {validationErrors.length + validationWarnings.length > 3 && (
+                          <li className="text-muted-foreground">...and {validationErrors.length + validationWarnings.length - 3} more</li>
+                        )}
+                      </ul>
+                    </div>
+                  ) : (
+                    <p>Validate flow</p>
+                  )}
+                </TooltipContent>
+              </Tooltip>
               <Button variant="ghost" size="icon" onClick={handleExportFlow} title="Export JSON">
                 <Download className="w-4 h-4" />
               </Button>

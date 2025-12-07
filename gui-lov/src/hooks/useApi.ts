@@ -19,6 +19,7 @@ import type {
   UpdateGraphRequest,
   ValidateFlowRequest,
   ExecuteFlowRequest,
+  ExecuteTestCaseRequest,
 } from '@/lib/api';
 
 // ============ Query Keys ============
@@ -143,6 +144,14 @@ export function useDeleteTestCase() {
     onSuccess: (_, { projectId }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.testCases(projectId) });
     },
+  });
+}
+
+/** Execute a single test case */
+export function useExecuteTestCase() {
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data?: ExecuteTestCaseRequest }) =>
+      testCasesApi.execute(id, data),
   });
 }
 

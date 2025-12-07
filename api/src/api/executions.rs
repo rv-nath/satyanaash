@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::db::repositories::{FlowRepository, ProjectRepository, TestCaseRepository};
 use crate::error::AppError;
-use crate::execution::{ExecutionEngine, ExecutionEvent, FlowExecutionResult};
+use crate::execution::{ExecutionEngine, ExecutionEvent, FlowExecutionResult, NodeResult};
 use crate::validation::{GraphValidator, ValidationResult};
 
 /// Shared state for execution endpoints (needs flow, test case, and project repos)
@@ -249,4 +249,75 @@ pub async fn execute_flow_stream(
             .interval(Duration::from_secs(15))
             .text("keep-alive")
     ))
+}
+
+/// Request body for executing a single test case
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecuteTestCaseRequest {
+    /// Variables to use during execution
+    #[serde(default)]
+    pub variables: HashMap<String, Value>,
+    /// Override: HTTP method (if provided, uses this instead of saved value)
+    pub method: Option<String>,
+    /// Override: Endpoint URL
+    pub endpoint: Option<String>,
+    /// Override: Request headers
+    pub headers: Option<Value>,
+    /// Override: Request payload/body
+    pub payload: Option<String>,
+    /// Override: Assertion script
+    pub assertion_script: Option<String>,
+}
+
+/// POST /api/v1/test-cases/:id/execute - Execute a single test case
+///
+/// If override fields are provided in the request body, they will be used
+/// instead of the saved test case values. This allows running unsaved changes.
+pub async fn execute_test_case(
+    State(state): State<ExecutionState>,
+    Path(test_case_id): Path<String>,
+    body: Option<Json<ExecuteTestCaseRequest>>,
+) -> Result<Json<NodeResult>, AppError> {
+    // Fetch the test case
+    let mut test_case = state.tc_repo.get_by_id(&test_case_id).await?
+        .ok_or_else(|| AppError::NotFound(format!("Test case {} not found", test_case_id)))?;
+
+    // Fetch the project to get base URL from settings
+    let project = state.project_repo.get_by_id(&test_case.project_id).await?
+        .ok_or_else(|| AppError::NotFound(format!("Project {} not found", test_case.project_id)))?;
+
+    // Extract base URL from project settings
+    let base_url = project.settings.get("baseUrl")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Apply overrides from request body (for running unsaved changes)
+    let variables = if let Some(Json(req)) = body {
+        if let Some(method) = req.method {
+            test_case.method = method;
+        }
+        if let Some(endpoint) = req.endpoint {
+            test_case.endpoint = endpoint;
+        }
+        if let Some(headers) = req.headers {
+            test_case.headers = headers;
+        }
+        if let Some(payload) = req.payload {
+            test_case.payload = Some(payload);
+        }
+        if let Some(assertion_script) = req.assertion_script {
+            test_case.assertion_script = Some(assertion_script);
+        }
+        req.variables
+    } else {
+        HashMap::new()
+    };
+
+    // Create execution engine
+    let engine = ExecutionEngine::new(false, base_url);
+
+    // Execute the test case
+    let result = engine.execute_test_case(&test_case, variables).await;
+
+    Ok(Json(result))
 }

@@ -3,8 +3,9 @@ import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
+import { useAutoValidate, ValidationStatus } from "@/hooks/useAutoValidate";
 import { toast } from "sonner";
-import type { Project, Flow as ApiFlow } from "@/lib/api/types";
+import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
 import { generateUUID } from "@/lib/utils/uuid";
 
 export interface TestCase {
@@ -72,6 +73,12 @@ interface TestProjectContextType {
   lastSaved: Date | null;
   saveError: string | null;
   manualSave: () => Promise<void>;
+  // Validation status
+  validationStatus: ValidationStatus;
+  validationErrors: ValidationIssue[];
+  validationWarnings: ValidationIssue[];
+  validateFlow: () => Promise<void>;
+  invalidNodeIds: Set<string>;
   addTestGroup: (group: Omit<TestGroup, "id" | "testCases" | "expanded">) => void;
   updateTestGroup: (id: string, updates: Partial<TestGroup>) => void;
   deleteTestGroup: (id: string) => void;
@@ -309,6 +316,21 @@ export const TestProjectProvider = ({
     debounceMs: 2000,
     enabled: !!activeFlowId,
     onVersionUpdate: handleVersionUpdate,
+  });
+
+  // Auto-validate hook - validates on flow switch and structural changes
+  const {
+    status: validationStatus,
+    errors: validationErrors,
+    warnings: validationWarnings,
+    validate: validateFlow,
+    invalidNodeIds,
+  } = useAutoValidate({
+    flowId: activeFlowId,
+    nodes,
+    edges,
+    debounceMs: 3000,
+    enabled: !!activeFlowId,
   });
 
   const setNodes = useCallback((newNodes: Node[]) => {
@@ -714,6 +736,11 @@ export const TestProjectProvider = ({
         lastSaved,
         saveError,
         manualSave,
+        validationStatus,
+        validationErrors,
+        validationWarnings,
+        validateFlow,
+        invalidNodeIds,
         addTestGroup,
         updateTestGroup,
         deleteTestGroup,

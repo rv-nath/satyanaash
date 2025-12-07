@@ -180,6 +180,49 @@ export interface ExecutionResponse {
   context?: Record<string, unknown>;
 }
 
+// ============ Test Case Execution ============
+
+export interface RequestLog {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body?: string;
+}
+
+export interface ResponseLog {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+  json?: unknown;
+}
+
+export interface TestCaseExecutionResult {
+  node_id: string;
+  test_case_id?: string;
+  test_case_name?: string;
+  status: 'passed' | 'failed' | 'error' | 'skipped';
+  duration_ms: number;
+  request?: RequestLog;
+  response?: ResponseLog;
+  exports?: Record<string, unknown>;
+  error_message?: string;
+  logs: string[];
+}
+
+export interface ExecuteTestCaseRequest {
+  variables?: Record<string, unknown>;
+  /** Override: HTTP method (runs with this instead of saved value) */
+  method?: string;
+  /** Override: Endpoint URL */
+  endpoint?: string;
+  /** Override: Request headers */
+  headers?: Record<string, string>;
+  /** Override: Request payload/body */
+  payload?: string;
+  /** Override: Assertion script */
+  assertion_script?: string;
+}
+
 // ============ Pagination ============
 
 export interface PaginationParams {

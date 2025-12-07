@@ -31,7 +31,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
   const [edges, setEdgesState, onEdgesChange] = useEdgesState(contextEdges);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
@@ -339,16 +339,25 @@ const TestCanvasContent = () => {
     setShowConfigPanel(false);
   }, []);
 
-  // Apply node styling for selection and edge styling based on type
-  const styledNodes = nodes.map(node => ({
-    ...node,
-    selected: node.id === selectedNode?.id,
-    style: {
-      ...node.style,
-      border: node.id === selectedNode?.id ? '2px solid hsl(var(--primary))' : undefined,
-      boxShadow: node.id === selectedNode?.id ? '0 0 0 2px hsl(var(--primary) / 0.2)' : undefined,
-    },
-  }));
+  // Apply node styling for selection, validation highlighting, and edge styling based on type
+  const styledNodes = nodes.map(node => {
+    const hasValidationIssue = invalidNodeIds.has(node.id);
+    const isError = hasValidationIssue && validationErrors.some(e => e.node_id === node.id);
+    const validationClass = hasValidationIssue
+      ? (isError ? 'validation-error' : 'validation-warning')
+      : '';
+
+    return {
+      ...node,
+      selected: node.id === selectedNode?.id,
+      className: [node.className, validationClass].filter(Boolean).join(' '),
+      style: {
+        ...node.style,
+        border: node.id === selectedNode?.id ? '2px solid hsl(var(--primary))' : undefined,
+        boxShadow: node.id === selectedNode?.id ? '0 0 0 2px hsl(var(--primary) / 0.2)' : undefined,
+      },
+    };
+  });
 
   // Sort edges so selected/hovered ones are on top (rendered last)
   const styledEdges = edgesWithType

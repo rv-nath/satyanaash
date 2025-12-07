@@ -670,6 +670,184 @@ impl ExecutionEngine {
         // Fall back to first edge
         edges.first().map(|e| e.target.clone())
     }
+
+    /// Execute a single test case directly (without flow context)
+    /// Used for testing individual test cases from the editor
+    pub async fn execute_test_case(
+        &self,
+        test_case: &TestCase,
+        variables: HashMap<String, Value>,
+    ) -> NodeResult {
+        let start = std::time::Instant::now();
+        let mut logs = Vec::new();
+        let mut ctx = ExecutionContext::new(HashMap::new(), variables);
+
+        if self.debug_mode {
+            logs.push(format!("Executing test case: {}", test_case.name));
+        }
+
+        // Interpolate endpoint URL
+        let endpoint = match ctx.interpolate(&test_case.endpoint) {
+            Ok(u) => u,
+            Err(e) => {
+                return NodeResult {
+                    node_id: "direct".to_string(),
+                    test_case_id: Some(test_case.id.clone()),
+                    test_case_name: Some(test_case.name.clone()),
+                    status: NodeStatus::Error,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    request: None,
+                    response: None,
+                    exports: None,
+                    error_message: Some(format!("URL interpolation failed: {}", e)),
+                    logs,
+                };
+            }
+        };
+
+        // Build full URL
+        let url = self.build_url(&endpoint);
+
+        if self.debug_mode {
+            logs.push(format!("URL: {} {}", test_case.method, url));
+        }
+
+        // Convert headers
+        let mut headers = HashMap::new();
+        if let Some(obj) = test_case.headers.as_object() {
+            for (key, value) in obj {
+                if let Some(v) = value.as_str() {
+                    if let (Ok(k), Ok(val)) = (ctx.interpolate(key), ctx.interpolate(v)) {
+                        headers.insert(k, val);
+                    }
+                }
+            }
+        }
+
+        // Interpolate payload
+        let body = if let Some(ref payload_str) = test_case.payload {
+            match ctx.interpolate(payload_str) {
+                Ok(interpolated) => Some(interpolated),
+                Err(e) => {
+                    return NodeResult {
+                        node_id: "direct".to_string(),
+                        test_case_id: Some(test_case.id.clone()),
+                        test_case_name: Some(test_case.name.clone()),
+                        status: NodeStatus::Error,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        request: None,
+                        response: None,
+                        exports: None,
+                        error_message: Some(format!("Payload interpolation failed: {}", e)),
+                        logs,
+                    };
+                }
+            }
+        } else {
+            None
+        };
+
+        // Capture request info
+        let request_log = RequestLog {
+            method: test_case.method.clone(),
+            url: url.clone(),
+            headers: headers.clone(),
+            body: body.clone(),
+        };
+
+        // Execute HTTP request
+        let http_result = match self.http.execute(
+            &test_case.method,
+            &url,
+            &headers,
+            body.as_deref(),
+        ).await {
+            Ok(r) => r,
+            Err(e) => {
+                return NodeResult {
+                    node_id: "direct".to_string(),
+                    test_case_id: Some(test_case.id.clone()),
+                    test_case_name: Some(test_case.name.clone()),
+                    status: NodeStatus::Error,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    request: Some(request_log),
+                    response: None,
+                    exports: None,
+                    error_message: Some(format!("HTTP request failed: {}", e)),
+                    logs,
+                };
+            }
+        };
+
+        if self.debug_mode {
+            logs.push(format!("Response status: {}", http_result.response.status));
+        }
+
+        // Run assertions
+        let assertion_passed = if let Some(ref assertion_script) = test_case.assertion_script {
+            match self.assertions.evaluate(
+                assertion_script,
+                http_result.response.status,
+                &http_result.response.body,
+                &http_result.response.json,
+                &http_result.response.headers,
+            ) {
+                Ok(passed) => {
+                    if self.debug_mode {
+                        logs.push(format!("Assertion result: {}", if passed { "PASS" } else { "FAIL" }));
+                    }
+                    passed
+                }
+                Err(e) => {
+                    return NodeResult {
+                        node_id: "direct".to_string(),
+                        test_case_id: Some(test_case.id.clone()),
+                        test_case_name: Some(test_case.name.clone()),
+                        status: NodeStatus::Error,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        request: Some(http_result.request),
+                        response: Some(http_result.response),
+                        exports: None,
+                        error_message: Some(format!("Assertion error: {}", e)),
+                        logs,
+                    };
+                }
+            }
+        } else {
+            // Default assertion: 2xx status
+            let passed = AssertionEngine::default_assertion(http_result.response.status);
+            if self.debug_mode {
+                logs.push(format!("Default assertion (2xx): {}", if passed { "PASS" } else { "FAIL" }));
+            }
+            passed
+        };
+
+        // Process exports if assertion passed
+        let exports = if assertion_passed {
+            self.process_exports(test_case, &http_result.response.json, &mut ctx, &mut logs)
+        } else {
+            None
+        };
+
+        let status = if assertion_passed {
+            NodeStatus::Passed
+        } else {
+            NodeStatus::Failed
+        };
+
+        NodeResult {
+            node_id: "direct".to_string(),
+            test_case_id: Some(test_case.id.clone()),
+            test_case_name: Some(test_case.name.clone()),
+            status,
+            duration_ms: start.elapsed().as_millis() as u64,
+            request: Some(http_result.request),
+            response: Some(http_result.response),
+            exports,
+            error_message: None,
+            logs,
+        }
+    }
 }
 
 impl Default for ExecutionEngine {

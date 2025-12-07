@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList } from "lucide-react";
+import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList, CheckCircle2, XCircle, AlertCircle, Loader2, WrapText, Pencil, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,10 +12,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { useTestProject } from "@/contexts/TestProjectContext";
-import { useTestCase, useCreateTestCase, useUpdateTestCase } from "@/hooks/useApi";
+import { useTestCase, useCreateTestCase, useUpdateTestCase, useExecuteTestCase } from "@/hooks/useApi";
 import { getUpstreamVariables } from "@/lib/variableUtils";
 import { preTestSnippets, postTestSnippets, getSnippetsByCategory } from "@/lib/testSnippets";
 import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/components/HeadersEditor";
+import type { TestCaseExecutionResult } from "@/lib/api/types";
 
 interface TestCaseEditorProps {
   testCaseId?: string; // Optional - undefined means create mode
@@ -34,6 +35,11 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
   const { data: testCase, isLoading } = useTestCase(testCaseId || '');
   const createMutation = useCreateTestCase();
   const updateMutation = useUpdateTestCase();
+  const executeMutation = useExecuteTestCase();
+
+  // Execution result state
+  const [executionResult, setExecutionResult] = useState<TestCaseExecutionResult | null>(null);
+  const [wordWrap, setWordWrap] = useState(true);
 
   // Form state
   const [name, setName] = useState("");
@@ -48,6 +54,8 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
   const [postTestScript, setPostTestScript] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
   const [isDirty, setIsDirty] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   // Refs for text insertion
   const endpointRef = useRef<HTMLInputElement>(null);
@@ -244,6 +252,47 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
     }
   };
 
+  const handleRunTest = async () => {
+    if (!testCaseId) {
+      toast.error("Save the test case before running");
+      return;
+    }
+
+    if (!endpoint.trim()) {
+      toast.error("Endpoint URL is required");
+      setActiveTab("request");
+      return;
+    }
+
+    try {
+      // Send current form values as overrides (allows running unsaved changes)
+      const headersJson = headersToJson(headers);
+      const result = await executeMutation.mutateAsync({
+        id: testCaseId,
+        data: {
+          method,
+          endpoint,
+          headers: headersJson ? JSON.parse(headersJson) : undefined,
+          payload: hasPayload && payload.trim() ? payload : undefined,
+          assertion_script: postTestScript || undefined,
+        },
+      });
+      setExecutionResult(result);
+      setActiveTab("response");
+
+      if (result.status === 'passed') {
+        toast.success(`Test passed in ${result.duration_ms}ms`);
+      } else if (result.status === 'failed') {
+        toast.error(`Test failed: ${result.error_message || 'Assertion failed'}`);
+      } else if (result.status === 'error') {
+        toast.error(`Test error: ${result.error_message || 'Unknown error'}`);
+      }
+    } catch (err) {
+      toast.error("Failed to execute test");
+      console.error(err);
+    }
+  };
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -315,7 +364,41 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
               </Badge>
             )}
             <Badge className={`${getMethodColor(method)}`}>{method}</Badge>
-            <h2 className="text-lg font-semibold font-mono">{name || "Untitled"}</h2>
+            {isEditingName ? (
+              <div className="flex items-center gap-2">
+                <Input
+                  ref={nameInputRef}
+                  value={name}
+                  onChange={(e) => handleFieldChange(setName)(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') setIsEditingName(false);
+                    if (e.key === 'Escape') setIsEditingName(false);
+                  }}
+                  onBlur={() => setIsEditingName(false)}
+                  className="h-8 w-64 font-mono text-base"
+                  autoFocus
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setIsEditingName(false)}
+                >
+                  <Check className="w-4 h-4 text-success" />
+                </Button>
+              </div>
+            ) : (
+              <div
+                className="flex items-center gap-2 group cursor-pointer"
+                onClick={() => {
+                  setIsEditingName(true);
+                  setTimeout(() => nameInputRef.current?.select(), 0);
+                }}
+              >
+                <h2 className="text-lg font-semibold font-mono">{name || "Untitled"}</h2>
+                <Pencil className="w-3.5 h-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            )}
             {isDirty && (
               <Badge variant="outline" className="text-warning border-warning">
                 {isCreateMode ? "Not saved" : "Unsaved"}
@@ -325,9 +408,19 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
         </div>
         <div className="flex items-center gap-2">
           {!isCreateMode && (
-            <Button variant="outline" size="sm" className="gap-2">
-              <Play className="w-4 h-4" />
-              Run Test
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={handleRunTest}
+              disabled={executeMutation.isPending}
+            >
+              {executeMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              {executeMutation.isPending ? "Running..." : "Run Test"}
             </Button>
           )}
           <Button
@@ -373,18 +466,6 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           <TabsContent value="overview" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
               <div className="p-6 space-y-6 max-w-4xl">
-                {/* Test Name */}
-                <div className="space-y-2">
-                  <Label htmlFor="test-name">Test Name *</Label>
-                  <Input
-                    id="test-name"
-                    value={name}
-                    onChange={(e) => handleFieldChange(setName)(e.target.value)}
-                    placeholder="e.g., Login with valid credentials"
-                    className="font-mono text-sm"
-                  />
-                </div>
-
                 {/* BDD Section */}
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
@@ -678,9 +759,9 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Label htmlFor="post-script">Post-Test Script (JavaScript)</Label>
+                      <Label htmlFor="post-script">Assertion Script (RHAI)</Label>
                       <Badge variant="outline" className="text-xs">
-                        Assertions Here
+                        Returns true/false
                       </Badge>
                     </div>
                     <Popover>
@@ -737,15 +818,15 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                     id="post-script"
                     value={postTestScript}
                     onChange={(e) => handleFieldChange(setPostTestScript)(e.target.value)}
-                    placeholder="// Extract variables from response&#10;SAT.vars.userId = response.data.id;&#10;SAT.vars.authToken = response.data.token;&#10;&#10;// Assert test pass/fail&#10;SAT.assert(response.status === 200, &quot;Status should be 200&quot;);&#10;SAT.assert(response.data.email, &quot;Email should be present&quot;);"
+                    placeholder="// Simple status check&#10;response.status == 200&#10;&#10;// Check JSON field&#10;response.status == 200 && response.json.access_token != ()&#10;&#10;// String contains&#10;response.json.message.contains(&quot;success&quot;)"
                     className="font-mono text-xs min-h-[250px]"
                   />
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-foreground">
-                      Use SAT.assert() to determine test pass/fail
+                      Script must return true (pass) or false (fail)
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Runs after the request. Extract variables and add assertions to validate the response.
+                      Available: <code className="px-1 py-0.5 bg-muted rounded">response.status</code>, <code className="px-1 py-0.5 bg-muted rounded">response.json</code>, <code className="px-1 py-0.5 bg-muted rounded">response.body</code>, <code className="px-1 py-0.5 bg-muted rounded">response.headers</code>
                     </p>
                   </div>
                 </div>
@@ -755,17 +836,196 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
 
           {/* Response Tab */}
           <TabsContent value="response" className="flex-1 mt-0 overflow-hidden">
-            <div className="h-full flex flex-col items-center justify-center p-6 text-center">
-              <Eye className="w-16 h-16 text-muted-foreground/30 mb-4" />
-              <h3 className="text-lg font-medium text-foreground mb-2">Response Preview</h3>
-              <p className="text-muted-foreground max-w-md mb-6">
-                Run the test to see the response here. You can inspect status codes, headers, and response body.
-              </p>
-              <Button variant="outline" className="gap-2">
-                <Play className="w-4 h-4" />
-                Run Test
-              </Button>
-            </div>
+            {executeMutation.isPending ? (
+              <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+                <Loader2 className="w-12 h-12 text-primary animate-spin mb-4" />
+                <h3 className="text-lg font-medium text-foreground mb-2">Running Test...</h3>
+                <p className="text-muted-foreground">Executing HTTP request and running assertions</p>
+              </div>
+            ) : executionResult ? (
+              <div className="h-full flex flex-col">
+                {/* Status Bar */}
+                <div className={`px-6 py-3 border-b flex items-center justify-between ${
+                  executionResult.status === 'passed'
+                    ? 'bg-success/10 border-success/30'
+                    : executionResult.status === 'failed'
+                    ? 'bg-destructive/10 border-destructive/30'
+                    : 'bg-warning/10 border-warning/30'
+                }`}>
+                  <div className="flex items-center gap-3">
+                    {executionResult.status === 'passed' ? (
+                      <CheckCircle2 className="w-5 h-5 text-success" />
+                    ) : executionResult.status === 'failed' ? (
+                      <XCircle className="w-5 h-5 text-destructive" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5 text-warning" />
+                    )}
+                    <span className="font-semibold capitalize">{executionResult.status}</span>
+                    {executionResult.response && (
+                      <Badge variant={executionResult.response.status >= 200 && executionResult.response.status < 300 ? "default" : "destructive"}>
+                        {executionResult.response.status}
+                      </Badge>
+                    )}
+                    <span className="text-sm text-muted-foreground">
+                      {executionResult.duration_ms}ms
+                    </span>
+                    {executionResult.error_message && (
+                      <span className="text-sm text-destructive">• {executionResult.error_message}</span>
+                    )}
+                  </div>
+                  <Button variant="ghost" size="sm" className="gap-1.5" onClick={handleRunTest} disabled={executeMutation.isPending}>
+                    <Play className="w-3.5 h-3.5" />
+                    Run Again
+                  </Button>
+                </div>
+
+                {/* Sub-tabs for Response details */}
+                <Tabs defaultValue="body" className="flex-1 flex flex-col overflow-hidden">
+                  <div className="border-b px-6">
+                    <TabsList className="h-10 bg-transparent p-0 gap-4">
+                      <TabsTrigger value="body" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
+                        Body
+                      </TabsTrigger>
+                      <TabsTrigger value="headers" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
+                        Headers
+                        {executionResult.response && (
+                          <span className="ml-1.5 text-xs text-muted-foreground">
+                            ({Object.keys(executionResult.response.headers).length})
+                          </span>
+                        )}
+                      </TabsTrigger>
+                      <TabsTrigger value="request" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
+                        Request
+                      </TabsTrigger>
+                    </TabsList>
+                  </div>
+
+                  {/* Body Sub-tab */}
+                  <TabsContent value="body" className="flex-1 mt-0 overflow-hidden flex flex-col">
+                    {executionResult.response?.body ? (
+                      <>
+                        <div className="flex justify-end px-4 py-1.5 border-b bg-muted/20">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className={`h-7 gap-1.5 text-xs ${wordWrap ? 'bg-muted' : ''}`}
+                            onClick={() => setWordWrap(!wordWrap)}
+                          >
+                            <WrapText className="w-3.5 h-3.5" />
+                            Wrap
+                          </Button>
+                        </div>
+                        <pre className={`flex-1 overflow-auto p-4 text-sm font-mono bg-muted/30 ${wordWrap ? 'whitespace-pre-wrap break-all' : ''}`}>
+                          {(() => {
+                            try {
+                              return JSON.stringify(JSON.parse(executionResult.response.body), null, 2);
+                            } catch {
+                              return executionResult.response.body;
+                            }
+                          })()}
+                        </pre>
+                      </>
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-muted-foreground">
+                        No response body
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  {/* Headers Sub-tab */}
+                  <TabsContent value="headers" className="flex-1 mt-0 overflow-hidden">
+                    {executionResult.response && Object.keys(executionResult.response.headers).length > 0 ? (
+                      <div className="h-full overflow-auto">
+                        <table className="w-full text-sm">
+                          <tbody>
+                            {Object.entries(executionResult.response.headers).map(([k, v]) => (
+                              <tr key={k} className="border-b border-border/50 hover:bg-muted/30">
+                                <td className="py-2 px-4 font-mono text-muted-foreground whitespace-nowrap">{k}</td>
+                                <td className="py-2 px-4 font-mono break-all">{v}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-muted-foreground">
+                        No headers
+                      </div>
+                    )}
+                  </TabsContent>
+
+                  {/* Request Sub-tab */}
+                  <TabsContent value="request" className="flex-1 mt-0 overflow-hidden">
+                    <div className="h-full overflow-auto p-4 space-y-4">
+                      {executionResult.request && (
+                        <>
+                          {/* Request line */}
+                          <div className="flex items-center gap-2">
+                            <Badge className={getMethodColor(executionResult.request.method)}>
+                              {executionResult.request.method}
+                            </Badge>
+                            <code className="text-sm font-mono break-all">{executionResult.request.url}</code>
+                          </div>
+
+                          {/* Request Headers */}
+                          {Object.keys(executionResult.request.headers).length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST HEADERS</h4>
+                              <table className="w-full text-sm">
+                                <tbody>
+                                  {Object.entries(executionResult.request.headers).map(([k, v]) => (
+                                    <tr key={k} className="border-b border-border/50">
+                                      <td className="py-1.5 pr-4 font-mono text-muted-foreground whitespace-nowrap">{k}</td>
+                                      <td className="py-1.5 font-mono break-all">{v}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+
+                          {/* Request Body */}
+                          {executionResult.request.body && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST BODY</h4>
+                              <pre className="text-sm font-mono bg-muted/50 p-3 rounded overflow-auto max-h-[300px]">
+                                {(() => {
+                                  try {
+                                    return JSON.stringify(JSON.parse(executionResult.request.body), null, 2);
+                                  } catch {
+                                    return executionResult.request.body;
+                                  }
+                                })()}
+                              </pre>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </div>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+                <Eye className="w-16 h-16 text-muted-foreground/30 mb-4" />
+                <h3 className="text-lg font-medium text-foreground mb-2">Response Preview</h3>
+                <p className="text-muted-foreground max-w-md mb-6">
+                  Run the test to see the response here. You can inspect status codes, headers, and response body.
+                </p>
+                <Button
+                  variant="outline"
+                  className="gap-2"
+                  onClick={handleRunTest}
+                  disabled={isCreateMode || executeMutation.isPending}
+                >
+                  <Play className="w-4 h-4" />
+                  Run Test
+                </Button>
+                {isCreateMode && (
+                  <p className="text-xs text-muted-foreground mt-2">Save the test case first to run it</p>
+                )}
+              </div>
+            )}
           </TabsContent>
         </Tabs>
       </div>

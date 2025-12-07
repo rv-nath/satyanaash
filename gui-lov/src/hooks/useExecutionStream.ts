@@ -257,22 +257,32 @@ function handleEvent(
       const name = result.test_case_name || result.test_case_id || result.node_id;
       addLog(`${statusIcon} ${name}: ${result.status} (${result.duration_ms}ms)`, logType);
 
-      // In debug mode, log request/response details
-      if (debugMode && result.request) {
-        addLog(`  → ${result.request.method} ${result.request.url}`, 'info');
-        if (result.response) {
-          addLog(`  ← ${result.response.status}`, 'info');
+      const isFailed = result.status === 'failed' || result.status === 'error';
+
+      // For failed tests, show request/response details to help debugging
+      if (isFailed) {
+        if (result.request) {
+          addLog(`  → ${result.request.method} ${result.request.url}`, 'info');
         }
-      }
 
-      // Log any error messages
-      if (result.error_message) {
-        addLog(`  Error: ${result.error_message}`, 'error');
-      }
+        if (result.response) {
+          addLog(`  ← Response: ${result.response.status}`, 'error');
 
-      // Log any exports
-      if (debugMode && result.exports && Object.keys(result.exports).length > 0) {
-        addLog(`  Exported: ${Object.keys(result.exports).join(', ')}`, 'info');
+          // Show response body (truncated if too long)
+          if (result.response.body) {
+            const body = result.response.body.trim();
+            const maxLen = 200;
+            const truncatedBody = body.length > maxLen
+              ? body.slice(0, maxLen) + '...'
+              : body;
+            addLog(`  Body: ${truncatedBody}`, 'info');
+          }
+        }
+
+        // Log any error messages (e.g., assertion errors)
+        if (result.error_message) {
+          addLog(`  Error: ${result.error_message}`, 'error');
+        }
       }
       break;
     }

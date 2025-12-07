@@ -151,4 +151,17 @@ All colors MUST be HSL.
     max-width: 16px !important;
     max-height: 16px !important;
   }
+
+  /* Validation highlighting for nodes */
+  .react-flow__node.validation-error > div {
+    border-color: hsl(var(--destructive)) !important;
+    box-shadow: 0 0 0 2px hsl(var(--destructive) / 0.3),
+                0 0 12px hsl(var(--destructive) / 0.2) !important;
+  }
+
+  .react-flow__node.validation-warning > div {
+    border-color: hsl(var(--warning)) !important;
+    box-shadow: 0 0 0 2px hsl(var(--warning) / 0.3),
+                0 0 12px hsl(var(--warning) / 0.2) !important;
+  }
 }

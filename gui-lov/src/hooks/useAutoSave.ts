@@ -37,6 +37,20 @@ function hasChanges(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) !== JSON.stringify(b);
 }
 
+/**
+ * Create a comparable representation of nodes, excluding volatile fields like width/height
+ * that change when React Flow re-measures (e.g., on window focus).
+ */
+function nodesForComparison(nodes: Node[]): unknown[] {
+  return nodes.map(node => ({
+    id: node.id,
+    type: node.type,
+    position: { x: node.position.x, y: node.position.y },
+    data: node.data,
+    // Exclude: width, height (volatile - changes on window focus)
+  }));
+}
+
 export function useAutoSave({
   flowId,
   version,
@@ -143,7 +157,8 @@ export function useAutoSave({
   useEffect(() => {
     if (!enabled || !flowId) return;
 
-    const nodesJson = JSON.stringify(nodesToApi(nodes));
+    // Use nodesForComparison to exclude volatile fields (width/height)
+    const nodesJson = JSON.stringify(nodesForComparison(nodes));
     const edgesJson = JSON.stringify(edgesToApi(edges));
     const edgeSettingsJson = JSON.stringify(edgeSettings || {});
 

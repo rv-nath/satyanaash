@@ -1,13 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
 import { Node, Edge } from "@xyflow/react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { AlertCircle, AlertTriangle, CheckCircle2, X, Loader2 } from "lucide-react";
-import { useValidateFlow } from "@/hooks/useApi";
-import { ValidationIssue as ApiValidationIssue } from "@/lib/api/types";
-import { nodesToApi, edgesToApi } from "@/lib/graphUtils";
+import { useTestProject } from "@/contexts/TestProjectContext";
 
 export interface ValidationIssue {
   type: 'error' | 'warning';
@@ -25,61 +22,35 @@ interface FlowValidatorProps {
   onJumpToNode?: (nodeId: string) => void;
 }
 
-export const FlowValidator = ({ nodes, edges, testGroups, activeFlowId, onClose, onJumpToNode }: FlowValidatorProps) => {
-  const [issues, setIssues] = useState<ValidationIssue[]>([]);
-  const [isValidating, setIsValidating] = useState(false);
-  const validateFlowMutation = useValidateFlow();
+export const FlowValidator = ({ onClose, onJumpToNode }: FlowValidatorProps) => {
+  // Use shared validation state from context
+  const {
+    validationStatus,
+    validationErrors,
+    validationWarnings,
+    validateFlow,
+  } = useTestProject();
 
-  const validateFlow = useCallback(async () => {
-    if (!activeFlowId) {
-      setIssues([{
-        type: 'error',
-        code: 'NO_FLOW',
-        message: 'No flow selected for validation',
-      }]);
-      return;
-    }
+  const isValidating = validationStatus === 'validating';
 
-    setIsValidating(true);
-    try {
-      // Send current canvas state to backend for validation
-      const result = await validateFlowMutation.mutateAsync({
-        id: activeFlowId,
-        data: {
-          nodes: nodesToApi(nodes),
-          edges: edgesToApi(edges),
-        },
-      });
+  // Combine errors and warnings into a single list with type annotation
+  const issues: ValidationIssue[] = [
+    ...validationErrors.map(e => ({
+      type: 'error' as const,
+      code: e.code,
+      nodeId: e.node_id,
+      message: e.message,
+    })),
+    ...validationWarnings.map(w => ({
+      type: 'warning' as const,
+      code: w.code,
+      nodeId: w.node_id,
+      message: w.message,
+    })),
+  ];
 
-      // Combine errors and warnings from backend response
-      const allIssues = [...(result.errors || []), ...(result.warnings || [])];
-
-      // Map backend issues to frontend format
-      const mappedIssues: ValidationIssue[] = allIssues.map((issue: ApiValidationIssue) => ({
-        type: issue.severity,
-        code: issue.code,
-        nodeId: issue.node_id,
-        message: issue.message,
-      }));
-
-      setIssues(mappedIssues);
-    } catch (error) {
-      setIssues([{
-        type: 'error',
-        code: 'API_ERROR',
-        message: `Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      }]);
-    } finally {
-      setIsValidating(false);
-    }
-  }, [activeFlowId, nodes, edges, validateFlowMutation]);
-
-  useEffect(() => {
-    validateFlow();
-  }, []);
-
-  const errorCount = issues.filter(i => i.type === 'error').length;
-  const warningCount = issues.filter(i => i.type === 'warning').length;
+  const errorCount = validationErrors.length;
+  const warningCount = validationWarnings.length;
 
   return (
     <Card className="absolute top-4 right-4 w-96 max-h-[calc(100vh-120px)] z-50 shadow-lg border-border bg-card">
@@ -135,8 +106,8 @@ export const FlowValidator = ({ nodes, edges, testGroups, activeFlowId, onClose,
                 <div
                   key={idx}
                   className={`p-3 rounded-md border ${
-                    issue.type === 'error' 
-                      ? 'bg-destructive/10 border-destructive/30' 
+                    issue.type === 'error'
+                      ? 'bg-destructive/10 border-destructive/30'
                       : 'bg-warning/10 border-warning/30'
                   }`}
                 >
@@ -170,7 +141,7 @@ export const FlowValidator = ({ nodes, edges, testGroups, activeFlowId, onClose,
             )}
           </div>
         </ScrollArea>
-        
+
         <div className="p-4 border-t border-border bg-muted/20 flex justify-end">
           <Button variant="outline" size="sm" onClick={validateFlow} disabled={isValidating}>
             {isValidating ? (
@@ -187,4 +158,3 @@ export const FlowValidator = ({ nodes, edges, testGroups, activeFlowId, onClose,
     </Card>
   );
 };
-
