@@ -45,6 +45,7 @@ export interface TestCase {
   payload: string | null;  // Stored as JSON string in backend
   exports: ExportVariable[];
   assertion_script: string | null;
+  pre_test_script: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +61,7 @@ export interface CreateTestCaseRequest {
   payload?: string;                   // String in backend (not parsed JSON)
   exports?: ExportVariable[];
   assertion_script?: string;
+  pre_test_script?: string;
 }
 
 export interface UpdateTestCaseRequest {
@@ -73,6 +75,7 @@ export interface UpdateTestCaseRequest {
   payload?: string;                   // String in backend (not parsed JSON)
   exports?: ExportVariable[];
   assertion_script?: string;
+  pre_test_script?: string;
 }
 
 // ============ Flows ============
@@ -221,6 +224,8 @@ export interface ExecuteTestCaseRequest {
   payload?: string;
   /** Override: Assertion script */
   assertion_script?: string;
+  /** Override: Pre-test script */
+  pre_test_script?: string;
 }
 
 // ============ Pagination ============

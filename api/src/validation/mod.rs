@@ -4,4 +4,4 @@
 
 mod graph;
 
-pub use graph::{GraphValidator, ValidationResult, ValidationIssue};
+pub use graph::{GraphValidator, ValidationResult};

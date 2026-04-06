@@ -344,16 +344,6 @@ impl<'a> GraphValidator<'a> {
         Ok(false)
     }
 
-    /// Check if a flow can be nested into another without creating cycles
-    pub async fn can_nest(&self, parent_flow_id: &str, child_flow_id: &str) -> Result<bool, AppError> {
-        // Can't nest into self
-        if parent_flow_id == child_flow_id {
-            return Ok(false);
-        }
-        // Check if child contains parent (which would create a cycle)
-        let has_cycle = self.has_circular_dependency(parent_flow_id, child_flow_id).await?;
-        Ok(!has_cycle)
-    }
 }
 
 /// Find all nodes reachable from a starting node using BFS

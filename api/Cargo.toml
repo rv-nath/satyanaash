@@ -44,3 +44,6 @@ regex = "1"                                        # Variable interpolation
 # SSE Streaming
 async-stream = "0.3"                               # For SSE stream generation
 futures = "0.3"                                    # Stream utilities
+
+# Random Data Generation
+bharat-cafe = "0.2"                                # Indian names, addresses, phones, etc.

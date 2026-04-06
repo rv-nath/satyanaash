@@ -10,8 +10,10 @@ mod variables;
 mod assertions;
 mod http;
 mod engine;
+mod pre_test_script;
 
 pub use variables::ExecutionContext;
 pub use assertions::AssertionEngine;
 pub use http::HttpExecutor;
-pub use engine::{ExecutionEngine, NodeResult, ExecutionEvent, FlowExecutionResult, ExecutionStats, NodeStatus};
+pub use pre_test_script::PreTestScriptEngine;
+pub use engine::{ExecutionEngine, NodeResult, ExecutionEvent, FlowExecutionResult};

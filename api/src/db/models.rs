@@ -159,6 +159,9 @@ pub struct TestCase {
     // Assertions (JS expression, evaluated in sandboxed runtime)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assertion_script: Option<String>,
+    // Pre-test script (Rhai, executed before HTTP request)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_test_script: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -193,6 +196,8 @@ pub struct CreateTestCase {
     pub exports: Vec<ExportVariable>,
     #[serde(default)]
     pub assertion_script: Option<String>,
+    #[serde(default)]
+    pub pre_test_script: Option<String>,
 }
 
 /// Update test case request
@@ -221,129 +226,8 @@ pub struct UpdateTestCase {
     pub exports: Option<Vec<ExportVariable>>,
     #[serde(default)]
     pub assertion_script: Option<String>,
-}
-
-// =============================================================================
-// Execution
-// =============================================================================
-
-/// Execution run status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ExecutionStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl std::fmt::Display for ExecutionStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ExecutionStatus::Pending => write!(f, "pending"),
-            ExecutionStatus::Running => write!(f, "running"),
-            ExecutionStatus::Completed => write!(f, "completed"),
-            ExecutionStatus::Failed => write!(f, "failed"),
-            ExecutionStatus::Cancelled => write!(f, "cancelled"),
-        }
-    }
-}
-
-impl std::str::FromStr for ExecutionStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "pending" => Ok(ExecutionStatus::Pending),
-            "running" => Ok(ExecutionStatus::Running),
-            "completed" => Ok(ExecutionStatus::Completed),
-            "failed" => Ok(ExecutionStatus::Failed),
-            "cancelled" => Ok(ExecutionStatus::Cancelled),
-            _ => Err(format!("Unknown execution status: {}", s)),
-        }
-    }
-}
-
-/// Execution run entity
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionRun {
-    pub id: String,
-    pub flow_id: String,
-    pub status: ExecutionStatus,
-    pub debug_mode: bool,
-    pub environment: serde_json::Value,
-    pub variables: serde_json::Value,
-    pub started_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<i64>,
-}
-
-/// Test result status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum TestResultStatus {
-    Passed,
-    Failed,
-    Skipped,
-    Error,
-}
-
-impl std::fmt::Display for TestResultStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TestResultStatus::Passed => write!(f, "passed"),
-            TestResultStatus::Failed => write!(f, "failed"),
-            TestResultStatus::Skipped => write!(f, "skipped"),
-            TestResultStatus::Error => write!(f, "error"),
-        }
-    }
-}
-
-impl std::str::FromStr for TestResultStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "passed" => Ok(TestResultStatus::Passed),
-            "failed" => Ok(TestResultStatus::Failed),
-            "skipped" => Ok(TestResultStatus::Skipped),
-            "error" => Ok(TestResultStatus::Error),
-            _ => Err(format!("Unknown test result status: {}", s)),
-        }
-    }
-}
-
-/// Execution result for a single node
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionResult {
-    pub id: String,
-    pub execution_id: String,
-    pub node_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub test_case_id: Option<String>,
-    pub status: TestResultStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<serde_json::Value>,
-    pub logs: Vec<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_message: Option<String>,
-    pub executed_at: DateTime<Utc>,
-}
-
-/// Start execution request
-#[derive(Debug, Clone, Deserialize)]
-pub struct StartExecution {
     #[serde(default)]
-    pub debug_mode: bool,
-    #[serde(default = "default_settings")]
-    pub environment: serde_json::Value,
+    pub pre_test_script: Option<String>,
 }
 
 // =============================================================================

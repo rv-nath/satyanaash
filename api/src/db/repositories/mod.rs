@@ -48,13 +48,3 @@ pub trait TestCaseRepository: Send + Sync {
     /// Check which IDs exist (for validation)
     async fn find_existing_ids(&self, ids: &[String]) -> Result<std::collections::HashSet<String>, AppError>;
 }
-
-/// Execution repository trait
-#[async_trait]
-pub trait ExecutionRepository: Send + Sync {
-    async fn create_run(&self, flow_id: &str, request: StartExecution) -> Result<ExecutionRun, AppError>;
-    async fn get_run(&self, id: &str) -> Result<Option<ExecutionRun>, AppError>;
-    async fn update_run_status(&self, id: &str, status: ExecutionStatus) -> Result<(), AppError>;
-    async fn add_result(&self, result: ExecutionResult) -> Result<(), AppError>;
-    async fn get_results(&self, execution_id: &str) -> Result<Vec<ExecutionResult>, AppError>;
-}

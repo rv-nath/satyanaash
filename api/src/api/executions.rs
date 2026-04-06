@@ -139,6 +139,12 @@ pub async fn execute_flow(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Extract project-level variables and merge with request environment
+    let mut environment = extract_project_variables(&project.settings);
+    for (k, v) in input.environment {
+        environment.insert(k, v); // Request values override project variables
+    }
+
     // Generate execution ID
     let execution_id = Uuid::new_v4().to_string();
 
@@ -150,7 +156,7 @@ pub async fn execute_flow(
         &execution_id,
         &flow,
         state.tc_repo.as_ref(),
-        input.environment,
+        environment,
         input.variables,
         None, // No WebSocket streaming for sync execution
     ).await?;
@@ -212,6 +218,12 @@ pub async fn execute_flow_stream(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Extract project-level variables and merge with request environment
+    let mut environment = extract_project_variables(&project.settings);
+    for (k, v) in input.environment {
+        environment.insert(k, v); // Request values override project variables
+    }
+
     // Generate execution ID
     let execution_id = Uuid::new_v4().to_string();
 
@@ -230,7 +242,7 @@ pub async fn execute_flow_stream(
             &exec_id,
             &flow,
             tc_repo.as_ref(),
-            input.environment,
+            environment,
             input.variables,
             Some(tx),
         ).await;
@@ -267,6 +279,8 @@ pub struct ExecuteTestCaseRequest {
     pub payload: Option<String>,
     /// Override: Assertion script
     pub assertion_script: Option<String>,
+    /// Override: Pre-test script
+    pub pre_test_script: Option<String>,
 }
 
 /// POST /api/v1/test-cases/:id/execute - Execute a single test case
@@ -291,6 +305,9 @@ pub async fn execute_test_case(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Extract project-level variables
+    let project_variables = extract_project_variables(&project.settings);
+
     // Apply overrides from request body (for running unsaved changes)
     let variables = if let Some(Json(req)) = body {
         if let Some(method) = req.method {
@@ -308,6 +325,9 @@ pub async fn execute_test_case(
         if let Some(assertion_script) = req.assertion_script {
             test_case.assertion_script = Some(assertion_script);
         }
+        if let Some(pre_test_script) = req.pre_test_script {
+            test_case.pre_test_script = Some(pre_test_script);
+        }
         req.variables
     } else {
         HashMap::new()
@@ -316,8 +336,17 @@ pub async fn execute_test_case(
     // Create execution engine
     let engine = ExecutionEngine::new(false, base_url);
 
-    // Execute the test case
-    let result = engine.execute_test_case(&test_case, variables).await;
+    // Execute the test case with project variables as environment
+    let result = engine.execute_test_case(&test_case, project_variables, variables).await;
 
     Ok(Json(result))
+}
+
+/// Extract project-level variables from settings JSON
+fn extract_project_variables(settings: &Value) -> HashMap<String, Value> {
+    settings
+        .get("variables")
+        .and_then(|v| v.as_object())
+        .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default()
 }

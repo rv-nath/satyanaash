@@ -91,7 +91,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
       setEndpoint(testCase.endpoint || "");
       setHeaders(jsonToHeaders(testCase.headers ? JSON.stringify(testCase.headers) : ""));
       setPayload(testCase.payload || "");
-      setPreTestScript(testCase.pre_request_script || "");
+      setPreTestScript(testCase.pre_test_script || "");
       setPostTestScript(testCase.assertion_script || "");
       setIsDirty(false);
     }
@@ -211,6 +211,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
       headers: headersJson ? JSON.parse(headersJson) : undefined,
       payload: hasPayload && payload.trim() ? payload : undefined,
       assertion_script: postTestScript || undefined,
+      pre_test_script: preTestScript || undefined,
     };
 
     try {
@@ -275,6 +276,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           headers: headersJson ? JSON.parse(headersJson) : undefined,
           payload: hasPayload && payload.trim() ? payload : undefined,
           assertion_script: postTestScript || undefined,
+          pre_test_script: preTestScript || undefined,
         },
       });
       setExecutionResult(result);

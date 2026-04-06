@@ -32,8 +32,8 @@ impl TestCaseRepository for SqlxTestCaseRepository {
             r#"INSERT INTO test_cases (
                 id, project_id, name, given_condition, when_action, then_expected,
                 method, endpoint, headers, payload, exports, assertion_script,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+                pre_test_script, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
         )
         .bind(&id)
         .bind(project_id)
@@ -47,6 +47,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         .bind(&input.payload)
         .bind(&exports_json)
         .bind(&input.assertion_script)
+        .bind(&input.pre_test_script)
         .bind(now.to_rfc3339())
         .bind(now.to_rfc3339())
         .execute(&self.pool)
@@ -65,6 +66,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
             payload: input.payload,
             exports: input.exports,
             assertion_script: input.assertion_script,
+            pre_test_script: input.pre_test_script,
             created_at: now,
             updated_at: now,
         })
@@ -74,7 +76,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         let row = sqlx::query(
             r#"SELECT id, project_id, name, given_condition, when_action, then_expected,
                method, endpoint, headers, payload, exports, assertion_script,
-               created_at, updated_at
+               pre_test_script, created_at, updated_at
                FROM test_cases WHERE id = ?"#
         )
         .bind(id)
@@ -102,7 +104,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         let rows = sqlx::query(
             r#"SELECT id, project_id, name, given_condition, when_action, then_expected,
                method, endpoint, headers, payload, exports, assertion_script,
-               created_at, updated_at
+               pre_test_script, created_at, updated_at
                FROM test_cases WHERE project_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"#
         )
         .bind(project_id)
@@ -140,6 +142,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         let payload = input.payload.or(existing.payload);
         let exports = input.exports.unwrap_or(existing.exports);
         let assertion_script = input.assertion_script.or(existing.assertion_script);
+        let pre_test_script = input.pre_test_script.or(existing.pre_test_script);
 
         let headers_json = serde_json::to_string(&headers)?;
         let exports_json = serde_json::to_string(&exports)?;
@@ -148,7 +151,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
             r#"UPDATE test_cases SET
                name = ?, given_condition = ?, when_action = ?, then_expected = ?,
                method = ?, endpoint = ?, headers = ?, payload = ?,
-               exports = ?, assertion_script = ?, updated_at = ?
+               exports = ?, assertion_script = ?, pre_test_script = ?, updated_at = ?
                WHERE id = ?"#
         )
         .bind(&name)
@@ -161,6 +164,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         .bind(&payload)
         .bind(&exports_json)
         .bind(&assertion_script)
+        .bind(&pre_test_script)
         .bind(now.to_rfc3339())
         .bind(id)
         .execute(&self.pool)
@@ -179,6 +183,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
             payload,
             exports,
             assertion_script,
+            pre_test_script,
             created_at: existing.created_at,
             updated_at: now,
         })
@@ -240,6 +245,7 @@ fn row_to_test_case(row: &sqlx::any::AnyRow) -> Result<TestCase, AppError> {
         payload: row.try_get("payload")?,
         exports: serde_json::from_str(&exports_str)?,
         assertion_script: row.try_get("assertion_script")?,
+        pre_test_script: row.try_get("pre_test_script")?,
         created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
             .map_err(|e| AppError::Internal(e.to_string()))?
             .with_timezone(&Utc),

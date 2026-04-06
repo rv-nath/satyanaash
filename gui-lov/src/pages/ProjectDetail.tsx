@@ -147,8 +147,14 @@ const ProjectDetailContent = () => {
     // Show console panel when executing
     setShowConsole(true);
 
+    // Extract project-level variables to pass as environment
+    const projectVars = (project?.settings?.variables as Record<string, unknown>) || {};
+
     // Execute using SSE streaming - logs are handled by the hook
-    await executeFlow(activeFlowId, { debug_mode: mode === "debug" });
+    await executeFlow(activeFlowId, {
+      debug_mode: mode === "debug",
+      environment: projectVars,
+    });
   };
 
   const handleExportFlow = () => {

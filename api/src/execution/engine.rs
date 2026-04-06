@@ -12,7 +12,7 @@ use crate::db::models::{Flow, GraphNode, TestCase};
 use crate::db::repositories::TestCaseRepository;
 use crate::error::AppError;
 
-use super::{ExecutionContext, AssertionEngine, HttpExecutor};
+use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine};
 use super::http::{RequestLog, ResponseLog};
 
 /// Result status for a node execution
@@ -119,6 +119,7 @@ pub struct ExecutionStats {
 pub struct ExecutionEngine {
     http: HttpExecutor,
     assertions: AssertionEngine,
+    pre_test: PreTestScriptEngine,
     debug_mode: bool,
     base_url: Option<String>,
 }
@@ -132,6 +133,7 @@ impl ExecutionEngine {
         Self {
             http: HttpExecutor::new(),
             assertions: AssertionEngine::new(),
+            pre_test: PreTestScriptEngine::new(),
             debug_mode,
             base_url,
         }
@@ -420,6 +422,36 @@ impl ExecutionEngine {
             logs.push(format!("Executing test case: {}", test_case.name));
         }
 
+        // Execute pre-test script if present (sets variables before interpolation)
+        if let Some(ref script) = test_case.pre_test_script {
+            if !script.trim().is_empty() {
+                match self.pre_test.execute(script) {
+                    Ok(vars) => {
+                        for (k, v) in vars {
+                            if self.debug_mode {
+                                logs.push(format!("Pre-test set: {} = {:?}", k, v));
+                            }
+                            ctx.set(&k, v);
+                        }
+                    }
+                    Err(e) => {
+                        return NodeResult {
+                            node_id: node.id.clone(),
+                            test_case_id: Some(tc_id),
+                            test_case_name: Some(test_case.name.clone()),
+                            status: NodeStatus::Error,
+                            duration_ms: start.elapsed().as_millis() as u64,
+                            request: None,
+                            response: None,
+                            exports: None,
+                            error_message: Some(format!("Pre-test script failed: {}", e)),
+                            logs,
+                        };
+                    }
+                }
+            }
+        }
+
         // Interpolate endpoint URL and prepend base URL if needed
         let endpoint = match ctx.interpolate(&test_case.endpoint) {
             Ok(u) => u,
@@ -676,14 +708,45 @@ impl ExecutionEngine {
     pub async fn execute_test_case(
         &self,
         test_case: &TestCase,
+        environment: HashMap<String, Value>,
         variables: HashMap<String, Value>,
     ) -> NodeResult {
         let start = std::time::Instant::now();
         let mut logs = Vec::new();
-        let mut ctx = ExecutionContext::new(HashMap::new(), variables);
+        let mut ctx = ExecutionContext::new(variables, environment);
 
         if self.debug_mode {
             logs.push(format!("Executing test case: {}", test_case.name));
+        }
+
+        // Execute pre-test script if present (sets variables before interpolation)
+        if let Some(ref script) = test_case.pre_test_script {
+            if !script.trim().is_empty() {
+                match self.pre_test.execute(script) {
+                    Ok(vars) => {
+                        for (k, v) in vars {
+                            if self.debug_mode {
+                                logs.push(format!("Pre-test set: {} = {:?}", k, v));
+                            }
+                            ctx.set(&k, v);
+                        }
+                    }
+                    Err(e) => {
+                        return NodeResult {
+                            node_id: "direct".to_string(),
+                            test_case_id: Some(test_case.id.clone()),
+                            test_case_name: Some(test_case.name.clone()),
+                            status: NodeStatus::Error,
+                            duration_ms: start.elapsed().as_millis() as u64,
+                            request: None,
+                            response: None,
+                            exports: None,
+                            error_message: Some(format!("Pre-test script failed: {}", e)),
+                            logs,
+                        };
+                    }
+                }
+            }
         }
 
         // Interpolate endpoint URL
@@ -934,6 +997,7 @@ mod tests {
             payload: None,
             exports: vec![],
             assertion_script: None,
+            pre_test_script: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -1214,6 +1278,7 @@ mod tests {
             payload: None,
             exports: vec![],
             assertion_script: Some("response.status == 200".to_string()),
+            pre_test_script: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1274,6 +1339,7 @@ mod tests {
                 ExportVariable { name: "userId".to_string(), json_path: "$.data.user.id".to_string() },
             ],
             assertion_script: None,
+            pre_test_script: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1318,6 +1384,7 @@ mod tests {
                 ExportVariable { name: "token".to_string(), json_path: "$.token".to_string() },
             ],
             assertion_script: None,
+            pre_test_script: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1346,6 +1413,7 @@ mod tests {
             payload: None,
             exports: vec![], // No exports
             assertion_script: None,
+            pre_test_script: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

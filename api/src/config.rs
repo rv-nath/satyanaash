@@ -14,9 +14,6 @@ pub struct Config {
     /// Server port
     pub port: u16,
 
-    /// Allowed CORS origins (comma-separated)
-    pub cors_origins: Vec<String>,
-
     /// Log level (trace, debug, info, warn, error)
     pub log_level: String,
 }
@@ -34,12 +31,6 @@ impl Config {
                 .ok()
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(3001),
-
-            cors_origins: env::var("CORS_ORIGINS")
-                .unwrap_or_else(|_| "http://localhost:5173,http://localhost:3000".to_string())
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect(),
 
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
         }

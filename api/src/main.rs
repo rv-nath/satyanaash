@@ -5,7 +5,6 @@ mod config;
 mod db;
 mod error;
 mod execution;
-mod state;
 mod validation;
 
 use std::sync::Arc;
