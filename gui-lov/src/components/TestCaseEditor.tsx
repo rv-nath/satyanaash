@@ -97,6 +97,14 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
     }
   }, [testCase, isCreateMode]);
 
+  // Auto-resize payload textarea when content changes
+  useEffect(() => {
+    if (payloadRef.current) {
+      payloadRef.current.style.height = 'auto';
+      payloadRef.current.style.height = payloadRef.current.scrollHeight + 'px';
+    }
+  }, [payload]);
+
   // Mark as dirty when any field changes
   const handleFieldChange = useCallback(<T,>(setter: (value: T) => void) => {
     return (value: T) => {
@@ -674,9 +682,19 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                       ref={payloadRef}
                       id="payload"
                       value={payload}
-                      onChange={(e) => handleFieldChange(setPayload)(e.target.value)}
+                      onChange={(e) => {
+                        handleFieldChange(setPayload)(e.target.value);
+                        // Auto-resize to fit content
+                        e.target.style.height = 'auto';
+                        e.target.style.height = e.target.scrollHeight + 'px';
+                      }}
+                      onFocus={(e) => {
+                        e.target.style.height = 'auto';
+                        e.target.style.height = e.target.scrollHeight + 'px';
+                      }}
                       placeholder='{"token": "{{authToken}}", "userId": "{{userId}}"}'
-                      className="font-mono text-sm min-h-[150px]"
+                      className="font-mono text-sm min-h-[150px] resize-none overflow-hidden"
+                      style={{ height: 'auto' }}
                     />
                     <p className="text-xs text-muted-foreground">
                       Enter valid JSON payload. Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> for variables.

@@ -70,6 +70,7 @@ pub async fn validate_flow(
                 nodes,
                 edges,
                 canvas_settings: flow.graph_data.canvas_settings.clone(),
+                variables: flow.graph_data.variables.clone(),
             };
         }
     }

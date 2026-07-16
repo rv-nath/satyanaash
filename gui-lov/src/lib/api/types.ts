@@ -107,6 +107,7 @@ export interface GraphData {
   nodes: FlowNode[];
   edges: FlowEdge[];
   canvas_settings?: CanvasSettings;
+  variables?: Record<string, unknown>;
 }
 
 export interface Flow {

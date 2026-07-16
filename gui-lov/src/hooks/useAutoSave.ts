@@ -18,6 +18,7 @@ interface UseAutoSaveOptions {
   nodes: Node[];
   edges: Edge[];
   edgeSettings?: EdgeSettings;
+  flowVariables?: Record<string, unknown>;
   debounceMs?: number;
   enabled?: boolean;
   onVersionUpdate?: (newVersion: number) => void;
@@ -57,6 +58,7 @@ export function useAutoSave({
   nodes,
   edges,
   edgeSettings,
+  flowVariables,
   debounceMs = 2000,
   enabled = true,
   onVersionUpdate,
@@ -71,6 +73,7 @@ export function useAutoSave({
   const prevNodesRef = useRef<string>('');
   const prevEdgesRef = useRef<string>('');
   const prevEdgeSettingsRef = useRef<string>('');
+  const prevFlowVariablesRef = useRef<string>('');
   const currentVersionRef = useRef(version);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
@@ -121,6 +124,7 @@ export function useAutoSave({
             nodes: apiNodes,
             edges: apiEdges,
             canvas_settings: canvasSettings,
+            variables: flowVariables || {},
           },
           version: currentVersionRef.current,
         },
@@ -151,7 +155,7 @@ export function useAutoSave({
         console.error('[AutoSave] Save failed:', err);
       }
     }
-  }, [flowId, nodes, edges, edgeSettings, updateGraphMutation, onVersionUpdate]);
+  }, [flowId, nodes, edges, edgeSettings, flowVariables, updateGraphMutation, onVersionUpdate]);
 
   // Watch for changes and trigger debounced save
   useEffect(() => {
@@ -161,6 +165,7 @@ export function useAutoSave({
     const nodesJson = JSON.stringify(nodesForComparison(nodes));
     const edgesJson = JSON.stringify(edgesToApi(edges));
     const edgeSettingsJson = JSON.stringify(edgeSettings || {});
+    const flowVariablesJson = JSON.stringify(flowVariables || {});
 
     // First time seeing data - just initialize refs, don't save
     if (!isInitializedRef.current) {
@@ -168,6 +173,7 @@ export function useAutoSave({
         prevNodesRef.current = nodesJson;
         prevEdgesRef.current = edgesJson;
         prevEdgeSettingsRef.current = edgeSettingsJson;
+        prevFlowVariablesRef.current = flowVariablesJson;
         isInitializedRef.current = true;
         skipCountRef.current = 2; // Skip next 2 renders (React Flow measures nodes)
         console.log('[AutoSave] Initialized with', nodes.length, 'nodes, skipping next 2 changes');
@@ -179,16 +185,18 @@ export function useAutoSave({
     const nodesChanged = hasChanges(nodesJson, prevNodesRef.current);
     const edgesChanged = hasChanges(edgesJson, prevEdgesRef.current);
     const edgeSettingsChanged = hasChanges(edgeSettingsJson, prevEdgeSettingsRef.current);
+    const flowVariablesChanged = hasChanges(flowVariablesJson, prevFlowVariablesRef.current);
 
-    if (!nodesChanged && !edgesChanged && !edgeSettingsChanged) return;
+    if (!nodesChanged && !edgesChanged && !edgeSettingsChanged && !flowVariablesChanged) return;
 
     // Update refs to current state
     prevNodesRef.current = nodesJson;
     prevEdgesRef.current = edgesJson;
     prevEdgeSettingsRef.current = edgeSettingsJson;
+    prevFlowVariablesRef.current = flowVariablesJson;
 
-    // Skip initial changes from React Flow measuring nodes (but not for edge settings)
-    if (skipCountRef.current > 0 && !edgeSettingsChanged) {
+    // Skip initial changes from React Flow measuring nodes (but not for edge settings or flow variables)
+    if (skipCountRef.current > 0 && !edgeSettingsChanged && !flowVariablesChanged) {
       skipCountRef.current--;
       console.log('[AutoSave] Skipping initial change, remaining:', skipCountRef.current);
       return;
@@ -210,7 +218,7 @@ export function useAutoSave({
       performSave();
     }, debounceMs);
 
-  }, [nodes, edges, edgeSettings, flowId, enabled, debounceMs, performSave]);
+  }, [nodes, edges, edgeSettings, flowVariables, flowId, enabled, debounceMs, performSave]);
 
   // Reset initialization when flow changes
   useEffect(() => {
@@ -219,6 +227,7 @@ export function useAutoSave({
     prevNodesRef.current = '';
     prevEdgesRef.current = '';
     prevEdgeSettingsRef.current = '';
+    prevFlowVariablesRef.current = '';
   }, [flowId]);
 
   return {

@@ -5,10 +5,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Trash2, Plus } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
+
+interface InputVariable {
+  key: string;
+  value: string;
+}
 
 interface OutputVariable {
   name: string;
@@ -23,16 +26,33 @@ interface NodeConfigPanelProps {
 
 export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const { updateNodeConfig } = useTestProject();
+  const [inputVars, setInputVars] = useState<InputVariable[]>([]);
   const [outputVars, setOutputVars] = useState<OutputVariable[]>([]);
 
   useEffect(() => {
     if (node?.data?.config) {
-      const config = node.data.config as { outputVars?: OutputVariable[] };
+      const config = node.data.config as { inputVars?: InputVariable[]; outputVars?: OutputVariable[] };
+      setInputVars(config.inputVars || []);
       setOutputVars(config.outputVars || []);
     } else {
+      setInputVars([]);
       setOutputVars([]);
     }
   }, [node]);
+
+  const addInputVar = () => {
+    setInputVars([...inputVars, { key: "", value: "" }]);
+  };
+
+  const removeInputVar = (index: number) => {
+    setInputVars(inputVars.filter((_, i) => i !== index));
+  };
+
+  const updateInputVar = (index: number, field: keyof InputVariable, value: string) => {
+    const updated = [...inputVars];
+    updated[index] = { ...updated[index], [field]: value };
+    setInputVars(updated);
+  };
 
   const addOutputVar = () => {
     setOutputVars([...outputVars, { name: "", path: "", description: "" }]);
@@ -50,7 +70,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
 
   const handleSave = () => {
     if (!node) return;
-    updateNodeConfig(node.id, { outputVars });
+    updateNodeConfig(node.id, { inputVars, outputVars });
     onClose();
   };
 
@@ -73,14 +93,62 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="p-0">
-        <ScrollArea className="h-[calc(100vh-240px)]">
+      <CardContent className="p-0 flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 220px)' }}>
+        <ScrollArea className="flex-1 min-h-0">
           <div className="px-6 pb-4 space-y-6">
             <div className="bg-muted/50 border border-border rounded-md p-3 mb-4">
               <p className="text-xs text-muted-foreground">
-                Define output variables that will be extracted from the HTTP response and made available to downstream nodes. 
+                Define input variables to inject values into this node before execution, and output variables to extract values from the response for downstream nodes.
                 Use <code className="px-1 py-0.5 bg-background rounded text-xs">{'{{variableName}}'}</code> syntax in test cases to use these variables.
               </p>
+            </div>
+
+            {/* Input Variables */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <Label className="text-sm font-semibold">Input Variables</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Static values injected before this node runs
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" onClick={addInputVar}>
+                  <Plus className="h-3 w-3 mr-1" />
+                  Add Variable
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {inputVars.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">No input variables defined</p>
+                ) : (
+                  inputVars.map((v, i) => (
+                    <div key={i} className="flex gap-2 items-center p-3 border border-border rounded-md bg-muted/20">
+                      <div className="flex-1 flex gap-2">
+                        <Input
+                          placeholder="Variable name"
+                          value={v.key}
+                          onChange={(e) => updateInputVar(i, "key", e.target.value)}
+                          className="h-8 text-xs font-mono"
+                        />
+                        <Input
+                          placeholder="Value"
+                          value={v.value}
+                          onChange={(e) => updateInputVar(i, "value", e.target.value)}
+                          className="h-8 text-xs font-mono"
+                        />
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeInputVar(i)}
+                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
             {/* Output Variables */}
@@ -138,8 +206,8 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
             </div>
           </div>
         </ScrollArea>
-        
-        <div className="p-4 border-t border-border bg-muted/20 flex justify-end gap-2">
+
+        <div className="p-4 border-t border-border bg-muted/20 flex justify-end gap-2 shrink-0">
           <Button variant="outline" size="sm" onClick={onClose}>
             Cancel
           </Button>

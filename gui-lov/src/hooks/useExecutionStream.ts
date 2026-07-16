@@ -77,10 +77,17 @@ type ExecutionEvent =
   | ExecutionEventCompleted
   | ExecutionEventError;
 
+export interface ConsoleLogDetail {
+  label: string;
+  value: string;
+  type?: 'info' | 'error';
+}
+
 export interface ConsoleLog {
   timestamp: string;
   message: string;
   type: 'info' | 'success' | 'error';
+  details?: ConsoleLogDetail[];
 }
 
 export interface ExecuteFlowRequest {
@@ -98,11 +105,12 @@ export function useExecutionStream() {
   // Store AbortController to cancel previous stream
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  const addLog = useCallback((message: string, type: ConsoleLog['type'] = 'info') => {
+  const addLog = useCallback((message: string, type: ConsoleLog['type'] = 'info', details?: ConsoleLogDetail[]) => {
     setLogs(prev => [...prev, {
       timestamp: new Date().toISOString(),
       message,
-      type
+      type,
+      ...(details && { details }),
     }]);
   }, []);
 
@@ -255,35 +263,37 @@ function handleEvent(
         result.status === 'error' || result.status === 'failed' ? 'error' : 'info';
 
       const name = result.test_case_name || result.test_case_id || result.node_id;
-      addLog(`${statusIcon} ${name}: ${result.status} (${result.duration_ms}ms)`, logType);
 
-      const isFailed = result.status === 'failed' || result.status === 'error';
-
-      // For failed tests, show request/response details to help debugging
-      if (isFailed) {
-        if (result.request) {
-          addLog(`  → ${result.request.method} ${result.request.url}`, 'info');
+      // Build collapsible details for request/response
+      const details: ConsoleLogDetail[] = [];
+      if (result.request) {
+        details.push({ label: 'Request', value: `${result.request.method} ${result.request.url}` });
+        if (result.request.headers && Object.keys(result.request.headers).length > 0) {
+          details.push({ label: 'Headers', value: JSON.stringify(result.request.headers, null, 2) });
         }
-
-        if (result.response) {
-          addLog(`  ← Response: ${result.response.status}`, 'error');
-
-          // Show response body (truncated if too long)
-          if (result.response.body) {
-            const body = result.response.body.trim();
-            const maxLen = 200;
-            const truncatedBody = body.length > maxLen
-              ? body.slice(0, maxLen) + '...'
-              : body;
-            addLog(`  Body: ${truncatedBody}`, 'info');
-          }
-        }
-
-        // Log any error messages (e.g., assertion errors)
-        if (result.error_message) {
-          addLog(`  Error: ${result.error_message}`, 'error');
+        if (result.request.body) {
+          // Try to pretty-print JSON payloads
+          let body = result.request.body;
+          try { body = JSON.stringify(JSON.parse(body), null, 2); } catch {}
+          details.push({ label: 'Payload', value: body });
         }
       }
+      if (result.response) {
+        details.push({ label: 'Status', value: String(result.response.status), type: result.response.status >= 400 ? 'error' : 'info' });
+        if (result.response.body) {
+          let body = result.response.body.trim();
+          try { body = JSON.stringify(JSON.parse(body), null, 2); } catch {}
+          details.push({ label: 'Response', value: body });
+        }
+      }
+      if (result.error_message) {
+        details.push({ label: 'Error', value: result.error_message, type: 'error' });
+      }
+      if (result.exports && Object.keys(result.exports).length > 0) {
+        details.push({ label: 'Exports', value: JSON.stringify(result.exports, null, 2) });
+      }
+
+      addLog(`${statusIcon} ${name}: ${result.status} (${result.duration_ms}ms)`, logType, details.length > 0 ? details : undefined);
       break;
     }
 

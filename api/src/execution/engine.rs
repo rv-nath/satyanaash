@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::db::models::{Flow, GraphNode, TestCase};
+use crate::db::models::{ExportVariable, Flow, GraphNode, TestCase};
 use crate::db::repositories::TestCaseRepository;
 use crate::error::AppError;
 
@@ -171,7 +171,10 @@ impl ExecutionEngine {
         event_tx: Option<mpsc::Sender<ExecutionEvent>>,
     ) -> Result<FlowExecutionResult, AppError> {
         let start = std::time::Instant::now();
-        let mut ctx = ExecutionContext::new(execution_vars, environment);
+        let flow_vars = flow.graph_data.variables.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut ctx = ExecutionContext::new(execution_vars, environment, flow_vars);
         let mut results: Vec<NodeResult> = Vec::new();
         let mut stats = ExecutionStats::default();
 
@@ -422,6 +425,30 @@ impl ExecutionEngine {
             logs.push(format!("Executing test case: {}", test_case.name));
         }
 
+        // Inject node-level input variables (static per-node overrides from flow editor)
+        let node_input_vars: HashMap<String, Value> = node.data
+            .get("config")
+            .and_then(|c| c.get("inputVars"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let key = item.get("key")?.as_str()?;
+                        let val = item.get("value")?.as_str()?;
+                        if key.is_empty() { return None; }
+                        Some((key.to_string(), Value::String(val.to_string())))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if self.debug_mode && !node_input_vars.is_empty() {
+            for (k, v) in &node_input_vars {
+                logs.push(format!("Node input var: {} = {:?}", k, v));
+            }
+        }
+        ctx.set_node_input_vars(node_input_vars);
+
         // Execute pre-test script if present (sets variables before interpolation)
         if let Some(ref script) = test_case.pre_test_script {
             if !script.trim().is_empty() {
@@ -589,8 +616,28 @@ impl ExecutionEngine {
         };
 
         // Process exports if assertion passed
+        // Merge test case exports with node-level outputVars (node overrides take precedence)
         let exports = if assertion_passed {
-            self.process_exports(&test_case, &http_result.response.json, ctx, &mut logs)
+            let node_output_vars: Vec<ExportVariable> = node.data
+                .get("config")
+                .and_then(|c| c.get("outputVars"))
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| {
+                            let name = item.get("name")?.as_str()?;
+                            let path = item.get("path")?.as_str()?;
+                            if name.is_empty() || path.is_empty() { return None; }
+                            Some(ExportVariable {
+                                name: name.to_string(),
+                                json_path: path.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            self.process_exports(&test_case, &node_output_vars, &http_result.response.json, ctx, &mut logs)
         } else {
             None
         };
@@ -619,13 +666,30 @@ impl ExecutionEngine {
     fn process_exports(
         &self,
         test_case: &TestCase,
+        node_exports: &[ExportVariable],
         json: &Option<Value>,
         ctx: &mut ExecutionContext,
         logs: &mut Vec<String>,
     ) -> Option<HashMap<String, Value>> {
         use jsonpath_rust::JsonPath;
 
-        if test_case.exports.is_empty() {
+        // Combine test case exports and node-level exports (node exports take precedence)
+        let all_exports: Vec<&ExportVariable> = {
+            let mut combined: Vec<&ExportVariable> = test_case.exports.iter().collect();
+            // Node exports override test case exports with the same name
+            for ne in node_exports {
+                if !combined.iter().any(|e| e.name == ne.name) {
+                    combined.push(ne);
+                } else {
+                    // Replace the test case export with the node export
+                    combined.retain(|e| e.name != ne.name);
+                    combined.push(ne);
+                }
+            }
+            combined
+        };
+
+        if all_exports.is_empty() {
             return None;
         }
 
@@ -636,7 +700,7 @@ impl ExecutionEngine {
 
         let mut exported = HashMap::new();
 
-        for export in &test_case.exports {
+        for export in &all_exports {
             // Use jsonpath_rust trait method to query
             match json.query(&export.json_path) {
                 Ok(results) => {
@@ -713,7 +777,7 @@ impl ExecutionEngine {
     ) -> NodeResult {
         let start = std::time::Instant::now();
         let mut logs = Vec::new();
-        let mut ctx = ExecutionContext::new(variables, environment);
+        let mut ctx = ExecutionContext::new(variables, environment, HashMap::new());
 
         if self.debug_mode {
             logs.push(format!("Executing test case: {}", test_case.name));
@@ -887,7 +951,7 @@ impl ExecutionEngine {
 
         // Process exports if assertion passed
         let exports = if assertion_passed {
-            self.process_exports(test_case, &http_result.response.json, &mut ctx, &mut logs)
+            self.process_exports(test_case, &[], &http_result.response.json, &mut ctx, &mut logs)
         } else {
             None
         };
@@ -1009,7 +1073,7 @@ mod tests {
             project_id: "proj1".to_string(),
             name: "Test Flow".to_string(),
             description: None,
-            graph_data: GraphData { nodes, edges, canvas_settings: serde_json::json!({}) },
+            graph_data: GraphData { nodes, edges, canvas_settings: serde_json::json!({}), variables: HashMap::new() },
             version: 1,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -1351,10 +1415,10 @@ mod tests {
             }
         }));
 
-        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
         let mut logs = Vec::new();
 
-        let exports = engine.process_exports(&tc, &json, &mut ctx, &mut logs);
+        let exports = engine.process_exports(&tc, &[], &json, &mut ctx, &mut logs);
 
         assert!(exports.is_some());
         let exports = exports.unwrap();
@@ -1389,10 +1453,10 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
         let mut logs = Vec::new();
 
-        let exports = engine.process_exports(&tc, &None, &mut ctx, &mut logs);
+        let exports = engine.process_exports(&tc, &[], &None, &mut ctx, &mut logs);
         assert!(exports.is_none());
     }
 
@@ -1419,10 +1483,10 @@ mod tests {
         };
 
         let json = Some(serde_json::json!({"data": "test"}));
-        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
         let mut logs = Vec::new();
 
-        let exports = engine.process_exports(&tc, &json, &mut ctx, &mut logs);
+        let exports = engine.process_exports(&tc, &[], &json, &mut ctx, &mut logs);
         assert!(exports.is_none());
     }
 }

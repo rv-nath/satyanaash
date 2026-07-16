@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
 import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateProject } from "@/hooks/useApi";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
+import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { useExecutionStream } from "@/hooks/useExecutionStream";
 import { Card } from "@/components/ui/card";
 
@@ -83,7 +84,9 @@ const ProjectDetailContent = () => {
     setSnapToGrid,
     edgeType,
     setEdgeType,
-    alignNodes
+    alignNodes,
+    flowVariables,
+    setFlowVariables,
   } = useTestProject();
 
   // Derive active flow for header
@@ -127,6 +130,7 @@ const ProjectDetailContent = () => {
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [flowVarsOpen, setFlowVarsOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<{ id: string; name: string; description?: string } | null>(null);
 
   // Inline editing state for flow name and description
@@ -539,6 +543,10 @@ const ProjectDetailContent = () => {
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>
                   <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setFlowVarsOpen(true)}>
+                    Flow Variables...
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                 </>
               )}
               <DropdownMenuLabel>Project</DropdownMenuLabel>
@@ -699,6 +707,13 @@ const ProjectDetailContent = () => {
           }}
         />
       )}
+
+      <FlowVariablesDialog
+        open={flowVarsOpen}
+        onOpenChange={setFlowVarsOpen}
+        variables={flowVariables}
+        onSave={setFlowVariables}
+      />
     </div>
   );
 };

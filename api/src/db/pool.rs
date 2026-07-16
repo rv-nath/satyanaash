@@ -2,7 +2,7 @@
 
 use sqlx::any::{install_default_drivers, AnyPoolOptions};
 use sqlx::AnyPool;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Initialize database pool from URL
 /// Supports: sqlite:// and postgres://
@@ -54,6 +54,7 @@ async fn run_migrations(pool: &AnyPool) -> Result<(), sqlx::Error> {
         include_str!("../../migrations/003_flows.sql"),
         include_str!("../../migrations/004_executions.sql"),
         include_str!("../../migrations/005_merge_canvas_settings.sql"),
+        include_str!("../../migrations/006_add_pre_test_script.sql"),
     ];
 
     for sql in migrations {
@@ -64,7 +65,18 @@ async fn run_migrations(pool: &AnyPool) -> Result<(), sqlx::Error> {
             let first_line = stmt.lines().find(|l| !l.trim().is_empty() && !l.trim().starts_with("--"));
             if let Some(_) = first_line {
                 info!("Executing: {}", &stmt[..stmt.len().min(60)]);
-                sqlx::query(stmt).execute(pool).await?;
+                match sqlx::query(stmt).execute(pool).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        // Ignore "duplicate column" errors from re-running ALTER TABLE migrations
+                        if err_msg.contains("duplicate column") {
+                            warn!("Skipping (already applied): {}", &stmt[..stmt.len().min(60)]);
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
             }
         }
     }

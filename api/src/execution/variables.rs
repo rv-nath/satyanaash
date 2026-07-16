@@ -2,9 +2,11 @@
 //!
 //! Resolution order (highest priority first):
 //! 1. Execution variables (passed in execute request)
-//! 2. Environment variables (from project settings)
-//! 3. Context variables (exports from previous test cases)
-//! 4. Built-in variables ($UUID, $Timestamp, etc.)
+//! 2. Context variables (exports from previous test cases + pre-test script vars)
+//! 3. Node input variables (static per-node overrides set in flow editor)
+//! 4. Flow variables (scoped to the flow)
+//! 5. Environment variables (from project settings)
+//! 6. Built-in variables ($UUID, $Timestamp, etc.)
 
 use std::collections::HashMap;
 use regex::Regex;
@@ -19,27 +21,44 @@ use crate::error::AppError;
 pub struct ExecutionContext {
     /// Variables passed in the execute request
     execution_vars: HashMap<String, Value>,
-    /// Environment variables from project settings
-    environment: HashMap<String, Value>,
     /// Accumulated exports from test cases during execution
     context: HashMap<String, Value>,
+    /// Static per-node input variables (replaced before each node runs)
+    node_input_vars: HashMap<String, Value>,
+    /// Flow-scoped variables
+    flow_vars: HashMap<String, Value>,
+    /// Environment variables from project settings
+    environment: HashMap<String, Value>,
 }
 
 impl ExecutionContext {
     /// Create a new execution context
-    pub fn new(execution_vars: HashMap<String, Value>, environment: HashMap<String, Value>) -> Self {
+    pub fn new(
+        execution_vars: HashMap<String, Value>,
+        environment: HashMap<String, Value>,
+        flow_vars: HashMap<String, Value>,
+    ) -> Self {
         Self {
             execution_vars,
-            environment,
             context: HashMap::new(),
+            node_input_vars: HashMap::new(),
+            flow_vars,
+            environment,
         }
+    }
+
+    /// Set node input variables (fully replaces previous node's vars)
+    pub fn set_node_input_vars(&mut self, vars: HashMap<String, Value>) {
+        self.node_input_vars = vars;
     }
 
     /// Resolve a variable by name using the resolution order
     pub fn resolve(&self, name: &str) -> Option<&Value> {
         self.execution_vars.get(name)
-            .or_else(|| self.environment.get(name))
             .or_else(|| self.context.get(name))
+            .or_else(|| self.node_input_vars.get(name))
+            .or_else(|| self.flow_vars.get(name))
+            .or_else(|| self.environment.get(name))
     }
 
     /// Set a context variable (from test case exports)
@@ -115,7 +134,7 @@ impl ExecutionContext {
             "$Timestamp" => Utc::now().timestamp().to_string(),
             "$TimestampMs" => Utc::now().timestamp_millis().to_string(),
             "$ISODate" => Utc::now().to_rfc3339(),
-            "$RandomEmail" => format!("test_{}@example.com", Uuid::new_v4().simple()),
+            "$RandomEmail" => bharat_cafe::random_email(args),
             "$RandomInt" => {
                 if let Some(args) = args {
                     let parts: Vec<&str> = args.split(',').collect();
@@ -131,6 +150,17 @@ impl ExecutionContext {
                 let len = args.and_then(|a| a.parse::<usize>().ok()).unwrap_or(10);
                 generate_random_string(len)
             }
+            "$RandomPassword" => {
+                let len = args.and_then(|a| a.parse::<usize>().ok()).unwrap_or(16);
+                generate_random_password(len)
+            }
+            "$RandomUsername" => {
+                format!("user_{}", generate_random_string(8).to_lowercase())
+            }
+            "$RandomName" => bharat_cafe::random_name(),
+            "$RandomPhone" => bharat_cafe::random_phone(),
+            "$RandomAddress" => bharat_cafe::random_address(),
+            "$RandomCompany" => bharat_cafe::generate_company_name(),
             _ => format!("{{{{{}}}}}", name), // Unknown built-in, keep as-is
         }
     }
@@ -168,6 +198,17 @@ fn generate_random_string(len: usize) -> String {
         .collect()
 }
 
+/// Generate a random password with mixed case, digits, and special chars
+fn generate_random_password(len: usize) -> String {
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+    (0..len)
+        .map(|_| {
+            let idx = (rand_simple() as usize) % CHARSET.len();
+            CHARSET[idx] as char
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,18 +222,51 @@ mod tests {
         env_vars.insert("token".to_string(), Value::String("env_token".to_string()));
         env_vars.insert("baseUrl".to_string(), Value::String("http://api.test".to_string()));
 
-        let mut ctx = ExecutionContext::new(exec_vars, env_vars);
+        let mut flow_vars = HashMap::new();
+        flow_vars.insert("token".to_string(), Value::String("flow_token".to_string()));
+        flow_vars.insert("flowVar".to_string(), Value::String("flow_value".to_string()));
+
+        let mut ctx = ExecutionContext::new(exec_vars, env_vars, flow_vars);
         ctx.set("token", Value::String("ctx_token".to_string()));
         ctx.set("userId", Value::String("123".to_string()));
 
+        let mut node_vars = HashMap::new();
+        node_vars.insert("token".to_string(), Value::String("node_token".to_string()));
+        node_vars.insert("nodeVar".to_string(), Value::String("node_value".to_string()));
+        ctx.set_node_input_vars(node_vars);
+
         // Execution vars have highest priority
         assert_eq!(ctx.resolve("token"), Some(&Value::String("exec_token".to_string())));
-        // Environment vars are second
-        assert_eq!(ctx.resolve("baseUrl"), Some(&Value::String("http://api.test".to_string())));
-        // Context vars are third
+        // Context (exports) beats node input vars
         assert_eq!(ctx.resolve("userId"), Some(&Value::String("123".to_string())));
+        // Node input vars beat flow vars
+        assert_eq!(ctx.resolve("nodeVar"), Some(&Value::String("node_value".to_string())));
+        // Flow vars beat environment vars
+        assert_eq!(ctx.resolve("flowVar"), Some(&Value::String("flow_value".to_string())));
+        // Environment vars are last
+        assert_eq!(ctx.resolve("baseUrl"), Some(&Value::String("http://api.test".to_string())));
         // Not found returns None
         assert_eq!(ctx.resolve("notfound"), None);
+    }
+
+    #[test]
+    fn test_node_input_vars_cleared_between_nodes() {
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+
+        let mut vars1 = HashMap::new();
+        vars1.insert("login_user".to_string(), Value::String("admin".to_string()));
+        ctx.set_node_input_vars(vars1);
+        assert_eq!(ctx.resolve("login_user"), Some(&Value::String("admin".to_string())));
+
+        // Simulate next node with different vars (full replacement)
+        let mut vars2 = HashMap::new();
+        vars2.insert("login_user".to_string(), Value::String("viewer".to_string()));
+        ctx.set_node_input_vars(vars2);
+        assert_eq!(ctx.resolve("login_user"), Some(&Value::String("viewer".to_string())));
+
+        // Empty replacement clears all node vars
+        ctx.set_node_input_vars(HashMap::new());
+        assert_eq!(ctx.resolve("login_user"), None);
     }
 
     #[test]
@@ -201,7 +275,7 @@ mod tests {
         env_vars.insert("baseUrl".to_string(), Value::String("http://api.test".to_string()));
         env_vars.insert("userId".to_string(), Value::Number(42.into()));
 
-        let ctx = ExecutionContext::new(HashMap::new(), env_vars);
+        let ctx = ExecutionContext::new(HashMap::new(), env_vars, HashMap::new());
 
         let result = ctx.interpolate("{{baseUrl}}/users/{{userId}}").unwrap();
         assert_eq!(result, "http://api.test/users/42");
@@ -213,9 +287,25 @@ mod tests {
 
     #[test]
     fn test_builtin_uuid() {
-        let ctx = ExecutionContext::new(HashMap::new(), HashMap::new());
+        let ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
         let result = ctx.interpolate("id={{$UUID}}").unwrap();
         assert!(result.starts_with("id="));
         assert!(result.len() > 10); // UUID is 36 chars
+    }
+
+    #[test]
+    fn test_builtin_random_password() {
+        let ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let result = ctx.interpolate("pw={{$RandomPassword}}").unwrap();
+        assert!(result.starts_with("pw="));
+        assert!(result.len() >= 19); // "pw=" + 16 chars
+    }
+
+    #[test]
+    fn test_builtin_random_username() {
+        let ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let result = ctx.interpolate("{{$RandomUsername}}").unwrap();
+        assert!(result.starts_with("user_"));
+        assert_eq!(result.len(), 13); // "user_" + 8 chars
     }
 }

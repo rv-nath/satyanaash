@@ -1,5 +1,6 @@
 //! Domain models for the application
 
+use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +68,9 @@ pub struct GraphData {
     pub edges: Vec<GraphEdge>,
     #[serde(default = "default_canvas_settings")]
     pub canvas_settings: serde_json::Value,
+    /// Flow-level variables (scoped between project vars and node vars)
+    #[serde(default)]
+    pub variables: HashMap<String, serde_json::Value>,
 }
 
 /// Graph node (start, end, testCase, group)

@@ -38,6 +38,8 @@ export interface TestGroup {
   internalEdges?: Edge[];
   // Edge settings per flow
   edgeSettings?: EdgeSettings;
+  // Flow-level variables (scoped between project vars and node vars)
+  flowVariables?: Record<string, unknown>;
 }
 
 export type NodeType = 'start' | 'end' | 'testCase' | 'group';
@@ -100,6 +102,8 @@ interface TestProjectContextType {
   deleteNode: (nodeId: string) => void;
   updateNodeConfig: (nodeId: string, config: any) => void;
   alignNodes: (direction: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') => void;
+  flowVariables: Record<string, unknown>;
+  setFlowVariables: (vars: Record<string, unknown>) => void;
   exportFlowJSON: (groupId: string) => any;
   undo: () => void;
   redo: () => void;
@@ -177,6 +181,9 @@ function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
     viewport: canvasSettings.viewport as Viewport | undefined,
   };
 
+  // Parse flow-level variables
+  const flowVariables = (flow.graph_data?.variables as Record<string, unknown>) || {};
+
   return {
     id: flow.id,
     name: flow.name,
@@ -186,6 +193,7 @@ function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
     internalNodes: nodes,
     internalEdges: edges,
     edgeSettings,
+    flowVariables,
     testCases: [],
   };
 }
@@ -294,6 +302,14 @@ export const TestProjectProvider = ({
   const edgeSettings = activeFlow?.edgeSettings || defaultEdgeSettings;
   const edgeType = edgeSettings.edgeType;
   const showEdgeLabels = edgeSettings.showEdgeLabels;
+  const flowVariables = activeFlow?.flowVariables || {};
+
+  const setFlowVariables = useCallback((vars: Record<string, unknown>) => {
+    if (!activeFlowId) return;
+    setTestGroups(prev => prev.map(g =>
+      g.id === activeFlowId ? { ...g, flowVariables: vars } : g
+    ));
+  }, [activeFlowId]);
 
   // Get flow version from active flow for optimistic locking
   const flowVersion = activeFlow?.version ?? 1;
@@ -313,6 +329,7 @@ export const TestProjectProvider = ({
     nodes,
     edges,
     edgeSettings,
+    flowVariables,
     debounceMs: 2000,
     enabled: !!activeFlowId,
     onVersionUpdate: handleVersionUpdate,
@@ -762,6 +779,8 @@ export const TestProjectProvider = ({
         deleteNode,
         updateNodeConfig,
         alignNodes,
+        flowVariables,
+        setFlowVariables,
         exportFlowJSON,
         undo,
         redo,
