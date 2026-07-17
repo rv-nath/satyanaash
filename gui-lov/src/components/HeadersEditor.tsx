@@ -288,7 +288,7 @@ const HeaderRowComponent = ({
           }}
           onKeyDown={handleKeyDown}
           placeholder="Header name"
-          className="h-8 text-sm font-mono"
+          className="h-8 text-sm font-mono code-input ph-faint"
           autoComplete="off"
         />
         {isPopoverOpen && visibleSuggestions.length > 0 && (
@@ -329,7 +329,7 @@ const HeaderRowComponent = ({
           value={header.value}
           onChange={(e) => onUpdate(header.id, 'value', e.target.value)}
           placeholder="Value"
-          className="h-8 text-sm font-mono pr-8"
+          className="h-8 text-sm font-mono code-input ph-faint pr-8"
         />
         {availableVars.length > 0 && (
           <Popover open={showVarPopover} onOpenChange={setShowVarPopover}>

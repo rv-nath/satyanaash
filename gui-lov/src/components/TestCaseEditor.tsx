@@ -633,7 +633,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                       value={endpoint}
                       onChange={(e) => handleFieldChange(setEndpoint)(e.target.value)}
                       placeholder="/api/users/{{userId}}"
-                      className="font-mono text-sm"
+                      className="font-mono text-sm code-input ph-faint"
                     />
                   </div>
                 </div>
@@ -700,7 +700,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                         e.target.style.height = e.target.scrollHeight + 'px';
                       }}
                       placeholder='{"token": "{{authToken}}", "userId": "{{userId}}"}'
-                      className="font-mono text-sm min-h-[150px] resize-none overflow-hidden"
+                      className="font-mono text-sm code-input ph-faint min-h-[150px] resize-none overflow-hidden"
                       style={{ height: 'auto' }}
                     />
                     <p className="text-xs text-muted-foreground">

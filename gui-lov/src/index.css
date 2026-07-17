@@ -77,6 +77,13 @@ All colors MUST be HSL.
   .ph-faint::placeholder {
     color: hsl(180 5% 42%);
   }
+
+  /* Calm code-ish input values: monospace at full brightness reads as bold on
+     dark, out-weighing its own labels. Soften so data reads as data. (Section 8) */
+  .code-input {
+    color: hsl(180 5% 84%);
+    font-weight: 400;
+  }
 }
 
 @layer base {
