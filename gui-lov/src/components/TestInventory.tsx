@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
+import { TestRowPopover } from "@/components/TestRowPopover";
 
 interface TestInventoryProps {
   onAddTestCase: () => void;
@@ -205,72 +206,19 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
               </p>
             </div>
           ) : (
-            <div className="space-y-1">
-              {filteredTests.map((test) => {
-                const isSelected = selectedTestCaseId === test.id;
-                return (
-                  <div
-                    key={test.id}
-                    draggable
-                    onClick={() => handleClick(test.id)}
-                    onDoubleClick={() => handleDoubleClick(test.id)}
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData('application/json', JSON.stringify({
-                        type: 'testCase',
-                        testCaseId: test.id,
-                        data: {
-                          testCaseId: test.id,
-                          label: test.name,
-                          method: test.method,
-                          endpoint: test.endpoint,
-                          payload: test.payload,
-                          preTestScript: test.preTestScript,
-                          postTestScript: test.postTestScript
-                        }
-                      }));
-                    }}
-                    className={`flex items-center gap-2 px-3 py-2.5 rounded-md transition-colors group cursor-pointer border ${
-                      isSelected
-                        ? 'bg-primary/10 border-primary/40 ring-1 ring-primary/20'
-                        : 'hover:bg-sidebar-accent border-transparent hover:border-primary/20'
-                    }`}
-                  >
-                    <FileCode className={`w-4 h-4 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-node-test'}`} />
-                    <div className="flex-1 min-w-0">
-                      <div className={`text-sm font-medium font-mono truncate ${isSelected ? 'text-primary' : 'text-sidebar-foreground'}`}>
-                        {test.name}
-                      </div>
-                      <div className="text-xs text-muted-foreground truncate">
-                        {test.endpoint || test.groupName}
-                      </div>
-                    </div>
-                    <Badge variant="secondary" className={`text-[10px] px-1.5 py-0 ${getMethodColor(test.method)} flex-shrink-0`}>
-                      {test.method}
-                    </Badge>
-
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 flex-shrink-0">
-                          <MoreVertical className="w-3 h-3" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => onEditTestCase(test)}>
-                          <Edit2 className="w-3 h-3 mr-2" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          className="text-destructive"
-                          onClick={() => onDeleteTestCase(test.id)}
-                        >
-                          <Trash2 className="w-3 h-3 mr-2" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                );
-              })}
+            <div className="space-y-0.5">
+              {filteredTests.map((test) => (
+                <TestRow
+                  key={test.id}
+                  test={test}
+                  isSelected={selectedTestCaseId === test.id}
+                  onClick={() => handleClick(test.id)}
+                  onDoubleClick={() => handleDoubleClick(test.id)}
+                  onEditTestCase={onEditTestCase}
+                  onDeleteTestCase={onDeleteTestCase}
+                  getMethodColor={getMethodColor}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -285,6 +233,99 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
           </p>
         </div>
       )}
+    </div>
+  );
+};
+
+interface TestRowData {
+  id: string;
+  name: string;
+  method: string;
+  endpoint?: string;
+  payload?: string;
+  preTestScript?: string;
+  postTestScript?: string;
+}
+
+interface TestRowProps {
+  test: TestRowData;
+  isSelected: boolean;
+  onClick: () => void;
+  onDoubleClick: () => void;
+  onEditTestCase: (test: TestRowData) => void;
+  onDeleteTestCase: (testId: string) => void;
+  getMethodColor: (method: string) => string;
+}
+
+const TestRow = ({
+  test, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, getMethodColor,
+}: TestRowProps) => {
+  const nameRef = useRef<HTMLSpanElement>(null);
+  const [hovered, setHovered] = useState(false);
+
+  const handleDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData('application/json', JSON.stringify({
+      type: 'testCase',
+      testCaseId: test.id,
+      data: {
+        testCaseId: test.id,
+        label: test.name,
+        method: test.method,
+        endpoint: test.endpoint,
+        payload: test.payload,
+        preTestScript: test.preTestScript,
+        postTestScript: test.postTestScript,
+      },
+    }));
+  };
+
+  return (
+    <div
+      draggable
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={onClick}
+      onDoubleClick={onDoubleClick}
+      onDragStart={handleDragStart}
+      className={`group flex items-center gap-2 h-[var(--rail-row-h)] px-2 rounded-md border cursor-pointer ${
+        isSelected ? 'bg-primary/10 border-primary/40' : 'border-transparent hover:bg-sidebar-accent'
+      }`}
+    >
+      <Badge variant="secondary" className={`text-[9px] px-1.5 py-0 flex-shrink-0 ${getMethodColor(test.method)}`}>
+        {test.method}
+      </Badge>
+      <span
+        ref={nameRef}
+        className="flex-1 truncate text-[13px] font-normal"
+        style={{ color: isSelected ? undefined : 'hsl(var(--rail-name-color))' }}
+      >
+        {test.name}
+      </span>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 flex-shrink-0">
+            <MoreVertical className="w-3 h-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={() => onEditTestCase(test)}>
+            <Edit2 className="w-3 h-3 mr-2" />
+            Edit
+          </DropdownMenuItem>
+          <DropdownMenuItem className="text-destructive" onClick={() => onDeleteTestCase(test.id)}>
+            <Trash2 className="w-3 h-3 mr-2" />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <TestRowPopover
+        anchorRef={nameRef}
+        method={test.method}
+        endpoint={test.endpoint || ""}
+        open={hovered}
+      />
     </div>
   );
 };

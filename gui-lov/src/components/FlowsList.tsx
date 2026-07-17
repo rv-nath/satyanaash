@@ -1,4 +1,4 @@
-import { FolderTree, Plus, Edit2, Trash2, MoreVertical, ChevronRight, FileCode } from "lucide-react";
+import { FolderTree, Plus, Edit2, Trash2, MoreVertical } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -60,21 +60,24 @@ export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup }: FlowsListP
             </div>
           ) : (
             testGroups.map((group) => (
-              <div key={group.id} className="mb-2">
                 <div
+                  key={group.id}
                   onClick={() => handleFlowClick(group.id)}
-                  className={`flex items-center gap-2 px-3 py-2 hover:bg-sidebar-accent rounded-md transition-colors group cursor-pointer ${
+                  className={`flex items-center gap-2 h-[var(--rail-row-h)] px-2 hover:bg-sidebar-accent rounded-md transition-colors group cursor-pointer ${
                     activeFlowId === group.id ? 'bg-sidebar-accent border-l-2 border-primary' : ''
                   }`}
                 >
-                  <FolderTree className="w-4 h-4 text-node-group" />
-                  <span className="text-sm font-medium text-sidebar-foreground flex-1">
+                  <FolderTree className="w-4 h-4 flex-shrink-0 text-node-group" />
+                  <span
+                    className="flex-1 truncate text-[13px] font-normal"
+                    style={{ color: activeFlowId === group.id ? undefined : 'hsl(var(--rail-name-color))' }}
+                  >
                     {group.name}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {group.testCases.length}
                   </span>
-                  
+
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100">
@@ -96,7 +99,6 @@ export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup }: FlowsListP
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
-              </div>
             ))
           )}
         </div>
