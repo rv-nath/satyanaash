@@ -79,11 +79,6 @@ All colors MUST be HSL.
     @apply border-border;
   }
 
-  /* 13px chrome base; canvas/editor content sets its own sizes explicitly */
-  html {
-    font-size: 13px;
-  }
-
   body {
     @apply bg-background text-foreground;
   }

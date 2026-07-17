@@ -24,26 +24,20 @@ export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup }: FlowsListP
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b border-sidebar-border bg-sidebar-accent/30">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h2 className="text-base font-bold text-sidebar-foreground flex items-center gap-2">
-              🎯 Test Flows
-            </h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {testGroups.length} flow{testGroups.length !== 1 ? 's' : ''} defined
-            </p>
-          </div>
-        </div>
-        
-        <Button 
-          variant="default" 
-          size="sm"
-          className="w-full gap-2"
+      <div className="flex items-center gap-2 h-8 px-3 border-b border-sidebar-border">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Flows
+        </span>
+        <span className="text-[10px] text-muted-foreground/60">{testGroups.length}</span>
+        <div className="flex-1" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
           onClick={onAddGroup}
+          title="New flow"
         >
-          <Plus className="w-3 h-3" />
-          New Flow
+          <Plus className="w-3.5 h-3.5" />
         </Button>
       </div>
 

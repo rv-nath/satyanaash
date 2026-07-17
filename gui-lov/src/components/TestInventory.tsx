@@ -132,24 +132,31 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="p-4 border-b border-sidebar-border bg-sidebar-accent/30">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <h2 className="text-base font-bold text-sidebar-foreground flex items-center gap-2">
-              Test Inventory
-            </h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {filteredTests.length === allTests.length
-                ? `${allTests.length} test case${allTests.length !== 1 ? 's' : ''} available`
-                : `${filteredTests.length} of ${allTests.length} tests`
-              }
-            </p>
-          </div>
+      <div className="border-b border-sidebar-border">
+        <div className="flex items-center gap-2 h-8 px-3">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Tests
+          </span>
+          <span className="text-[10px] text-muted-foreground/60">
+            {filteredTests.length === allTests.length
+              ? allTests.length
+              : `${filteredTests.length}/${allTests.length}`}
+          </span>
+          <div className="flex-1" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={onAddTestCase}
+            title="New test case"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </Button>
         </div>
 
         {/* Search input */}
-        <div className="relative mb-3">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+        <div className="relative px-2 pb-2">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <Input
             ref={searchInputRef}
             type="text"
@@ -157,29 +164,19 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="pl-8 pr-8 h-8 text-sm"
+            className="pl-8 pr-8 h-7 text-xs"
           />
           {searchQuery && (
             <Button
               variant="ghost"
               size="icon"
-              className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
+              className="absolute right-3 top-1/2 -translate-y-1/2 h-6 w-6"
               onClick={() => setSearchQuery("")}
             >
               <X className="w-3 h-3" />
             </Button>
           )}
         </div>
-
-        <Button
-          variant="default"
-          size="sm"
-          className="w-full gap-2"
-          onClick={onAddTestCase}
-        >
-          <Plus className="w-3 h-3" />
-          New Test Case
-        </Button>
       </div>
 
       {/* Test List */}

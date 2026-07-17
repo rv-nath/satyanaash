@@ -567,7 +567,7 @@ const ProjectDetailContent = () => {
       {/* Main Content */}
       <ResizablePanelGroup direction="horizontal" className="flex-1">
         {/* Left Panel — stacked rail: Flows over Tests */}
-        <ResizablePanel defaultSize={22} minSize={17} maxSize={31} className="min-w-[220px] max-w-[400px]">
+        <ResizablePanel defaultSize={18} minSize={14} maxSize={26} className="min-w-[200px] max-w-[300px]">
           <div className="h-full bg-sidebar border-r border-sidebar-border">
             <ResizablePanelGroup direction="vertical">
               <ResizablePanel defaultSize={40} minSize={15}>
