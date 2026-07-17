@@ -208,10 +208,15 @@ duplicates).
 | **A. `group` text column** on `test_case` | small (1 migration + field) | groups implicit (distinct values); rename = update N rows; empty groups can't persist |
 | **B. `test_groups` table** + FK from `test_case` | medium | proper rename/reorder/empty-group persistence + group metadata |
 
-**Recommendation: B** — grouping is core to the Ngage rollout, and rename /
+**Decision: B** — grouping is core to the Ngage rollout, and rename /
 reorder / empty-group persistence matter at that scale. Tags: a **`tags` JSON
 array column** on `test_case` (same pattern as the existing `headers` JSON — no
 join table needed for v1 filtering).
+
+**Sequencing decision: groups first, tags as a fast-follow.** Ship the grouped
+tree (with the tag chip bar built but hidden/no-op if needed) before wiring the
+tag filter and editor. This lets the density + workspace + grouping win land
+without waiting on tag UX.
 
 Backend touch points: new migration (`00X_test_groups.sql` + `tags` column),
 `db/models.rs` (`TestCase.group_id`, `TestCase.tags`), a `test_groups` repository,
@@ -239,12 +244,11 @@ and CRUD handlers under `api/test_cases.rs` / a new `api/groups.rs`.
    overflow menu? (Default: overflow menu, no hard cap.)
 3. **Density toggle persistence:** per-user localStorage vs. project setting.
    (Default: localStorage, per-user.)
-4. **Group storage:** approach A (text column) vs. B (`test_groups` table).
-   Current design recommends **B**.
+4. ~~**Group storage:** A vs. B.~~ **RESOLVED → B** (`test_groups` table).
 5. **Group vs. flow relationship:** confirmed independent — a flow may pull tests
    from any group. (No open decision; noted to avoid conflation.)
-6. **Tags in v1 or v1.5:** ship groups first, tags as fast-follow (current plan),
-   or build both together. Default: **designed-in now, groups land first**.
+6. ~~**Tags in v1 or v1.5.**~~ **RESOLVED → groups first, tags fast-follow**
+   (designed-in now, tag filter/editor wired after groups land).
 
 ## Affected Files (indicative, not a plan)
 
