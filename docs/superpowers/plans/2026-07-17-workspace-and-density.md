@@ -881,9 +881,18 @@ git commit -m "feat: tabbed workspace with pinned canvas and persistent test tab
 
 ---
 
-## Task 8 (OPTIONAL / DISCUSS): Response as a collapsible right-side drawer
+## Task 8 (SKIPPED by decision): Response as a collapsible right-side drawer
 
-> **Discovered constraint:** The editor currently shows the response as an **internal tab** (`overview / request / scripts / response`, `TestCaseEditor.tsx:452–884`), not a side panel. The spec's non-goal says "no redesign of the editor's internal fields." Converting the Response tab into a right-docked drawer is a real internal-layout change. **Confirm with the requester before doing this task.** If deferred, the response simply stays as the existing tab — no loss of function.
+> **DECISION (2026-07-17):** Skipped. The response is already an **internal tab**
+> in the editor (`overview / request / scripts / response`,
+> `TestCaseEditor.tsx:452–884`). The requester asked for a drawer originally only
+> because they assumed the response was *not* already in a tab; since it is, it
+> stays as the internal tab — no change. This respects the spec non-goal ("no
+> editor internal redesign"). The steps below are retained for reference only and
+> were not executed.
+>
+> **Discovered constraint (context for the decision):** Converting the Response tab
+> into a right-docked drawer would have been a real internal-layout change.
 
 **Files:**
 - Modify: `gui-lov/src/components/TestCaseEditor.tsx`
