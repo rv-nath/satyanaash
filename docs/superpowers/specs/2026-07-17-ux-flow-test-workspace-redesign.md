@@ -1,7 +1,8 @@
 # UX Redesign — Flow / Test Workspace & Density
 
 **Date:** 2026-07-17
-**Scope:** `gui-lov/` frontend (React + Vite + shadcn/ui + @xyflow/react)
+**Scope:** `gui-lov/` frontend (React + Vite + shadcn/ui + @xyflow/react);
+plus a small `api/` change for test grouping & tags (section 7)
 **Status:** Design approved; pending spec review before implementation planning
 
 ## Problem
@@ -41,11 +42,16 @@ hijack the screen.
 
 ## Non-Goals
 
-- No backend/API changes. This is purely `gui-lov/` presentation and
-  client-side state/routing.
+- The workspace/density rework (sections 1–6) is purely `gui-lov/` presentation
+  and client-side state/routing — no backend changes.
+- **Test grouping & tags (section 7) is the one exception:** it requires a small
+  backend change for persistence. It is scoped in deliberately (see section 7 and
+  the Ngage rationale) rather than smuggled into the frontend-only work.
 - No redesign of the test-case editor's internal fields or the graph node
   visuals beyond what density requires.
 - No change to the Projects landing page.
+- No nested/multi-level group hierarchy (single level only — see section 7).
+- Tags are **not** a second organizational tree — they are a filter layer only.
 
 ## Design
 
@@ -80,9 +86,25 @@ with a collapsible console beneath it.
   maximized.
 - **FLOWS:** list of flows; the active flow shows a marker (● / left accent).
   Click selects/loads it into the pinned canvas tab.
-- **TESTS:** searchable list; rows remain **draggable** onto the canvas
-  (drag payload unchanged from `TestInventory.tsx:217`).
+- **TESTS:** searchable list, **organized into collapsible groups** with a
+  **tag-filter chip bar** (see section 7); rows remain **draggable** onto the
+  canvas (drag payload unchanged from `TestInventory.tsx:217`).
 - Replaces the current `Tabs` toggle entirely — no more Tests/Flows tabs.
+
+**Rail row treatment (validated in mockup):**
+
+- **Name:** Inter (UI font, *not* monospace), weight **400**, resting color
+  dimmed to ~**72% L** (`hsl(180 5% 72%)`); brightens to full / teal only on
+  hover and active/selected. This kills the "everything looks bold / eye-grab"
+  problem — the item stops competing for attention. Remove `font-medium` and
+  `font-mono` from the name spans (`TestInventory.tsx:240`, `FlowsList.tsx:71`).
+- **Method badge** (GET/POST/…): the sole persistent color accent per row.
+- **Hover popover** (replaces inline two-line rows): a bordered popover that
+  **anchors to the right of the test-name text** (not the row's right edge) with
+  an arrow pointing back at the name. Contains method + endpoint (monospace) +
+  short description + tag chips. Must render above the scroll container (portal /
+  fixed positioning) so it never shifts rows below it. Monospace is reserved for
+  the endpoint path here, where `{{var}}` legibility matters.
 
 ### 3. Center — tabbed workspace
 
@@ -95,6 +117,11 @@ with a collapsible console beneath it.
   project-global building blocks, not flow-specific). *(Open question — see below.)*
 - Unsaved-change indicator on a tab (dot) reusing the editor's existing dirty
   state.
+- **Response as a collapsible right-side drawer (validated in mockup):** inside a
+  test-case tab, the request editor is the main column and the response is a
+  drawer docked to the right that **slides in/out**. Default **open**; the header
+  `×` collapses it (request editor expands to full width) and a vertical
+  "Response" handle at the right edge slides it back. Width ~320px.
 
 ### 4. Console
 
@@ -128,6 +155,68 @@ Expected effect: ~15–25% more canvas width on a laptop, ~2× more rail items
 before scrolling, and reclaimed vertical space — without shrinking the JSON
 payload/response areas.
 
+### 7. Test organization — groups & tags
+
+**Rationale.** The target deployment (Ngage) has **50+ services** → potentially
+hundreds of test cases. A flat list breaks down past ~30–40 items: it can't be
+scanned, and search-only forces the user to already know the name. Organization is
+a must-have at this scale, not a nice-to-have.
+
+Two orthogonal mechanisms, each answering a different question — kept in their own
+lanes:
+
+- **Group = "where does this test live?"** — an organizational *home*. Exactly
+  **one** group per test. Drives the sidebar tree.
+- **Tag = "what is this test about?"** — cross-cutting attributes (`smoke`,
+  `regression`, `p0`, `auth`, `wip`). **Many** per test. Drives *filtering only*,
+  never a second tree.
+
+This mirrors folders-vs-labels in Gmail/GitHub/Linear: one canonical home,
+plus cross-cutting labels for filtering. Using tags as the primary organizer is
+explicitly rejected — it removes the canonical location and makes a clean sidebar
+tree impossible (the same test would appear under multiple branches, reading as
+duplicates).
+
+**Groups (v1 — build now):**
+
+- **Single level, no nesting** (YAGNI; one group ≈ one service maps cleanly). May
+  revisit nesting later if a service genuinely needs it.
+- **User-created and dynamic**; a built-in **`Ungrouped`** catch-all always
+  exists and can't be deleted.
+- Rendered as **collapsible group headers** in the TESTS section: caret + name +
+  count. Collapse all → just group names ("show only groups"). Collapsed state
+  remembered per user (localStorage).
+- **Drag a test between groups** to re-home it. New-group affordance in the TESTS
+  section header.
+- **Search spans all groups** and **auto-expands** groups containing matches, so
+  grouping never fights findability.
+
+**Tags (v1.5 — fast-follow, designed-in now):**
+
+- A **chip filter bar** above the grouped list. Selecting chips narrows the
+  visible tests **across all groups** (grouped structure preserved; empty groups
+  hide; matching groups auto-expand).
+- Small **tag dots** on rows preview a test's tags at a glance.
+- **Autocomplete from existing tags** when adding, to prevent sprawl
+  (`smoke` vs `smoke-test` vs `Smoke`).
+- Tags also power future "run all `smoke` across services" style selection.
+
+**Data model / backend (the scoped-in change).** Two options considered:
+
+| Approach | Effort | Trade-off |
+|---|---|---|
+| **A. `group` text column** on `test_case` | small (1 migration + field) | groups implicit (distinct values); rename = update N rows; empty groups can't persist |
+| **B. `test_groups` table** + FK from `test_case` | medium | proper rename/reorder/empty-group persistence + group metadata |
+
+**Recommendation: B** — grouping is core to the Ngage rollout, and rename /
+reorder / empty-group persistence matter at that scale. Tags: a **`tags` JSON
+array column** on `test_case` (same pattern as the existing `headers` JSON — no
+join table needed for v1 filtering).
+
+Backend touch points: new migration (`00X_test_groups.sql` + `tags` column),
+`db/models.rs` (`TestCase.group_id`, `TestCase.tags`), a `test_groups` repository,
+and CRUD handlers under `api/test_cases.rs` / a new `api/groups.rs`.
+
 ## Success Criteria
 
 - Flows list and Tests palette are both visible simultaneously without toggling.
@@ -137,6 +226,10 @@ payload/response areas.
   shows noticeably more items per screen.
 - No regression in: dragging tests onto the canvas, autosave, validation,
   execution/console streaming, undo/redo.
+- At 100+ test cases the rail stays usable: tests are grouped, groups collapse,
+  and a tag filter narrows across groups without breaking the tree.
+- Resting rail items read as a calm list (dimmed names, single color accent), not
+  a wall of bold text.
 
 ## Open Questions
 
@@ -146,6 +239,12 @@ payload/response areas.
    overflow menu? (Default: overflow menu, no hard cap.)
 3. **Density toggle persistence:** per-user localStorage vs. project setting.
    (Default: localStorage, per-user.)
+4. **Group storage:** approach A (text column) vs. B (`test_groups` table).
+   Current design recommends **B**.
+5. **Group vs. flow relationship:** confirmed independent — a flow may pull tests
+   from any group. (No open decision; noted to avoid conflation.)
+6. **Tags in v1 or v1.5:** ship groups first, tags as fast-follow (current plan),
+   or build both together. Default: **designed-in now, groups land first**.
 
 ## Affected Files (indicative, not a plan)
 
@@ -162,3 +261,15 @@ payload/response areas.
   Comfortable/Compact theme switch.
 - `src/contexts/TestProjectContext.tsx` — active-flow vs. open-test-tabs state;
   routing updates.
+
+**Grouping & tags (section 7) — additional surface:**
+
+- `src/components/TestInventory.tsx` — grouped, collapsible rendering; tag-filter
+  chip bar; drag-between-groups; per-user collapsed-state.
+- New: group CRUD UI (create/rename/delete group) and tag editor/autocomplete on
+  the test-case editor.
+- Backend: new migration (`test_groups` table + `tags` column on `test_case`),
+  `api/src/db/models.rs` (`group_id`, `tags`), a `test_groups` repository under
+  `api/src/db/repositories/`, and handlers (`api/src/api/test_cases.rs` and/or a
+  new `api/src/api/groups.rs`).
+- `src/lib/api/types.ts` / `src/hooks/useApi.ts` — group + tag types and queries.
