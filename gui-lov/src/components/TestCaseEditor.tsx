@@ -48,6 +48,56 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
   );
 }
 
+// Folder-style editor tabs: active tab is a raised trapezoid whose 2px outline
+// (rounded shoulders) is the only active cue; strip and content share one color.
+const EDITOR_TABS = [
+  { value: "overview", label: "Overview", Icon: ClipboardList },
+  { value: "request", label: "Request", Icon: FileCode },
+  { value: "scripts", label: "Scripts", Icon: Code2 },
+  { value: "response", label: "Response", Icon: Eye },
+] as const;
+
+function FolderTabs({ active, onChange }: { active: string; onChange: (v: string) => void }) {
+  return (
+    <div className="relative flex items-end gap-0.5 px-6 pt-3">
+      {/* baseline (1px) — the active tab's fill breaks it */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-border" />
+      {EDITOR_TABS.map(({ value, label, Icon }) => {
+        const on = active === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => onChange(value)}
+            className={`relative z-[1] -mb-px flex items-center gap-2 whitespace-nowrap px-6 py-2.5 text-sm ${
+              on ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {on && (
+              <svg
+                viewBox="0 0 100 44"
+                preserveAspectRatio="none"
+                className="absolute inset-0 -z-10 h-full w-full"
+              >
+                <path
+                  d="M3,44 L13,9 Q15,4 20,4 L80,4 Q85,4 87,9 L97,44"
+                  fill="hsl(var(--background))"
+                  stroke="hsl(var(--border))"
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            )}
+            <Icon className="h-4 w-4 opacity-60" />
+            <span className="relative">{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEditorProps) => {
   const { projectId, nodes, edges, closeTestCaseEditor } = useTestProject();
 
@@ -473,26 +523,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
       {/* Content with Tabs */}
       <div className="flex-1 overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-          <div className="border-b border-border px-6">
-            <TabsList className="h-12">
-              <TabsTrigger value="overview" className="gap-2">
-                <ClipboardList className="w-4 h-4" />
-                Overview
-              </TabsTrigger>
-              <TabsTrigger value="request" className="gap-2">
-                <FileCode className="w-4 h-4" />
-                Request
-              </TabsTrigger>
-              <TabsTrigger value="scripts" className="gap-2">
-                <Code2 className="w-4 h-4" />
-                Scripts
-              </TabsTrigger>
-              <TabsTrigger value="response" className="gap-2">
-                <Eye className="w-4 h-4" />
-                Response
-              </TabsTrigger>
-            </TabsList>
-          </div>
+          <FolderTabs active={activeTab} onChange={setActiveTab} />
 
           {/* Overview Tab - BDD Fields */}
           <TabsContent value="overview" className="flex-1 mt-0 overflow-hidden">
