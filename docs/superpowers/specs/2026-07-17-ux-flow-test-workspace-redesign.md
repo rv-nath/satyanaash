@@ -192,6 +192,20 @@ duplicates).
 - **Search spans all groups** and **auto-expands** groups containing matches, so
   grouping never fights findability.
 
+**Group interactions (validated in mockup):**
+
+- **Create a group:** a folder-plus icon in the TESTS section header (beside the
+  new-test `+`) inserts an **inline "Untitled group" row** with the name field
+  focused — type + Enter, no modal. Rename via double-click or the group's `⋮`;
+  delete via `⋮` (its tests fall back to `Ungrouped`).
+- **New groups are inserted at the TOP** of the tests list.
+- **Assign a test to a group** — primary: a test row's `⋮` → **Move to group ▸**
+  submenu (all groups, current one checked, + "New group…"). Secondary: a
+  **Group field in the test-case editor**. Convenience: each group header has a
+  hover `+` that creates a test already in that group (**create-in-place**).
+  Drag-a-row-onto-a-group is deferred (avoids colliding with drag-to-canvas).
+- **`Ungrouped`** always exists, can't be deleted, and is **hidden when empty**.
+
 **Tags (v1.5 — fast-follow, designed-in now):**
 
 - A **chip filter bar** above the grouped list. Selecting chips narrows the
