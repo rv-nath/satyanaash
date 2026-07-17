@@ -528,50 +528,62 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           {/* Overview Tab - BDD Fields */}
           <TabsContent value="overview" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="p-6 max-w-2xl">
+              <div className="p-6 max-w-5xl mx-auto">
                 <SectionLead
                   title="What does this test check?"
                   helper="Describe the scenario in plain words. This documents the test and shows up in run reports — it doesn't affect how the request runs."
                 />
 
-                <div className="space-y-5">
+                <div className="space-y-6">
                   {/* Before / setup */}
-                  <div className="pl-3 border-l-2" style={{ borderColor: "hsl(214 90% 62% / 0.5)" }}>
-                    <FieldLabel hint="given">Before — the setup</FieldLabel>
-                    <p className="mt-0.5 mb-1.5 text-xs text-muted-foreground">What must already be true for this test to make sense.</p>
-                    <Textarea
-                      id="given"
-                      value={givenCondition}
-                      onChange={(e) => handleFieldChange(setGivenCondition)(e.target.value)}
-                      placeholder="e.g., A valid auth token and a well-formed payload"
-                      className="ph-faint text-sm min-h-[72px]"
-                    />
+                  <div className="grid gap-x-8 gap-y-1.5 md:grid-cols-[220px_minmax(0,1fr)] md:items-start">
+                    <div>
+                      <FieldLabel hint="given">Before — the setup</FieldLabel>
+                      <p className="mt-0.5 text-xs text-muted-foreground">What must already be true for this test to make sense.</p>
+                    </div>
+                    <div className="pl-3 border-l-2" style={{ borderColor: "hsl(214 90% 62% / 0.5)" }}>
+                      <Textarea
+                        id="given"
+                        value={givenCondition}
+                        onChange={(e) => handleFieldChange(setGivenCondition)(e.target.value)}
+                        placeholder="e.g., A valid auth token and a well-formed payload"
+                        className="ph-faint text-sm min-h-[72px]"
+                      />
+                    </div>
                   </div>
 
                   {/* Action */}
-                  <div className="pl-3 border-l-2" style={{ borderColor: "hsl(38 92% 55% / 0.5)" }}>
-                    <FieldLabel hint="when">Action — what happens</FieldLabel>
-                    <p className="mt-0.5 mb-1.5 text-xs text-muted-foreground">The request this test makes.</p>
-                    <Textarea
-                      id="when"
-                      value={whenAction}
-                      onChange={(e) => handleFieldChange(setWhenAction)(e.target.value)}
-                      placeholder="e.g., The Send SMS API is called"
-                      className="ph-faint text-sm min-h-[72px]"
-                    />
+                  <div className="grid gap-x-8 gap-y-1.5 md:grid-cols-[220px_minmax(0,1fr)] md:items-start">
+                    <div>
+                      <FieldLabel hint="when">Action — what happens</FieldLabel>
+                      <p className="mt-0.5 text-xs text-muted-foreground">The request this test makes.</p>
+                    </div>
+                    <div className="pl-3 border-l-2" style={{ borderColor: "hsl(38 92% 55% / 0.5)" }}>
+                      <Textarea
+                        id="when"
+                        value={whenAction}
+                        onChange={(e) => handleFieldChange(setWhenAction)(e.target.value)}
+                        placeholder="e.g., The Send SMS API is called"
+                        className="ph-faint text-sm min-h-[72px]"
+                      />
+                    </div>
                   </div>
 
                   {/* Expected */}
-                  <div className="pl-3 border-l-2" style={{ borderColor: "hsl(142 71% 50% / 0.5)" }}>
-                    <FieldLabel hint="then">Expected result</FieldLabel>
-                    <p className="mt-0.5 mb-1.5 text-xs text-muted-foreground">What a passing run looks like.</p>
-                    <Textarea
-                      id="then"
-                      value={thenExpected}
-                      onChange={(e) => handleFieldChange(setThenExpected)(e.target.value)}
-                      placeholder="e.g., Responds 201 with a message id"
-                      className="ph-faint text-sm min-h-[72px]"
-                    />
+                  <div className="grid gap-x-8 gap-y-1.5 md:grid-cols-[220px_minmax(0,1fr)] md:items-start">
+                    <div>
+                      <FieldLabel hint="then">Expected result</FieldLabel>
+                      <p className="mt-0.5 text-xs text-muted-foreground">What a passing run looks like.</p>
+                    </div>
+                    <div className="pl-3 border-l-2" style={{ borderColor: "hsl(142 71% 50% / 0.5)" }}>
+                      <Textarea
+                        id="then"
+                        value={thenExpected}
+                        onChange={(e) => handleFieldChange(setThenExpected)(e.target.value)}
+                        placeholder="e.g., Responds 201 with a message id"
+                        className="ph-faint text-sm min-h-[72px]"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -581,7 +593,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           {/* Request Tab */}
           <TabsContent value="request" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="p-6 space-y-6 max-w-4xl">
+              <div className="p-6 space-y-6 max-w-5xl mx-auto">
                 <SectionLead
                   title="How is the request made?"
                   helper="The actual HTTP call this test sends."
@@ -746,7 +758,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           {/* Scripts Tab */}
           <TabsContent value="scripts" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="p-6 space-y-6 max-w-4xl">
+              <div className="p-6 space-y-6 max-w-5xl mx-auto">
                 <SectionLead
                   title="Run code around the request?"
                   helper="Optional. Prepare values before the request, or check the response after."
