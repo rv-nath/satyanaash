@@ -7,66 +7,73 @@ All colors MUST be HSL.
 */
 
 @layer base {
+  /* Light theme (default). Dark palette preserved in git history if we add a
+     toggle later. */
   :root {
-    --background: 220 15% 12%;
-    --foreground: 180 5% 96%;
+    --background: 0 0% 100%;
+    --foreground: 220 18% 20%;
 
-    --card: 220 16% 15%;
-    --card-foreground: 180 5% 96%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 18% 20%;
 
-    --popover: 220 18% 14%;
-    --popover-foreground: 180 5% 96%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 18% 20%;
 
-    --primary: 172 66% 50%;
-    --primary-foreground: 220 15% 8%;
+    --primary: 172 62% 38%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 220 14% 20%;
-    --secondary-foreground: 180 5% 96%;
+    --secondary: 220 16% 95%;
+    --secondary-foreground: 220 18% 25%;
 
-    --muted: 220 14% 18%;
-    --muted-foreground: 180 5% 65%;
+    --muted: 220 16% 96%;
+    --muted-foreground: 220 9% 46%;
 
-    --accent: 172 66% 50%;
-    --accent-foreground: 220 15% 8%;
+    --accent: 172 62% 40%;
+    --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 180 5% 96%;
+    --destructive: 0 72% 48%;
+    --destructive-foreground: 0 0% 100%;
 
-    --success: 142 71% 45%;
-    --success-foreground: 180 5% 96%;
+    --success: 142 60% 36%;
+    --success-foreground: 0 0% 100%;
 
-    --warning: 38 92% 50%;
-    --warning-foreground: 220 15% 8%;
+    --warning: 32 85% 42%;
+    --warning-foreground: 0 0% 100%;
 
-    --border: 220 14% 22%;
-    --input: 220 14% 22%;
-    --ring: 172 66% 50%;
+    --border: 220 13% 90%;
+    --input: 220 13% 86%;
+    --ring: 172 62% 40%;
 
     --radius: 0.5rem;
 
-    --sidebar-background: 220 16% 13%;
-    --sidebar-foreground: 180 5% 85%;
-    --sidebar-primary: 172 66% 50%;
-    --sidebar-primary-foreground: 220 15% 8%;
-    --sidebar-accent: 220 14% 18%;
-    --sidebar-accent-foreground: 180 5% 96%;
-    --sidebar-border: 220 14% 20%;
-    --sidebar-ring: 172 66% 50%;
+    --sidebar-background: 220 22% 98%;
+    --sidebar-foreground: 220 15% 30%;
+    --sidebar-primary: 172 62% 40%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 16% 93%;
+    --sidebar-accent-foreground: 220 18% 20%;
+    --sidebar-border: 220 13% 90%;
+    --sidebar-ring: 172 62% 40%;
 
-    --console-background: 220 18% 10%;
-    --console-text: 180 5% 85%;
+    --console-background: 220 22% 97%;
+    --console-text: 220 15% 30%;
 
-    --graph-background: 220 15% 11%;
-    --node-group: 260 60% 55%;
-    --node-test: 172 66% 50%;
-    --node-border: 220 14% 30%;
-    --edge-default: 220 14% 40%;
-    --edge-success: 142 71% 45%;
-    --edge-failure: 0 72% 51%;
+    --graph-background: 220 22% 98%;
+    --node-group: 260 52% 52%;
+    --node-test: 172 62% 40%;
+    --node-border: 220 13% 82%;
+    --edge-default: 220 10% 62%;
+    --edge-success: 142 60% 40%;
+    --edge-failure: 0 72% 50%;
 
     /* Density + rail typography (Plan 1) */
-    --rail-name-color: 180 5% 72%;   /* dimmed resting name text */
+    --rail-name-color: 220 9% 45%;   /* dimmed resting name text (light) */
     --rail-row-h: 30px;              /* compact default */
+
+    /* Humanized editor captions (Section 8), tuned for light bg */
+    --lead-color: 220 15% 28%;       /* section lead question */
+    --label-color: 220 12% 36%;      /* field labels */
+    --hint-color: 220 8% 58%;        /* faint technical hint */
   }
 
   :root[data-density="comfortable"] {
@@ -75,13 +82,13 @@ All colors MUST be HSL.
 
   /* Faint placeholder hints in the humanized editor (Section 8) */
   .ph-faint::placeholder {
-    color: hsl(180 5% 42%);
+    color: hsl(220 10% 70%);
   }
 
-  /* Calm code-ish input values: monospace at full brightness reads as bold on
-     dark, out-weighing its own labels. Soften so data reads as data. (Section 8) */
+  /* Calm code-ish input values so monospace data reads as data, at a weight
+     close to its label. (Section 8) */
   .code-input {
-    color: hsl(180 5% 84%);
+    color: hsl(220 15% 32%);
     font-weight: 400;
   }
 }
@@ -139,7 +146,7 @@ All colors MUST be HSL.
     background: hsl(var(--card) / 0.95) !important;
     border: 1px solid hsl(var(--border)) !important;
     border-radius: 0.5rem !important;
-    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3), 0 4px 6px -4px rgb(0 0 0 / 0.3) !important;
+    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.12), 0 4px 6px -4px rgb(0 0 0 / 0.1) !important;
     backdrop-filter: blur(8px) !important;
     overflow: hidden !important;
   }

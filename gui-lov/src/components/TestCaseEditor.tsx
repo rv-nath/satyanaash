@@ -30,7 +30,7 @@ type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 function SectionLead({ title, helper }: { title: string; helper: string }) {
   return (
     <div className="mb-5">
-      <p className="text-[15px] font-semibold" style={{ color: "hsl(180 5% 74%)" }}>{title}</p>
+      <p className="text-[15px] font-semibold" style={{ color: "hsl(var(--lead-color))" }}>{title}</p>
       <p className="mt-0.5 max-w-xl text-[13px] text-muted-foreground">{helper}</p>
     </div>
   );
@@ -39,10 +39,10 @@ function SectionLead({ title, helper }: { title: string; helper: string }) {
 // Humanized field label (Section 8): dimmed label + faint technical hint.
 function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
   return (
-    <div className="flex items-baseline gap-2 text-[13px] font-medium" style={{ color: "hsl(180 5% 68%)" }}>
+    <div className="flex items-baseline gap-2 text-[13px] font-medium" style={{ color: "hsl(var(--label-color))" }}>
       {children}
       {hint && (
-        <span className="text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>{hint}</span>
+        <span className="text-[10px] uppercase tracking-wide" style={{ color: "hsl(var(--hint-color))" }}>{hint}</span>
       )}
     </div>
   );
@@ -558,7 +558,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 {/* Variables you can use here */}
                 {availableVars.length > 0 && (
                   <div className="bg-muted/50 border border-border rounded-md p-4">
-                    <Label className="text-xs font-semibold mb-2 block" style={{ color: "hsl(180 5% 68%)" }}>Variables you can use here</Label>
+                    <Label className="text-xs font-semibold mb-2 block" style={{ color: "hsl(var(--label-color))" }}>Variables you can use here</Label>
                     <div className="flex flex-wrap gap-2">
                       {availableVars.map((v, idx) => (
                         <Badge
@@ -580,7 +580,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 {/* Method & Endpoint */}
                 <div className="grid grid-cols-[180px_1fr] gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="method" style={{ color: "hsl(180 5% 68%)" }}>Method <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>HTTP</span></Label>
+                    <Label htmlFor="method" style={{ color: "hsl(var(--label-color))" }}>Method <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(var(--hint-color))" }}>HTTP</span></Label>
                     <Select value={method} onValueChange={(v) => handleFieldChange(setMethod)(v as HttpMethod)}>
                       <SelectTrigger id="method">
                         <SelectValue />
@@ -597,7 +597,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="endpoint" style={{ color: "hsl(180 5% 68%)" }}>URL</Label>
+                      <Label htmlFor="endpoint" style={{ color: "hsl(var(--label-color))" }}>URL</Label>
                       {availableVars.length > 0 && (
                         <Popover>
                           <PopoverTrigger asChild>
@@ -640,7 +640,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
 
                 {/* Headers */}
                 <div className="space-y-2">
-                  <Label style={{ color: "hsl(180 5% 68%)" }}>Headers</Label>
+                  <Label style={{ color: "hsl(var(--label-color))" }}>Headers</Label>
                   <HeadersEditor
                     headers={headers}
                     onChange={handleHeadersChange}
@@ -655,7 +655,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 {hasPayload && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="payload" style={{ color: "hsl(180 5% 68%)" }}>Request body <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>JSON</span></Label>
+                      <Label htmlFor="payload" style={{ color: "hsl(var(--label-color))" }}>Request body <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(var(--hint-color))" }}>JSON</span></Label>
                       {availableVars.length > 0 && (
                         <Popover>
                           <PopoverTrigger asChild>
@@ -723,7 +723,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 {/* Before the request */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="pre-script" style={{ color: "hsl(180 5% 68%)" }}>Before the request <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>Rhai</span></Label>
+                    <Label htmlFor="pre-script" style={{ color: "hsl(var(--label-color))" }}>Before the request <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(var(--hint-color))" }}>Rhai</span></Label>
                     <Popover>
                       <PopoverTrigger asChild>
                         <Button variant="ghost" size="sm" className="h-6 text-xs">
@@ -790,7 +790,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Label htmlFor="post-script" style={{ color: "hsl(180 5% 68%)" }}>Check the response <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>Rhai</span></Label>
+                      <Label htmlFor="post-script" style={{ color: "hsl(var(--label-color))" }}>Check the response <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(var(--hint-color))" }}>Rhai</span></Label>
                       <Badge variant="outline" className="text-xs">
                         Returns true/false
                       </Badge>
@@ -1039,7 +1039,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-6 text-center">
                 <Eye className="w-16 h-16 text-muted-foreground/30 mb-4" />
-                <h3 className="text-lg font-medium mb-2" style={{ color: "hsl(180 5% 74%)" }}>What came back</h3>
+                <h3 className="text-lg font-medium mb-2" style={{ color: "hsl(var(--lead-color))" }}>What came back</h3>
                 <p className="text-muted-foreground max-w-md mb-6">
                   Run the test and the result shows up here — status, headers, and response body.
                 </p>
