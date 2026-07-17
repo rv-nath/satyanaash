@@ -47,8 +47,9 @@ hijack the screen.
 - **Test grouping & tags (section 7) is the one exception:** it requires a small
   backend change for persistence. It is scoped in deliberately (see section 7 and
   the Ngage rationale) rather than smuggled into the frontend-only work.
-- No redesign of the test-case editor's internal fields or the graph node
-  visuals beyond what density requires.
+- No change to the test-case editor's *behavior* or field set. **Presentational
+  humanization of the editor tabs is now in scope — see Section 8** (added after
+  visual review). No graph node visual redesign beyond what density requires.
 - No change to the Projects landing page.
 - No nested/multi-level group hierarchy (single level only — see section 7).
 - Tags are **not** a second organizational tree — they are a filter layer only.
@@ -221,6 +222,56 @@ without waiting on tag UX.
 Backend touch points: new migration (`00X_test_groups.sql` + `tags` column),
 `db/models.rs` (`TestCase.group_id`, `TestCase.tags`), a `test_groups` repository,
 and CRUD handlers under `api/test_cases.rs` / a new `api/groups.rs`.
+
+### 8. Test-case editor humanization (added after visual review)
+
+The editor tabs read as dense, jargon-heavy, and over-bold. Validated in the
+companion mockup (Overview before/after). Apply one consistent "voice + calm"
+recipe to **all four tabs**.
+
+**Voice & guidance (from the user's `wizard-full.html` reference, adapted to the
+dark theme):**
+- Each tab opens with a **plain-English lead question** + a **one-line helper**
+  that says what the section is for. No jargon nouns as headings.
+- Field labels are plain English with a short helper each. Keep a **faint,
+  lowercase technical hint** for pros (e.g. `given`/`when`/`then`, `HTTP`,
+  `Rhai`) — recognizable, never shouting.
+- Remove redundant/duplicate UI (e.g. the Overview "Preview" box that repeated
+  the three inputs).
+
+**Intensity hierarchy (dark theme), faint → strong:**
+- Placeholder hints `hsl(180 5% 42%)` < helpers `hsl(180 5% 65%)` <
+  field labels `hsl(180 5% 68%)` < lead question `hsl(180 5% 74%)`.
+- One accent (primary/teal). Section-meaning color only as a **quiet left-edge
+  stripe** (Overview given/when/then), not saturated pills.
+- Content capped to a readable width; far fewer bold elements.
+
+**Per-tab lead + label mapping:**
+
+*Overview* — lead "What does this test check?" / helper "Describe the scenario in
+plain words. Documents the test and shows in run reports; doesn't affect
+execution." Fields: **Before — the setup** `given` / **Action — what happens**
+`when` / **Expected result** `then`, each with a one-line helper; quiet colored
+left-edge; **no Preview box**.
+
+*Request* — lead "How is the request made?" / helper "The actual HTTP call this
+test sends." Labels: **Method** `HTTP` · **URL** (helper: path to call, use
+`{{variable}}`) · **Headers** (extra info sent with the request) · **Request
+body** (the JSON sent) · **Variables you can use here** (insert; from earlier
+steps).
+
+*Scripts* — lead "Run code around the request?" / helper "Optional. Prepare
+values before, or check the response after." Labels: **Before the request**
+`Rhai` (set up values first) · **Check the response** `Rhai` (rules that decide
+pass/fail). **Correct the mislabel:** current UI says "(JavaScript)" but the
+engine is Rhai (`SAT.vars.x`) — fix the language reference.
+
+*Response* — lead "What came back" / helper "The last run's result — status,
+body, and headers." Read-only; calm the headings (Status / Body / Headers),
+one accent for pass/fail.
+
+**Non-goals for Section 8:** no change to fields, validation, execution, or the
+Rhai/HTTP behavior — wording, hierarchy, and layout only.
 
 ## Success Criteria
 
