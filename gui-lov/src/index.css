@@ -72,6 +72,11 @@ All colors MUST be HSL.
   :root[data-density="comfortable"] {
     --rail-row-h: 40px;
   }
+
+  /* Faint placeholder hints in the humanized editor (Section 8) */
+  .ph-faint::placeholder {
+    color: hsl(180 5% 42%);
+  }
 }
 
 @layer base {

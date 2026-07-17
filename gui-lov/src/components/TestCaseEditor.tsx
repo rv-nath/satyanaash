@@ -26,6 +26,28 @@ interface TestCaseEditorProps {
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 
+// Humanized section header (Section 8): plain-English lead + one-line helper.
+function SectionLead({ title, helper }: { title: string; helper: string }) {
+  return (
+    <div className="mb-5">
+      <p className="text-[15px] font-semibold" style={{ color: "hsl(180 5% 74%)" }}>{title}</p>
+      <p className="mt-0.5 max-w-xl text-[13px] text-muted-foreground">{helper}</p>
+    </div>
+  );
+}
+
+// Humanized field label (Section 8): dimmed label + faint technical hint.
+function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
+  return (
+    <div className="flex items-baseline gap-2 text-[13px] font-medium" style={{ color: "hsl(180 5% 68%)" }}>
+      {children}
+      {hint && (
+        <span className="text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>{hint}</span>
+      )}
+    </div>
+  );
+}
+
 export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEditorProps) => {
   const { projectId, nodes, edges, closeTestCaseEditor } = useTestProject();
 
@@ -475,71 +497,52 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           {/* Overview Tab - BDD Fields */}
           <TabsContent value="overview" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
-              <div className="p-6 space-y-6 max-w-4xl">
-                {/* BDD Section */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold">Scenario Description</h3>
-                    <Badge variant="outline" className="text-xs">BDD</Badge>
-                  </div>
+              <div className="p-6 max-w-2xl">
+                <SectionLead
+                  title="What does this test check?"
+                  helper="Describe the scenario in plain words. This documents the test and shows up in run reports — it doesn't affect how the request runs."
+                />
 
-                  {/* Given */}
-                  <div className="space-y-2">
-                    <Label htmlFor="given" className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 bg-blue-500/20 text-blue-600 dark:text-blue-400 rounded text-xs font-semibold">GIVEN</span>
-                      <span className="text-muted-foreground text-xs">Preconditions / Context</span>
-                    </Label>
+                <div className="space-y-5">
+                  {/* Before / setup */}
+                  <div className="pl-3 border-l-2" style={{ borderColor: "hsl(214 90% 62% / 0.5)" }}>
+                    <FieldLabel hint="given">Before — the setup</FieldLabel>
+                    <p className="mt-0.5 mb-1.5 text-xs text-muted-foreground">What must already be true for this test to make sense.</p>
                     <Textarea
                       id="given"
                       value={givenCondition}
                       onChange={(e) => handleFieldChange(setGivenCondition)(e.target.value)}
-                      placeholder="e.g., A registered user with valid credentials"
-                      className="text-sm min-h-[80px]"
+                      placeholder="e.g., A valid auth token and a well-formed payload"
+                      className="ph-faint text-sm min-h-[72px]"
                     />
                   </div>
 
-                  {/* When */}
-                  <div className="space-y-2">
-                    <Label htmlFor="when" className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 bg-amber-500/20 text-amber-600 dark:text-amber-400 rounded text-xs font-semibold">WHEN</span>
-                      <span className="text-muted-foreground text-xs">Action being tested</span>
-                    </Label>
+                  {/* Action */}
+                  <div className="pl-3 border-l-2" style={{ borderColor: "hsl(38 92% 55% / 0.5)" }}>
+                    <FieldLabel hint="when">Action — what happens</FieldLabel>
+                    <p className="mt-0.5 mb-1.5 text-xs text-muted-foreground">The request this test makes.</p>
                     <Textarea
                       id="when"
                       value={whenAction}
                       onChange={(e) => handleFieldChange(setWhenAction)(e.target.value)}
-                      placeholder="e.g., The user submits the login form with email and password"
-                      className="text-sm min-h-[80px]"
+                      placeholder="e.g., The Send SMS API is called"
+                      className="ph-faint text-sm min-h-[72px]"
                     />
                   </div>
 
-                  {/* Then */}
-                  <div className="space-y-2">
-                    <Label htmlFor="then" className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 bg-green-500/20 text-green-600 dark:text-green-400 rounded text-xs font-semibold">THEN</span>
-                      <span className="text-muted-foreground text-xs">Expected outcome</span>
-                    </Label>
+                  {/* Expected */}
+                  <div className="pl-3 border-l-2" style={{ borderColor: "hsl(142 71% 50% / 0.5)" }}>
+                    <FieldLabel hint="then">Expected result</FieldLabel>
+                    <p className="mt-0.5 mb-1.5 text-xs text-muted-foreground">What a passing run looks like.</p>
                     <Textarea
                       id="then"
                       value={thenExpected}
                       onChange={(e) => handleFieldChange(setThenExpected)(e.target.value)}
-                      placeholder="e.g., The API returns a 200 status with an auth token"
-                      className="text-sm min-h-[80px]"
+                      placeholder="e.g., Responds 201 with a message id"
+                      className="ph-faint text-sm min-h-[72px]"
                     />
                   </div>
                 </div>
-
-                {/* Quick summary preview */}
-                {(givenCondition || whenAction || thenExpected) && (
-                  <div className="bg-muted/30 border border-border rounded-lg p-4">
-                    <p className="text-xs font-medium text-muted-foreground mb-2">Preview</p>
-                    <div className="text-sm space-y-1">
-                      {givenCondition && <p><span className="font-medium text-blue-600 dark:text-blue-400">Given</span> {givenCondition}</p>}
-                      {whenAction && <p><span className="font-medium text-amber-600 dark:text-amber-400">When</span> {whenAction}</p>}
-                      {thenExpected && <p><span className="font-medium text-green-600 dark:text-green-400">Then</span> {thenExpected}</p>}
-                    </div>
-                  </div>
-                )}
               </div>
             </ScrollArea>
           </TabsContent>
@@ -548,10 +551,14 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           <TabsContent value="request" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
               <div className="p-6 space-y-6 max-w-4xl">
-                {/* Available Variables */}
+                <SectionLead
+                  title="How is the request made?"
+                  helper="The actual HTTP call this test sends."
+                />
+                {/* Variables you can use here */}
                 {availableVars.length > 0 && (
                   <div className="bg-muted/50 border border-border rounded-md p-4">
-                    <Label className="text-xs font-semibold mb-2 block">Available Variables</Label>
+                    <Label className="text-xs font-semibold mb-2 block" style={{ color: "hsl(180 5% 68%)" }}>Variables you can use here</Label>
                     <div className="flex flex-wrap gap-2">
                       {availableVars.map((v, idx) => (
                         <Badge
@@ -573,7 +580,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 {/* Method & Endpoint */}
                 <div className="grid grid-cols-[180px_1fr] gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="method">HTTP Method *</Label>
+                    <Label htmlFor="method" style={{ color: "hsl(180 5% 68%)" }}>Method <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>HTTP</span></Label>
                     <Select value={method} onValueChange={(v) => handleFieldChange(setMethod)(v as HttpMethod)}>
                       <SelectTrigger id="method">
                         <SelectValue />
@@ -590,7 +597,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="endpoint">Endpoint *</Label>
+                      <Label htmlFor="endpoint" style={{ color: "hsl(180 5% 68%)" }}>URL</Label>
                       {availableVars.length > 0 && (
                         <Popover>
                           <PopoverTrigger asChild>
@@ -633,7 +640,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
 
                 {/* Headers */}
                 <div className="space-y-2">
-                  <Label>Headers</Label>
+                  <Label style={{ color: "hsl(180 5% 68%)" }}>Headers</Label>
                   <HeadersEditor
                     headers={headers}
                     onChange={handleHeadersChange}
@@ -648,7 +655,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 {hasPayload && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="payload">Payload (JSON)</Label>
+                      <Label htmlFor="payload" style={{ color: "hsl(180 5% 68%)" }}>Request body <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>JSON</span></Label>
                       {availableVars.length > 0 && (
                         <Popover>
                           <PopoverTrigger asChild>
@@ -709,10 +716,14 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           <TabsContent value="scripts" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
               <div className="p-6 space-y-6 max-w-4xl">
-                {/* Pre-Test Script */}
+                <SectionLead
+                  title="Run code around the request?"
+                  helper="Optional. Prepare values before the request, or check the response after."
+                />
+                {/* Before the request */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="pre-script">Pre-Test Script (JavaScript)</Label>
+                    <Label htmlFor="pre-script" style={{ color: "hsl(180 5% 68%)" }}>Before the request <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>Rhai</span></Label>
                     <Popover>
                       <PopoverTrigger asChild>
                         <Button variant="ghost" size="sm" className="h-6 text-xs">
@@ -779,7 +790,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Label htmlFor="post-script">Assertion Script (RHAI)</Label>
+                      <Label htmlFor="post-script" style={{ color: "hsl(180 5% 68%)" }}>Check the response <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(180 5% 40%)" }}>Rhai</span></Label>
                       <Badge variant="outline" className="text-xs">
                         Returns true/false
                       </Badge>
@@ -1028,9 +1039,9 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-6 text-center">
                 <Eye className="w-16 h-16 text-muted-foreground/30 mb-4" />
-                <h3 className="text-lg font-medium text-foreground mb-2">Response Preview</h3>
+                <h3 className="text-lg font-medium mb-2" style={{ color: "hsl(180 5% 74%)" }}>What came back</h3>
                 <p className="text-muted-foreground max-w-md mb-6">
-                  Run the test to see the response here. You can inspect status codes, headers, and response body.
+                  Run the test and the result shows up here — status, headers, and response body.
                 </p>
                 <Button
                   variant="outline"
