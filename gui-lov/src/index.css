@@ -63,12 +63,25 @@ All colors MUST be HSL.
     --edge-default: 220 14% 40%;
     --edge-success: 142 71% 45%;
     --edge-failure: 0 72% 51%;
+
+    /* Density + rail typography (Plan 1) */
+    --rail-name-color: 180 5% 72%;   /* dimmed resting name text */
+    --rail-row-h: 30px;              /* compact default */
+  }
+
+  :root[data-density="comfortable"] {
+    --rail-row-h: 40px;
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+  }
+
+  /* 13px chrome base; canvas/editor content sets its own sizes explicitly */
+  html {
+    font-size: 13px;
   }
 
   body {
