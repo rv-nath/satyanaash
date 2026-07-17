@@ -28,7 +28,6 @@ import {
   ResizablePanel,
   ResizablePanelGroup
 } from "@/components/ui/resizable";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import TestCanvas from "@/components/TestCanvas";
 import ConsolePanel from "@/components/ConsolePanel";
@@ -59,8 +58,6 @@ const ProjectDetailContent = () => {
     edges,
     activeFlowId,
     setActiveFlowId,
-    sidebarTab,
-    setSidebarTab,
     showConsole,
     setShowConsole,
     updateTestGroup,
@@ -561,42 +558,11 @@ const ProjectDetailContent = () => {
 
       {/* Main Content */}
       <ResizablePanelGroup direction="horizontal" className="flex-1">
-        {/* Left Panel with Tabs */}
-        <ResizablePanel defaultSize={35} minSize={25} maxSize={45}>
+        {/* Left Panel — stacked rail: Flows over Tests */}
+        <ResizablePanel defaultSize={22} minSize={17} maxSize={31} className="min-w-[220px] max-w-[400px]">
           <div className="h-full bg-sidebar border-r border-sidebar-border">
-            <Tabs value={sidebarTab} onValueChange={(v) => setSidebarTab(v as 'tests' | 'flows')} className="h-full flex flex-col">
-              <div className="border-b border-sidebar-border px-4 pt-4">
-                <TabsList className="w-full">
-                  <TabsTrigger value="tests" className="flex-1">Tests</TabsTrigger>
-                  <TabsTrigger value="flows" className="flex-1">Flows</TabsTrigger>
-                </TabsList>
-              </div>
-              
-              <TabsContent value="tests" className="flex-1 mt-0">
-                <TestInventory
-                  onAddTestCase={() => {
-                    // Open editor in create mode
-                    openTestCaseEditor();
-                  }}
-                  onEditTestCase={(test) => {
-                    // Open editor in edit mode
-                    openTestCaseEditor(test.id);
-                  }}
-                  onDeleteTestCase={async (testCaseId) => {
-                    if (!projectId) return;
-                    try {
-                      await deleteTestCaseMutation.mutateAsync({ id: testCaseId, projectId });
-                      deleteTestCase(testCaseId);
-                      toast.success("Test case deleted");
-                    } catch (err) {
-                      toast.error("Failed to delete test case");
-                      console.error(err);
-                    }
-                  }}
-                />
-              </TabsContent>
-              
-              <TabsContent value="flows" className="flex-1 mt-0">
+            <ResizablePanelGroup direction="vertical">
+              <ResizablePanel defaultSize={40} minSize={15}>
                 <FlowsList
                   onAddGroup={handleCreateFlow}
                   onEditGroup={(group) => {
@@ -615,8 +581,26 @@ const ProjectDetailContent = () => {
                     }
                   }}
                 />
-              </TabsContent>
-            </Tabs>
+              </ResizablePanel>
+              <ResizableHandle />
+              <ResizablePanel defaultSize={60} minSize={20}>
+                <TestInventory
+                  onAddTestCase={() => openTestCaseEditor()}
+                  onEditTestCase={(test) => openTestCaseEditor(test.id)}
+                  onDeleteTestCase={async (testCaseId) => {
+                    if (!projectId) return;
+                    try {
+                      await deleteTestCaseMutation.mutateAsync({ id: testCaseId, projectId });
+                      deleteTestCase(testCaseId);
+                      toast.success("Test case deleted");
+                    } catch (err) {
+                      toast.error("Failed to delete test case");
+                      console.error(err);
+                    }
+                  }}
+                />
+              </ResizablePanel>
+            </ResizablePanelGroup>
           </div>
         </ResizablePanel>
 
