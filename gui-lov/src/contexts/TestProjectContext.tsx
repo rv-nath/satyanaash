@@ -1,6 +1,10 @@
 import { createContext, useContext, useState, ReactNode, useCallback, useEffect } from "react";
 import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
+import {
+  WorkspaceState, WorkspaceTab, initialWorkspaceState,
+  openTestTab as openTab, closeTestTab as closeTab, setActive as setActiveWsTab, switchFlow,
+} from "@/lib/workspaceTabs";
 import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
 import { useAutoValidate, ValidationStatus } from "@/hooks/useAutoValidate";
@@ -59,6 +63,11 @@ interface TestProjectContextType {
   edgeType: 'default' | 'straight' | 'step' | 'smoothstep';
   activeFlowId: string | null;
   setActiveFlowId: (id: string | null) => void;
+  // Tabbed workspace state (pinned canvas + open test-case tabs)
+  workspace: WorkspaceState;
+  openTestTab: (id: string) => void;
+  closeTestTab: (id: string) => void;
+  setActiveWorkspaceTab: (tab: WorkspaceTab) => void;
   // Selection and editing state for test cases
   selectedTestCaseId: string | null;
   setSelectedTestCaseId: (id: string | null) => void;
@@ -222,9 +231,16 @@ export const TestProjectProvider = ({
 
   const [activeFlowId, setActiveFlowIdState] = useState<string | null>(initialFlowId);
 
+  // Tabbed workspace: pinned canvas + open test-case tabs (persist across flow switches)
+  const [workspace, setWorkspace] = useState<WorkspaceState>(initialWorkspaceState);
+  const openTestTab = useCallback((id: string) => setWorkspace((s) => openTab(s, id)), []);
+  const closeTestTab = useCallback((id: string) => setWorkspace((s) => closeTab(s, id)), []);
+  const setActiveWorkspaceTab = useCallback((tab: WorkspaceTab) => setWorkspace((s) => setActiveWsTab(s, tab)), []);
+
   // Wrapper to update URL when active flow changes
   const setActiveFlowId = useCallback((id: string | null) => {
     setActiveFlowIdState(id);
+    setWorkspace((s) => switchFlow(s));
     if (id) {
       setSearchParams(prev => {
         const newParams = new URLSearchParams(prev);
@@ -739,6 +755,10 @@ export const TestProjectProvider = ({
         edgeType,
         activeFlowId,
         setActiveFlowId,
+        workspace,
+        openTestTab,
+        closeTestTab,
+        setActiveWorkspaceTab,
         selectedTestCaseId,
         setSelectedTestCaseId,
         editingTestCaseId,

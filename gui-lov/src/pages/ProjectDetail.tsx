@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { generateUUID } from "@/lib/utils/uuid";
 import {
   ArrowLeft, Play, Settings, CheckCircle2, Download, Bug, Loader2, AlertCircle,
@@ -40,7 +40,8 @@ import { ValidationBadge } from "@/components/ValidationBadge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
-import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateProject } from "@/hooks/useApi";
+import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateProject, useTestCases } from "@/hooks/useApi";
+import { WorkspaceTabs } from "@/components/WorkspaceTabs";
 import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { useExecutionStream } from "@/hooks/useExecutionStream";
@@ -49,7 +50,6 @@ import { Card } from "@/components/ui/card";
 const ProjectDetailContent = () => {
   const { id, testId } = useParams();  // testId comes from /project/:id/test/:testId route
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const {
     project,
     projectId,
@@ -58,6 +58,10 @@ const ProjectDetailContent = () => {
     edges,
     activeFlowId,
     setActiveFlowId,
+    workspace,
+    openTestTab,
+    closeTestTab,
+    setActiveWorkspaceTab,
     showConsole,
     setShowConsole,
     updateTestGroup,
@@ -89,29 +93,33 @@ const ProjectDetailContent = () => {
   // Derive active flow for header
   const activeFlow = testGroups.find(g => g.id === activeFlowId);
 
-  // Determine if we're in edit mode from URL (testId from route)
-  const isEditing = !!testId;
-  const editingTestCaseId = testId === 'new' ? '__new__' : testId;
+  // Test cases (for workspace tab labels)
+  const { data: apiTestCases } = useTestCases(projectId || '');
 
-  // Navigation-based editor open/close
+  // Workspace tab info for the tab bar (open test ids -> {id,name,method})
+  const workspaceTabInfos = workspace.openTestIds.map((tid) => {
+    if (tid === '__new__') return { id: '__new__', name: 'New Test', method: 'NEW' };
+    const tc = (apiTestCases || []).find((t) => t.id === tid);
+    return { id: tid, name: tc?.name || 'Test', method: (tc?.method as string) || '' };
+  });
+
+  // A test-case tab is active (vs the pinned canvas tab)
+  const isEditing = workspace.active !== 'canvas';
+
+  // Open a test case as a workspace tab (undefined = create mode)
   const openTestCaseEditor = (testCaseId?: string) => {
-    const path = testCaseId
-      ? `/project/${id}/test/${testCaseId}`
-      : `/project/${id}/test/new`;
-    // Only keep tab param when editing (test cases are project-level, not flow-specific)
-    const tabParam = searchParams.get('tab');
-    const queryString = tabParam ? `?tab=${tabParam}` : '';
-    navigate(`${path}${queryString}`);
+    openTestTab(testCaseId ?? '__new__');
   };
 
-  const closeTestCaseEditor = () => {
-    // Restore flow param when returning to canvas
-    const tabParam = searchParams.get('tab');
-    const params = new URLSearchParams();
-    if (activeFlowId) params.set('flow', activeFlowId);
-    if (tabParam) params.set('tab', tabParam);
-    navigate(`/project/${id}?${params.toString()}`);
-  };
+  // Deep-link support: /project/:id/test/:testId opens that test as a tab
+  useEffect(() => {
+    if (testId) {
+      openTestTab(testId === 'new' ? '__new__' : testId);
+      // Drop the /test/:testId segment; tab state is client-side, not URL-addressed
+      navigate(`/project/${id}`, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [testId]);
 
   // API mutations for flows
   const createFlowMutation = useCreateFlow();
@@ -323,10 +331,10 @@ const ProjectDetailContent = () => {
                     )}
                   </>
                 )}
-                {isEditing && testId === 'new' && (
+                {isEditing && workspace.active === '__new__' && (
                   <span className="text-muted-foreground font-normal"> / New Test</span>
                 )}
-                {isEditing && testId !== 'new' && (
+                {isEditing && workspace.active !== '__new__' && (
                   <span className="text-muted-foreground font-normal"> / Edit Test</span>
                 )}
               </div>
@@ -606,35 +614,44 @@ const ProjectDetailContent = () => {
 
         <ResizableHandle />
 
-        {/* Canvas & Console / Test Case Editor */}
-        <ResizablePanel defaultSize={80}>
-          {isEditing ? (
-            // Full-screen test case editor (create or edit mode)
-            <TestCaseEditor
-              testCaseId={testId === 'new' ? undefined : testId}
-              onClose={closeTestCaseEditor}
-              onCreated={(newId) => {
-                // After creation, switch to edit mode with the new ID
-                openTestCaseEditor(newId);
-              }}
+        {/* Tabbed workspace: pinned canvas + open test-case tabs */}
+        <ResizablePanel defaultSize={78}>
+          <div className="flex h-full flex-col">
+            <WorkspaceTabs
+              openTestIds={workspace.openTestIds}
+              active={workspace.active}
+              tests={workspaceTabInfos}
+              onActivate={setActiveWorkspaceTab}
+              onClose={closeTestTab}
             />
-          ) : showConsole ? (
-            <ResizablePanelGroup direction="vertical">
-              {/* Canvas */}
-              <ResizablePanel defaultSize={65} minSize={30}>
-                <TestCanvas />
-              </ResizablePanel>
-
-              <ResizableHandle />
-
-              {/* Console */}
-              <ResizablePanel defaultSize={35} minSize={20}>
-                <ConsolePanel logs={consoleLogs} onClose={() => setShowConsole(false)} onClear={clearLogs} />
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          ) : (
-            <TestCanvas />
-          )}
+            <div className="min-h-0 flex-1">
+              {workspace.active === 'canvas' ? (
+                showConsole ? (
+                  <ResizablePanelGroup direction="vertical">
+                    <ResizablePanel defaultSize={65} minSize={30}>
+                      <TestCanvas />
+                    </ResizablePanel>
+                    <ResizableHandle />
+                    <ResizablePanel defaultSize={35} minSize={20}>
+                      <ConsolePanel logs={consoleLogs} onClose={() => setShowConsole(false)} onClear={clearLogs} />
+                    </ResizablePanel>
+                  </ResizablePanelGroup>
+                ) : (
+                  <TestCanvas />
+                )
+              ) : (
+                <TestCaseEditor
+                  key={workspace.active}
+                  testCaseId={workspace.active === '__new__' ? undefined : (workspace.active as string)}
+                  onClose={() => closeTestTab(workspace.active as string)}
+                  onCreated={(newId) => {
+                    closeTestTab(workspace.active as string);
+                    openTestTab(newId);
+                  }}
+                />
+              )}
+            </div>
+          </div>
         </ResizablePanel>
       </ResizablePanelGroup>
 
