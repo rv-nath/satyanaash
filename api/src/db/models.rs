@@ -144,6 +144,9 @@ pub struct UpdateGraphData {
 pub struct TestCase {
     pub id: String,
     pub project_id: String,
+    /// Owning group; None = Ungrouped
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     pub name: String,
     // BDD fields (documentation)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,6 +173,28 @@ pub struct TestCase {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Test group entity (single-level bucket for organizing test cases)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestGroup {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Create test group request
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateTestGroup {
+    pub name: String,
+}
+
+/// Update test group request
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateTestGroup {
+    pub name: String,
+}
+
 /// Export variable definition - extracts values from response using JSONPath
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportVariable {
@@ -181,6 +206,8 @@ pub struct ExportVariable {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateTestCase {
     pub name: String,
+    #[serde(default)]
+    pub group_id: Option<String>,
     // BDD fields
     #[serde(default)]
     pub given_condition: Option<String>,
@@ -209,6 +236,8 @@ pub struct CreateTestCase {
 pub struct UpdateTestCase {
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub group_id: Option<String>,
     // BDD fields
     #[serde(default)]
     pub given_condition: Option<String>,

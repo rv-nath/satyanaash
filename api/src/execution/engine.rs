@@ -1051,6 +1051,7 @@ mod tests {
         TestCase {
             id: id.to_string(),
             project_id: "proj1".to_string(),
+            group_id: None,
             name: name.to_string(),
             given_condition: None,
             when_action: None,
@@ -1332,6 +1333,7 @@ mod tests {
         let tc = TestCase {
             id: "tc1".to_string(),
             project_id: "proj1".to_string(),
+            group_id: None,
             name: "Test with Vars".to_string(),
             given_condition: None,
             when_action: None,
@@ -1390,6 +1392,7 @@ mod tests {
         let tc = TestCase {
             id: "tc1".to_string(),
             project_id: "proj1".to_string(),
+            group_id: None,
             name: "Test".to_string(),
             given_condition: None,
             when_action: None,
@@ -1436,6 +1439,7 @@ mod tests {
         let tc = TestCase {
             id: "tc1".to_string(),
             project_id: "proj1".to_string(),
+            group_id: None,
             name: "Test".to_string(),
             given_condition: None,
             when_action: None,
@@ -1467,6 +1471,7 @@ mod tests {
         let tc = TestCase {
             id: "tc1".to_string(),
             project_id: "proj1".to_string(),
+            group_id: None,
             name: "Test".to_string(),
             given_condition: None,
             when_action: None,

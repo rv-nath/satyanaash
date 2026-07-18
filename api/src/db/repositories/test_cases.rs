@@ -30,13 +30,14 @@ impl TestCaseRepository for SqlxTestCaseRepository {
 
         sqlx::query(
             r#"INSERT INTO test_cases (
-                id, project_id, name, given_condition, when_action, then_expected,
+                id, project_id, group_id, name, given_condition, when_action, then_expected,
                 method, endpoint, headers, payload, exports, assertion_script,
                 pre_test_script, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
         )
         .bind(&id)
         .bind(project_id)
+        .bind(&input.group_id)
         .bind(&input.name)
         .bind(&input.given_condition)
         .bind(&input.when_action)
@@ -56,6 +57,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         Ok(TestCase {
             id,
             project_id: project_id.to_string(),
+            group_id: input.group_id,
             name: input.name,
             given_condition: input.given_condition,
             when_action: input.when_action,
@@ -74,7 +76,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<Option<TestCase>, AppError> {
         let row = sqlx::query(
-            r#"SELECT id, project_id, name, given_condition, when_action, then_expected,
+            r#"SELECT id, project_id, group_id, name, given_condition, when_action, then_expected,
                method, endpoint, headers, payload, exports, assertion_script,
                pre_test_script, created_at, updated_at
                FROM test_cases WHERE id = ?"#
@@ -102,7 +104,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
 
         // Get paginated results
         let rows = sqlx::query(
-            r#"SELECT id, project_id, name, given_condition, when_action, then_expected,
+            r#"SELECT id, project_id, group_id, name, given_condition, when_action, then_expected,
                method, endpoint, headers, payload, exports, assertion_script,
                pre_test_script, created_at, updated_at
                FROM test_cases WHERE project_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"#
@@ -133,6 +135,9 @@ impl TestCaseRepository for SqlxTestCaseRepository {
 
         let now = Utc::now();
         let name = input.name.unwrap_or(existing.name);
+        // group_id: None keeps the current group (PATCH semantics); moving to a
+        // group passes a concrete id. (Moving back to Ungrouped isn't a v1 menu action.)
+        let group_id = input.group_id.or(existing.group_id);
         let given_condition = input.given_condition.or(existing.given_condition);
         let when_action = input.when_action.or(existing.when_action);
         let then_expected = input.then_expected.or(existing.then_expected);
@@ -149,11 +154,12 @@ impl TestCaseRepository for SqlxTestCaseRepository {
 
         sqlx::query(
             r#"UPDATE test_cases SET
-               name = ?, given_condition = ?, when_action = ?, then_expected = ?,
+               group_id = ?, name = ?, given_condition = ?, when_action = ?, then_expected = ?,
                method = ?, endpoint = ?, headers = ?, payload = ?,
                exports = ?, assertion_script = ?, pre_test_script = ?, updated_at = ?
                WHERE id = ?"#
         )
+        .bind(&group_id)
         .bind(&name)
         .bind(&given_condition)
         .bind(&when_action)
@@ -173,6 +179,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         Ok(TestCase {
             id: id.to_string(),
             project_id: existing.project_id,
+            group_id,
             name,
             given_condition,
             when_action,
@@ -235,6 +242,7 @@ fn row_to_test_case(row: &sqlx::any::AnyRow) -> Result<TestCase, AppError> {
     Ok(TestCase {
         id: row.try_get("id")?,
         project_id: row.try_get("project_id")?,
+        group_id: row.try_get("group_id")?,
         name: row.try_get("name")?,
         given_condition: row.try_get("given_condition")?,
         when_action: row.try_get("when_action")?,
