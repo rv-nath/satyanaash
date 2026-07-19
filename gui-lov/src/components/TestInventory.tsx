@@ -1,12 +1,21 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { FileCode, Plus, Edit2, Trash2, MoreVertical, Loader2, Search, X } from "lucide-react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import {
+  FileCode, Plus, FolderPlus, Edit2, Trash2, MoreVertical, Loader2, Search, X,
+  ChevronRight, ChevronDown, Check,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
 import { useTestProject } from "@/contexts/TestProjectContext";
-import { useTestCases } from "@/hooks/useApi";
+import {
+  useTestCases, useTestGroups, useCreateGroup, useRenameGroup, useDeleteGroup, useUpdateTestCase,
+} from "@/hooks/useApi";
 import { TestRowPopover } from "@/components/TestRowPopover";
 
 interface TestInventoryProps {
@@ -15,146 +24,261 @@ interface TestInventoryProps {
   onDeleteTestCase: (testId: string) => void;
 }
 
-export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase }: TestInventoryProps) => {
-  const { projectId, testGroups, activeFlowId, selectedTestCaseId, setSelectedTestCaseId } = useTestProject();
+interface UiTest {
+  id: string;
+  name: string;
+  method: string;
+  endpoint?: string;
+  payload?: string;
+  postTestScript?: string;
+  groupId: string | null;
+}
 
-  // Search state
+interface GroupLite {
+  id: string;
+  name: string;
+}
+
+const UNGROUPED = "__ungrouped__";
+
+export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase }: TestInventoryProps) => {
+  const { projectId, selectedTestCaseId, setSelectedTestCaseId } = useTestProject();
+
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Fetch test cases from API
-  const { data: apiTestCases, isLoading } = useTestCases(projectId || '');
+  // Data
+  const { data: apiTestCases, isLoading } = useTestCases(projectId || "");
+  const { data: apiGroups } = useTestGroups(projectId || "");
 
-  // Map API test cases to UI format
-  const allTests = (apiTestCases || []).map(tc => ({
-    id: tc.id,
-    name: tc.name,
-    method: tc.method as "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
-    endpoint: tc.endpoint,
-    headers: tc.headers ? JSON.stringify(tc.headers) : undefined,
-    payload: tc.payload || undefined,
-    postTestScript: tc.assertion_script || undefined,
-    groupName: "Project Tests",  // Test cases belong to project, not flows
-    groupId: activeFlowId || testGroups[0]?.id || ""  // Default to active flow for UI
-  }));
+  // Mutations
+  const createGroup = useCreateGroup();
+  const renameGroup = useRenameGroup();
+  const deleteGroup = useDeleteGroup();
+  const moveTest = useUpdateTestCase();
 
-  // Filter tests by search query
-  const filteredTests = allTests.filter(test => {
-    if (!searchQuery.trim()) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      test.name.toLowerCase().includes(query) ||
-      test.method.toLowerCase().includes(query) ||
-      (test.endpoint?.toLowerCase().includes(query) ?? false)
+  const groups: GroupLite[] = useMemo(
+    () => (apiGroups || []).map((g) => ({ id: g.id, name: g.name })),
+    [apiGroups]
+  );
+
+  const allTests: UiTest[] = useMemo(
+    () =>
+      (apiTestCases || []).map((tc) => ({
+        id: tc.id,
+        name: tc.name,
+        method: tc.method,
+        endpoint: tc.endpoint,
+        payload: tc.payload || undefined,
+        postTestScript: tc.assertion_script || undefined,
+        groupId: tc.group_id ?? null,
+      })),
+    [apiTestCases]
+  );
+
+  const filteredTests = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return allTests;
+    return allTests.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        t.method.toLowerCase().includes(q) ||
+        (t.endpoint?.toLowerCase().includes(q) ?? false)
     );
+  }, [allTests, searchQuery]);
+
+  // Group the filtered tests: real groups (newest first) then a virtual Ungrouped.
+  const sections = useMemo(() => {
+    const byGroup = new Map<string, UiTest[]>();
+    for (const t of filteredTests) {
+      const key = t.groupId ?? UNGROUPED;
+      const arr = byGroup.get(key) ?? [];
+      arr.push(t);
+      byGroup.set(key, arr);
+    }
+    const out: { id: string; name: string; tests: UiTest[]; virtual: boolean }[] = [];
+    for (const g of groups) {
+      out.push({ id: g.id, name: g.name, tests: byGroup.get(g.id) ?? [], virtual: false });
+    }
+    const ungrouped = byGroup.get(UNGROUPED) ?? [];
+    if (ungrouped.length > 0) {
+      out.push({ id: UNGROUPED, name: "Ungrouped", tests: ungrouped, virtual: true });
+    }
+    return out;
+  }, [filteredTests, groups]);
+
+  // Flat, render-ordered list for keyboard navigation.
+  const orderedTests = useMemo(() => sections.flatMap((s) => s.tests), [sections]);
+
+  // Collapsed state per project (localStorage).
+  const storageKey = `sat.groups.collapsed.${projectId || "none"}`;
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      return new Set<string>(JSON.parse(localStorage.getItem(storageKey) || "[]"));
+    } catch {
+      return new Set<string>();
+    }
   });
+  const toggleCollapsed = useCallback(
+    (id: string) => {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        localStorage.setItem(storageKey, JSON.stringify([...next]));
+        return next;
+      });
+    },
+    [storageKey]
+  );
+  const searching = searchQuery.trim().length > 0;
 
-  // Handle single click - select only
-  const handleClick = useCallback((testId: string) => {
-    setSelectedTestCaseId(testId);
-  }, [setSelectedTestCaseId]);
-
-  // Handle double click - open in editor
-  const handleDoubleClick = useCallback((testId: string) => {
-    const test = allTests.find(t => t.id === testId);
-    if (test) {
-      onEditTestCase(test);
-    }
-  }, [allTests, onEditTestCase]);
-
-  // Keyboard navigation
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (filteredTests.length === 0) return;
-
-    const currentIndex = filteredTests.findIndex(t => t.id === selectedTestCaseId);
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        if (currentIndex < filteredTests.length - 1) {
-          setSelectedTestCaseId(filteredTests[currentIndex + 1].id);
-        } else if (currentIndex === -1 && filteredTests.length > 0) {
-          setSelectedTestCaseId(filteredTests[0].id);
-        }
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        if (currentIndex > 0) {
-          setSelectedTestCaseId(filteredTests[currentIndex - 1].id);
-        }
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (selectedTestCaseId) {
-          const test = filteredTests.find(t => t.id === selectedTestCaseId);
-          if (test) {
-            onEditTestCase(test);
-          }
-        }
-        break;
-      case 'Escape':
-        e.preventDefault();
-        setSelectedTestCaseId(null);
-        searchInputRef.current?.blur();
-        break;
-    }
-  }, [filteredTests, selectedTestCaseId, setSelectedTestCaseId, onEditTestCase]);
-
-  // Focus search with Ctrl+F or Cmd+F when component is focused
+  // Inline new-group creation.
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const newGroupRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        if (listRef.current?.contains(document.activeElement) ||
-            searchInputRef.current?.contains(document.activeElement as Node)) {
+    if (creatingGroup) newGroupRef.current?.focus();
+  }, [creatingGroup]);
+
+  const commitNewGroup = () => {
+    const name = newGroupName.trim();
+    if (name && projectId) {
+      createGroup.mutate(
+        { projectId, name },
+        {
+          onSuccess: () => toast.success(`Created group "${name}"`),
+          onError: () => toast.error("Failed to create group"),
+        }
+      );
+    }
+    setCreatingGroup(false);
+    setNewGroupName("");
+  };
+
+  // Inline group rename.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const commitRename = () => {
+    const name = renameValue.trim();
+    if (renamingId && name && projectId) {
+      renameGroup.mutate(
+        { id: renamingId, name, projectId },
+        { onError: () => toast.error("Failed to rename group") }
+      );
+    }
+    setRenamingId(null);
+    setRenameValue("");
+  };
+
+  const handleDeleteGroup = (id: string, name: string) => {
+    if (!projectId) return;
+    deleteGroup.mutate(
+      { id, projectId },
+      {
+        onSuccess: () => toast.success(`Deleted "${name}" — its tests moved to Ungrouped`),
+        onError: () => toast.error("Failed to delete group"),
+      }
+    );
+  };
+
+  const handleMoveTest = (testId: string, groupId: string) => {
+    if (!projectId) return;
+    moveTest.mutate(
+      { id: testId, data: { group_id: groupId }, projectId },
+      {
+        onSuccess: () => setSelectedTestCaseId(testId),
+        onError: () => toast.error("Failed to move test"),
+      }
+    );
+  };
+
+  const handleClick = useCallback((id: string) => setSelectedTestCaseId(id), [setSelectedTestCaseId]);
+  const handleDoubleClick = useCallback(
+    (id: string) => {
+      const t = allTests.find((x) => x.id === id);
+      if (t) onEditTestCase(t);
+    },
+    [allTests, onEditTestCase]
+  );
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (orderedTests.length === 0) return;
+      const i = orderedTests.findIndex((t) => t.id === selectedTestCaseId);
+      switch (e.key) {
+        case "ArrowDown":
+          e.preventDefault();
+          if (i < orderedTests.length - 1) setSelectedTestCaseId(orderedTests[i + 1].id);
+          else if (i === -1) setSelectedTestCaseId(orderedTests[0].id);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          if (i > 0) setSelectedTestCaseId(orderedTests[i - 1].id);
+          break;
+        case "Enter":
+          e.preventDefault();
+          if (selectedTestCaseId) {
+            const t = orderedTests.find((x) => x.id === selectedTestCaseId);
+            if (t) onEditTestCase(t);
+          }
+          break;
+        case "Escape":
+          e.preventDefault();
+          setSelectedTestCaseId(null);
+          searchInputRef.current?.blur();
+          break;
+      }
+    },
+    [orderedTests, selectedTestCaseId, setSelectedTestCaseId, onEditTestCase]
+  );
+
+  useEffect(() => {
+    const onGlobal = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        if (
+          listRef.current?.contains(document.activeElement) ||
+          searchInputRef.current?.contains(document.activeElement as Node)
+        ) {
           e.preventDefault();
           searchInputRef.current?.focus();
           searchInputRef.current?.select();
         }
       }
     };
-
-    document.addEventListener('keydown', handleGlobalKeyDown);
-    return () => document.removeEventListener('keydown', handleGlobalKeyDown);
+    document.addEventListener("keydown", onGlobal);
+    return () => document.removeEventListener("keydown", onGlobal);
   }, []);
-
-  const getMethodColor = (method: string) => {
-    const colors: Record<string, string> = {
-      GET: "bg-success/20 text-success",
-      POST: "bg-primary/20 text-primary",
-      PUT: "bg-warning/20 text-warning",
-      DELETE: "bg-destructive/20 text-destructive",
-      PATCH: "bg-accent/20 text-accent",
-    };
-    return colors[method] || "bg-muted";
-  };
 
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="border-b border-sidebar-border">
         <div className="flex items-center gap-2 h-8 px-3">
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Tests
-          </span>
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Tests</span>
           <span className="text-[10px] text-muted-foreground/60">
-            {filteredTests.length === allTests.length
-              ? allTests.length
-              : `${filteredTests.length}/${allTests.length}`}
+            {filteredTests.length === allTests.length ? allTests.length : `${filteredTests.length}/${allTests.length}`}
           </span>
           <div className="flex-1" />
           <Button
             variant="ghost"
             size="icon"
             className="h-6 w-6"
-            onClick={onAddTestCase}
-            title="New test case"
+            onClick={() => {
+              setNewGroupName("");
+              setCreatingGroup(true);
+            }}
+            title="New group"
           >
+            <FolderPlus className="w-3.5 h-3.5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onAddTestCase} title="New test case">
             <Plus className="w-3.5 h-3.5" />
           </Button>
         </div>
 
-        {/* Search input */}
+        {/* Search */}
         <div className="relative px-2 pb-2">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <Input
@@ -179,44 +303,149 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
         </div>
       </div>
 
-      {/* Test List */}
+      {/* List */}
       <ScrollArea className="flex-1">
         <div ref={listRef} className="p-2" tabIndex={0} onKeyDown={handleKeyDown}>
+          {/* Inline new-group row (top) */}
+          {creatingGroup && (
+            <div className="flex items-center gap-1.5 h-7 px-1 mb-0.5">
+              <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
+              <Input
+                ref={newGroupRef}
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                onBlur={commitNewGroup}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitNewGroup();
+                  if (e.key === "Escape") {
+                    setCreatingGroup(false);
+                    setNewGroupName("");
+                  }
+                }}
+                placeholder="New group name…"
+                className="h-6 text-xs font-medium"
+              />
+            </div>
+          )}
+
           {isLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
             </div>
-          ) : allTests.length === 0 ? (
+          ) : allTests.length === 0 && !creatingGroup ? (
             <div className="text-center py-12 px-4">
               <FileCode className="w-12 h-12 text-muted-foreground/50 mx-auto mb-3" />
               <p className="text-sm text-muted-foreground mb-1">No tests yet</p>
-              <p className="text-xs text-muted-foreground/70">
-                Create your first test case to get started
-              </p>
+              <p className="text-xs text-muted-foreground/70">Create your first test case to get started</p>
             </div>
-          ) : filteredTests.length === 0 ? (
+          ) : filteredTests.length === 0 && searching ? (
             <div className="text-center py-8 px-4">
               <Search className="w-8 h-8 text-muted-foreground/50 mx-auto mb-2" />
               <p className="text-sm text-muted-foreground">No matching tests</p>
-              <p className="text-xs text-muted-foreground/70 mt-1">
-                Try a different search term
-              </p>
+              <p className="text-xs text-muted-foreground/70 mt-1">Try a different search term</p>
             </div>
           ) : (
-            <div className="space-y-0.5">
-              {filteredTests.map((test) => (
-                <TestRow
-                  key={test.id}
-                  test={test}
-                  isSelected={selectedTestCaseId === test.id}
-                  onClick={() => handleClick(test.id)}
-                  onDoubleClick={() => handleDoubleClick(test.id)}
-                  onEditTestCase={onEditTestCase}
-                  onDeleteTestCase={onDeleteTestCase}
-                  getMethodColor={getMethodColor}
-                />
-              ))}
-            </div>
+            sections.map((section) => {
+              const isCollapsed = !searching && collapsed.has(section.id);
+              return (
+                <div key={section.id} className="mb-0.5">
+                  {/* Group header */}
+                  <div className="group/gh flex items-center gap-1.5 h-7 px-1 rounded-md hover:bg-sidebar-accent">
+                    <button
+                      className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+                      onClick={() => toggleCollapsed(section.id)}
+                    >
+                      {isCollapsed ? (
+                        <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
+                      )}
+                      {renamingId === section.id ? (
+                        <Input
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onBlur={commitRename}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitRename();
+                            if (e.key === "Escape") {
+                              setRenamingId(null);
+                              setRenameValue("");
+                            }
+                          }}
+                          className="h-6 text-xs font-medium"
+                        />
+                      ) : (
+                        <span
+                          className={`truncate text-xs font-medium ${
+                            section.virtual ? "italic text-muted-foreground/70" : "text-muted-foreground"
+                          }`}
+                        >
+                          {section.name}
+                        </span>
+                      )}
+                    </button>
+                    <span className="text-[10px] text-muted-foreground/50 shrink-0">{section.tests.length}</span>
+                    {!section.virtual && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5 opacity-0 group-hover/gh:opacity-100 shrink-0"
+                          >
+                            <MoreVertical className="w-3 h-3" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setRenamingId(section.id);
+                              setRenameValue(section.name);
+                            }}
+                          >
+                            <Edit2 className="w-3 h-3 mr-2" />
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => handleDeleteGroup(section.id, section.name)}
+                          >
+                            <Trash2 className="w-3 h-3 mr-2" />
+                            Delete group
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </div>
+
+                  {/* Group body */}
+                  {!isCollapsed && (
+                    <div className="pl-3 space-y-0.5 mt-0.5">
+                      {section.tests.length === 0 ? (
+                        <p className="text-[11px] text-muted-foreground/50 italic px-2 py-1">Empty</p>
+                      ) : (
+                        section.tests.map((test) => (
+                          <TestRow
+                            key={test.id}
+                            test={test}
+                            groups={groups}
+                            isSelected={selectedTestCaseId === test.id}
+                            onClick={() => handleClick(test.id)}
+                            onDoubleClick={() => handleDoubleClick(test.id)}
+                            onEditTestCase={onEditTestCase}
+                            onDeleteTestCase={onDeleteTestCase}
+                            onMove={handleMoveTest}
+                            getMethodColor={getMethodColor}
+                          />
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       </ScrollArea>
@@ -225,8 +454,8 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
       {selectedTestCaseId && (
         <div className="px-4 py-2 border-t border-sidebar-border bg-sidebar-accent/20">
           <p className="text-[10px] text-muted-foreground text-center">
-            Press <kbd className="px-1 py-0.5 bg-muted rounded text-[9px]">Enter</kbd> to edit
-            • <kbd className="px-1 py-0.5 bg-muted rounded text-[9px]">↑↓</kbd> to navigate
+            Press <kbd className="px-1 py-0.5 bg-muted rounded text-[9px]">Enter</kbd> to edit •{" "}
+            <kbd className="px-1 py-0.5 bg-muted rounded text-[9px]">↑↓</kbd> to navigate
           </p>
         </div>
       )}
@@ -234,46 +463,51 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
   );
 };
 
-interface TestRowData {
-  id: string;
-  name: string;
-  method: string;
-  endpoint?: string;
-  payload?: string;
-  preTestScript?: string;
-  postTestScript?: string;
-}
+const getMethodColor = (method: string) => {
+  const colors: Record<string, string> = {
+    GET: "bg-success/20 text-success",
+    POST: "bg-primary/20 text-primary",
+    PUT: "bg-warning/20 text-warning",
+    DELETE: "bg-destructive/20 text-destructive",
+    PATCH: "bg-accent/20 text-accent",
+  };
+  return colors[method] || "bg-muted";
+};
 
 interface TestRowProps {
-  test: TestRowData;
+  test: UiTest;
+  groups: GroupLite[];
   isSelected: boolean;
   onClick: () => void;
   onDoubleClick: () => void;
-  onEditTestCase: (test: TestRowData) => void;
+  onEditTestCase: (test: UiTest) => void;
   onDeleteTestCase: (testId: string) => void;
+  onMove: (testId: string, groupId: string) => void;
   getMethodColor: (method: string) => string;
 }
 
 const TestRow = ({
-  test, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, getMethodColor,
+  test, groups, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, onMove, getMethodColor,
 }: TestRowProps) => {
   const nameRef = useRef<HTMLSpanElement>(null);
   const [hovered, setHovered] = useState(false);
 
   const handleDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData('application/json', JSON.stringify({
-      type: 'testCase',
-      testCaseId: test.id,
-      data: {
+    e.dataTransfer.setData(
+      "application/json",
+      JSON.stringify({
+        type: "testCase",
         testCaseId: test.id,
-        label: test.name,
-        method: test.method,
-        endpoint: test.endpoint,
-        payload: test.payload,
-        preTestScript: test.preTestScript,
-        postTestScript: test.postTestScript,
-      },
-    }));
+        data: {
+          testCaseId: test.id,
+          label: test.name,
+          method: test.method,
+          endpoint: test.endpoint,
+          payload: test.payload,
+          postTestScript: test.postTestScript,
+        },
+      })
+    );
   };
 
   return (
@@ -285,7 +519,7 @@ const TestRow = ({
       onDoubleClick={onDoubleClick}
       onDragStart={handleDragStart}
       className={`group flex items-center gap-2 h-[var(--rail-row-h)] px-2 rounded-md border cursor-pointer ${
-        isSelected ? 'bg-primary/10 border-primary/40' : 'border-transparent hover:bg-sidebar-accent'
+        isSelected ? "bg-primary/10 border-primary/40" : "border-transparent hover:bg-sidebar-accent"
       }`}
     >
       <Badge variant="secondary" className={`text-[9px] px-1.5 py-0 flex-shrink-0 ${getMethodColor(test.method)}`}>
@@ -294,7 +528,7 @@ const TestRow = ({
       <span
         ref={nameRef}
         className="flex-1 truncate text-[13px] font-normal"
-        style={{ color: isSelected ? undefined : 'hsl(var(--rail-name-color))' }}
+        style={{ color: isSelected ? undefined : "hsl(var(--rail-name-color))" }}
       >
         {test.name}
       </span>
@@ -310,6 +544,33 @@ const TestRow = ({
             <Edit2 className="w-3 h-3 mr-2" />
             Edit
           </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <FolderPlus className="w-3 h-3 mr-2" />
+              Move to group
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              {groups.length === 0 ? (
+                <DropdownMenuItem disabled>No groups yet</DropdownMenuItem>
+              ) : (
+                groups.map((g) => (
+                  <DropdownMenuItem
+                    key={g.id}
+                    onClick={() => onMove(test.id, g.id)}
+                    disabled={test.groupId === g.id}
+                  >
+                    {test.groupId === g.id ? (
+                      <Check className="w-3 h-3 mr-2 text-primary" />
+                    ) : (
+                      <span className="w-3 mr-2" />
+                    )}
+                    {g.name}
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSeparator />
           <DropdownMenuItem className="text-destructive" onClick={() => onDeleteTestCase(test.id)}>
             <Trash2 className="w-3 h-3 mr-2" />
             Delete
@@ -317,12 +578,7 @@ const TestRow = ({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <TestRowPopover
-        anchorRef={nameRef}
-        method={test.method}
-        endpoint={test.endpoint || ""}
-        open={hovered}
-      />
+      <TestRowPopover anchorRef={nameRef} method={test.method} endpoint={test.endpoint || ""} open={hovered} />
     </div>
   );
 };
