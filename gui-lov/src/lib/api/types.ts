@@ -35,6 +35,7 @@ export interface ExportVariable {
 export interface TestCase {
   id: string;
   project_id: string;
+  group_id?: string | null;
   name: string;
   given_condition: string | null;
   when_action: string | null;
@@ -52,6 +53,7 @@ export interface TestCase {
 
 export interface CreateTestCaseRequest {
   name: string;
+  group_id?: string;
   given_condition?: string;
   when_action?: string;
   then_expected?: string;
@@ -66,6 +68,7 @@ export interface CreateTestCaseRequest {
 
 export interface UpdateTestCaseRequest {
   name?: string;
+  group_id?: string;
   given_condition?: string;
   when_action?: string;
   then_expected?: string;
@@ -76,6 +79,14 @@ export interface UpdateTestCaseRequest {
   exports?: ExportVariable[];
   assertion_script?: string;
   pre_test_script?: string;
+}
+
+export interface TestGroup {
+  id: string;
+  project_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // ============ Flows ============

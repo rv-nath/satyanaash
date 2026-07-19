@@ -10,6 +10,7 @@ import type {
   TestCase,
   CreateTestCaseRequest,
   UpdateTestCaseRequest,
+  TestGroup,
   Flow,
   CreateFlowRequest,
   UpdateFlowRequest,
@@ -83,6 +84,24 @@ export const testCasesApi = {
   /** Execute a single test case */
   execute: (id: string, data?: ExecuteTestCaseRequest) =>
     apiClient.post<TestCaseExecutionResult>(`/test-cases/${id}/execute`, data || {}),
+};
+
+// ============ Groups API ============
+
+export const groupsApi = {
+  /** List groups for a project (newest first) */
+  list: (projectId: string) => apiClient.get<TestGroup[]>(`/projects/${projectId}/groups`),
+
+  /** Create a group */
+  create: (projectId: string, name: string) =>
+    apiClient.post<TestGroup>(`/projects/${projectId}/groups`, { name }),
+
+  /** Rename a group */
+  rename: (id: string, name: string) =>
+    apiClient.patch<TestGroup>(`/groups/${id}`, { name }),
+
+  /** Delete a group (its tests fall back to Ungrouped) */
+  delete: (id: string) => apiClient.delete(`/groups/${id}`),
 };
 
 // ============ Flows API ============

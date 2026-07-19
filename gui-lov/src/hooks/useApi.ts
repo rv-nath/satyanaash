@@ -8,7 +8,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { projectsApi, testCasesApi, flowsApi } from '@/lib/api';
+import { projectsApi, testCasesApi, flowsApi, groupsApi } from '@/lib/api';
 import type {
   CreateProjectRequest,
   UpdateProjectRequest,
@@ -30,6 +30,7 @@ export const queryKeys = {
   project: (id: string) => ['projects', id] as const,
   testCases: (projectId: string) => ['testCases', projectId] as const,
   testCase: (id: string) => ['testCase', id] as const,
+  groups: (projectId: string) => ['groups', projectId] as const,
   flows: (projectId: string) => ['flows', projectId] as const,
   flow: (id: string) => ['flow', id] as const,
 };
@@ -152,6 +153,54 @@ export function useExecuteTestCase() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data?: ExecuteTestCaseRequest }) =>
       testCasesApi.execute(id, data),
+  });
+}
+
+// ============ Groups Hooks ============
+
+/** Fetch groups for a project (newest first) */
+export function useTestGroups(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.groups(projectId),
+    queryFn: () => groupsApi.list(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** Create a group */
+export function useCreateGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, name }: { projectId: string; name: string }) =>
+      groupsApi.create(projectId, name),
+    onSuccess: (_, { projectId }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups(projectId) });
+    },
+  });
+}
+
+/** Rename a group */
+export function useRenameGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string; projectId: string }) =>
+      groupsApi.rename(id, name),
+    onSuccess: (_, { projectId }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups(projectId) });
+    },
+  });
+}
+
+/** Delete a group (its tests fall back to Ungrouped) */
+export function useDeleteGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; projectId: string }) => groupsApi.delete(id),
+    onSuccess: (_, { projectId }) => {
+      // Groups changed, and tests' group_id changed too.
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups(projectId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.testCases(projectId) });
+    },
   });
 }
 
