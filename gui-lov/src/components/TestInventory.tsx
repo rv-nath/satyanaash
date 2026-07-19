@@ -586,7 +586,7 @@ interface TestRowProps {
 const TestRow = ({
   test, groups, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, onMove, onClone, getMethodColor,
 }: TestRowProps) => {
-  const nameRef = useRef<HTMLSpanElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
 
   const handleDragStart = (e: React.DragEvent) => {
@@ -609,6 +609,7 @@ const TestRow = ({
 
   return (
     <div
+      ref={rowRef}
       draggable
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -623,7 +624,6 @@ const TestRow = ({
         {test.method}
       </Badge>
       <span
-        ref={nameRef}
         className="flex-1 truncate text-[13px] font-normal"
         style={{ color: isSelected ? undefined : "hsl(var(--rail-name-color))" }}
       >
@@ -632,7 +632,12 @@ const TestRow = ({
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 flex-shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 flex-shrink-0 opacity-60 group-hover:opacity-100"
+            onClick={(e) => e.stopPropagation()}
+          >
             <MoreVertical className="w-3 h-3" />
           </Button>
         </DropdownMenuTrigger>
@@ -679,7 +684,7 @@ const TestRow = ({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <TestRowPopover anchorRef={nameRef} method={test.method} endpoint={test.endpoint || ""} open={hovered} />
+      <TestRowPopover anchorRef={rowRef} method={test.method} endpoint={test.endpoint || ""} open={hovered} />
     </div>
   );
 };

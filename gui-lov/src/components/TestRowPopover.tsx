@@ -26,7 +26,7 @@ export function TestRowPopover({ anchorRef, method, endpoint, description, open 
   return createPortal(
     <div
       role="tooltip"
-      className="fixed z-50 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs shadow-lg
+      className="pointer-events-none fixed z-50 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs shadow-lg
                  before:absolute before:-left-1.5 before:top-3 before:h-2.5 before:w-2.5 before:rotate-45
                  before:border-b before:border-l before:border-border before:bg-popover"
       style={{ left: pos.left, top: pos.top }}
