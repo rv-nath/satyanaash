@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList, CheckCircle2, XCircle, AlertCircle, Loader2, WrapText, Pencil, Check } from "lucide-react";
+import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList, CheckCircle2, XCircle, AlertCircle, Loader2, WrapText, Pencil, Check, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,7 +12,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { useTestProject } from "@/contexts/TestProjectContext";
-import { useTestCase, useCreateTestCase, useUpdateTestCase, useExecuteTestCase } from "@/hooks/useApi";
+import { useTestCase, useCreateTestCase, useUpdateTestCase, useExecuteTestCase, useDeleteTestCase } from "@/hooks/useApi";
 import { getUpstreamVariables } from "@/lib/variableUtils";
 import { preTestSnippets, postTestSnippets, getSnippetsByCategory } from "@/lib/testSnippets";
 import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/components/HeadersEditor";
@@ -107,6 +107,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
   const { data: testCase, isLoading } = useTestCase(testCaseId || '');
   const createMutation = useCreateTestCase();
   const updateMutation = useUpdateTestCase();
+  const deleteMutation = useDeleteTestCase();
   const executeMutation = useExecuteTestCase();
 
   // Execution result state
@@ -333,6 +334,18 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
     }
   };
 
+  const handleDelete = async () => {
+    if (isCreateMode || !testCaseId || !projectId) return;
+    if (!window.confirm(`Delete test case "${name || "this test"}"? This can't be undone.`)) return;
+    try {
+      await deleteMutation.mutateAsync({ id: testCaseId, projectId });
+      toast.success("Test case deleted");
+      onClose();
+    } catch {
+      toast.error("Failed to delete test case");
+    }
+  };
+
   const handleRunTest = async () => {
     if (!testCaseId) {
       toast.error("Save the test case before running");
@@ -514,6 +527,18 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
             <Save className="w-4 h-4" />
             {isSaving ? "Saving..." : isCreateMode ? "Create" : "Save"}
           </Button>
+          {!isCreateMode && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleDelete}
+              disabled={deleteMutation.isPending}
+              title="Delete test case"
+              className="text-destructive hover:text-destructive"
+            >
+              <Trash2 className="w-4 h-4" />
+            </Button>
+          )}
           <Button variant="ghost" size="icon" onClick={handleClose}>
             <X className="w-4 h-4" />
           </Button>
