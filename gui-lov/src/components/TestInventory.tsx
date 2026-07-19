@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   FileCode, Plus, FolderPlus, Edit2, Trash2, MoreVertical, Loader2, Search, X,
-  ChevronRight, ChevronDown, Check,
+  ChevronRight, ChevronDown, Check, Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,8 @@ import {
 import { toast } from "sonner";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import {
-  useTestCases, useTestGroups, useCreateGroup, useRenameGroup, useDeleteGroup, useUpdateTestCase,
+  useTestCases, useTestGroups, useCreateGroup, useRenameGroup, useDeleteGroup,
+  useUpdateTestCase, useCreateTestCase,
 } from "@/hooks/useApi";
 import { TestRowPopover } from "@/components/TestRowPopover";
 
@@ -57,6 +58,7 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
   const renameGroup = useRenameGroup();
   const deleteGroup = useDeleteGroup();
   const moveTest = useUpdateTestCase();
+  const createTestCase = useCreateTestCase();
 
   const groups: GroupLite[] = useMemo(
     () => (apiGroups || []).map((g) => ({ id: g.id, name: g.name })),
@@ -190,6 +192,54 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
       {
         onSuccess: () => setSelectedTestCaseId(testId),
         onError: () => toast.error("Failed to move test"),
+      }
+    );
+  };
+
+  // Create a blank test case already inside `groupId` and open it in the editor.
+  const handleCreateInGroup = (groupId: string) => {
+    if (!projectId) return;
+    createTestCase.mutate(
+      { projectId, data: { name: "New request", method: "GET", endpoint: "", group_id: groupId } },
+      {
+        onSuccess: (tc) =>
+          onEditTestCase({
+            id: tc.id,
+            name: tc.name,
+            method: tc.method,
+            endpoint: tc.endpoint,
+            groupId: tc.group_id ?? null,
+          }),
+        onError: () => toast.error("Failed to create test case"),
+      }
+    );
+  };
+
+  // Duplicate a test case (all fields) into the same group.
+  const handleClone = (testId: string) => {
+    const tc = (apiTestCases || []).find((t) => t.id === testId);
+    if (!tc || !projectId) return;
+    createTestCase.mutate(
+      {
+        projectId,
+        data: {
+          name: `${tc.name} copy`,
+          group_id: tc.group_id ?? undefined,
+          given_condition: tc.given_condition ?? undefined,
+          when_action: tc.when_action ?? undefined,
+          then_expected: tc.then_expected ?? undefined,
+          method: tc.method,
+          endpoint: tc.endpoint,
+          headers: tc.headers,
+          payload: tc.payload ?? undefined,
+          exports: tc.exports,
+          assertion_script: tc.assertion_script ?? undefined,
+          pre_test_script: tc.pre_test_script ?? undefined,
+        },
+      },
+      {
+        onSuccess: () => toast.success(`Cloned "${tc.name}"`),
+        onError: () => toast.error("Failed to clone test"),
       }
     );
   };
@@ -399,6 +449,10 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => handleCreateInGroup(section.id)}>
+                            <Plus className="w-3 h-3 mr-2" />
+                            New test case
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => {
                               setRenamingId(section.id);
@@ -408,6 +462,7 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
                             <Edit2 className="w-3 h-3 mr-2" />
                             Rename
                           </DropdownMenuItem>
+                          <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-destructive"
                             onClick={() => handleDeleteGroup(section.id, section.name)}
@@ -437,6 +492,7 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
                             onEditTestCase={onEditTestCase}
                             onDeleteTestCase={onDeleteTestCase}
                             onMove={handleMoveTest}
+                            onClone={handleClone}
                             getMethodColor={getMethodColor}
                           />
                         ))
@@ -483,11 +539,12 @@ interface TestRowProps {
   onEditTestCase: (test: UiTest) => void;
   onDeleteTestCase: (testId: string) => void;
   onMove: (testId: string, groupId: string) => void;
+  onClone: (testId: string) => void;
   getMethodColor: (method: string) => string;
 }
 
 const TestRow = ({
-  test, groups, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, onMove, getMethodColor,
+  test, groups, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, onMove, onClone, getMethodColor,
 }: TestRowProps) => {
   const nameRef = useRef<HTMLSpanElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -543,6 +600,10 @@ const TestRow = ({
           <DropdownMenuItem onClick={() => onEditTestCase(test)}>
             <Edit2 className="w-3 h-3 mr-2" />
             Edit
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onClone(test.id)}>
+            <Copy className="w-3 h-3 mr-2" />
+            Clone
           </DropdownMenuItem>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
