@@ -17,7 +17,6 @@ import {
   useTestCases, useTestGroups, useCreateGroup, useRenameGroup, useDeleteGroup,
   useUpdateTestCase, useCreateTestCase,
 } from "@/hooks/useApi";
-import { TestRowPopover } from "@/components/TestRowPopover";
 
 interface TestInventoryProps {
   onAddTestCase: () => void;
@@ -181,6 +180,7 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
 
   const handleDeleteGroup = (id: string, name: string) => {
     if (!projectId) return;
+    if (!window.confirm(`Delete group "${name}"? Its test cases move to Ungrouped.`)) return;
     deleteGroup.mutate(
       { id, projectId },
       {
@@ -586,9 +586,6 @@ interface TestRowProps {
 const TestRow = ({
   test, groups, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, onMove, onClone, getMethodColor,
 }: TestRowProps) => {
-  const rowRef = useRef<HTMLDivElement>(null);
-  const [hovered, setHovered] = useState(false);
-
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(
       "application/json",
@@ -609,10 +606,7 @@ const TestRow = ({
 
   return (
     <div
-      ref={rowRef}
       draggable
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onDragStart={handleDragStart}
@@ -635,7 +629,7 @@ const TestRow = ({
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6 flex-shrink-0 opacity-60 group-hover:opacity-100"
+            className="h-6 w-6 flex-shrink-0 opacity-0 group-hover:opacity-100"
             onClick={(e) => e.stopPropagation()}
           >
             <MoreVertical className="w-3 h-3" />
@@ -677,14 +671,19 @@ const TestRow = ({
             </DropdownMenuSubContent>
           </DropdownMenuSub>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-destructive" onClick={() => onDeleteTestCase(test.id)}>
+          <DropdownMenuItem
+            className="text-destructive"
+            onClick={() => {
+              if (window.confirm(`Delete test case "${test.name}"? This can't be undone.`)) {
+                onDeleteTestCase(test.id);
+              }
+            }}
+          >
             <Trash2 className="w-3 h-3 mr-2" />
             Delete
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-
-      <TestRowPopover anchorRef={rowRef} method={test.method} endpoint={test.endpoint || ""} open={hovered} />
     </div>
   );
 };
