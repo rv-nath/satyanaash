@@ -265,7 +265,7 @@ const HeaderRowComponent = ({
       </div>
 
       {/* Header Name with Typeahead */}
-      <div className="relative">
+      <div className={`relative ${isPopoverOpen ? 'z-50' : ''}`}>
         <Input
           ref={keyInputRef}
           value={header.key}
@@ -292,7 +292,10 @@ const HeaderRowComponent = ({
           autoComplete="off"
         />
         {isPopoverOpen && visibleSuggestions.length > 0 && (
-          <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-popover border border-border rounded-md shadow-md max-h-[250px] overflow-y-auto">
+          <div
+            className="absolute top-full left-0 right-0 z-[60] mt-1 border border-border rounded-md shadow-lg max-h-[250px] overflow-y-auto"
+            style={{ backgroundColor: "hsl(var(--popover))" }}
+          >
             <div className="p-1">
               <p className="px-2 py-1 text-xs text-muted-foreground font-medium">
                 Suggestions <span className="text-[10px]">(↑↓ navigate, Tab/Enter select)</span>
