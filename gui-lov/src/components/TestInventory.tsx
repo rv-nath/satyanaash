@@ -60,6 +60,11 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
   const moveTest = useUpdateTestCase();
   const createTestCase = useCreateTestCase();
 
+  // Which group the next top-level "+" (and the empty selection) targets.
+  const [focusedGroupId, setFocusedGroupId] = useState<string | null>(null);
+  // Group header currently being hovered during a drag (for the drop highlight).
+  const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
+
   const groups: GroupLite[] = useMemo(
     () => (apiGroups || []).map((g) => ({ id: g.id, name: g.name })),
     [apiGroups]
@@ -323,7 +328,13 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
           >
             <FolderPlus className="w-3.5 h-3.5" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onAddTestCase} title="New test case">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={() => (focusedGroupId ? handleCreateInGroup(focusedGroupId) : onAddTestCase())}
+            title={focusedGroupId ? "New test case in focused group" : "New test case"}
+          >
             <Plus className="w-3.5 h-3.5" />
           </Button>
         </div>
@@ -399,11 +410,37 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
               const isCollapsed = !searching && collapsed.has(section.id);
               return (
                 <div key={section.id} className="mb-0.5">
-                  {/* Group header */}
-                  <div className="group/gh flex items-center gap-1.5 h-7 px-1 rounded-md hover:bg-sidebar-accent">
+                  {/* Group header (also a drop target for moving tests here) */}
+                  <div
+                    className={`group/gh flex items-center gap-1.5 h-7 px-1 rounded-md hover:bg-sidebar-accent ${
+                      dragOverGroupId === section.id ? "ring-1 ring-primary bg-primary/5" : ""
+                    }`}
+                    onDragOver={(e) => {
+                      if (section.virtual) return; // move-to-Ungrouped not supported yet
+                      e.preventDefault();
+                      setDragOverGroupId(section.id);
+                    }}
+                    onDragLeave={() => setDragOverGroupId((cur) => (cur === section.id ? null : cur))}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOverGroupId(null);
+                      if (section.virtual) return;
+                      try {
+                        const payload = JSON.parse(e.dataTransfer.getData("application/json"));
+                        if (payload?.type === "testCase" && payload.testCaseId) {
+                          handleMoveTest(payload.testCaseId, section.id);
+                        }
+                      } catch {
+                        /* not a test-case drag */
+                      }
+                    }}
+                  >
                     <button
                       className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
-                      onClick={() => toggleCollapsed(section.id)}
+                      onClick={() => {
+                        toggleCollapsed(section.id);
+                        setFocusedGroupId(section.virtual ? null : section.id);
+                      }}
                     >
                       {isCollapsed ? (
                         <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/50 shrink-0" />
@@ -487,7 +524,10 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
                             test={test}
                             groups={groups}
                             isSelected={selectedTestCaseId === test.id}
-                            onClick={() => handleClick(test.id)}
+                            onClick={() => {
+                              handleClick(test.id);
+                              setFocusedGroupId(test.groupId);
+                            }}
                             onDoubleClick={() => handleDoubleClick(test.id)}
                             onEditTestCase={onEditTestCase}
                             onDeleteTestCase={onDeleteTestCase}
