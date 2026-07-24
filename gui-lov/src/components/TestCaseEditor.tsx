@@ -547,7 +547,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
       </div>
 
       {/* Content with Tabs */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
           <FolderTabs active={activeTab} onChange={setActiveTab} />
 
@@ -935,7 +935,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           </TabsContent>
 
           {/* Response Tab */}
-          <TabsContent value="response" className="flex-1 mt-0 overflow-hidden">
+          <TabsContent value="response" className="flex-1 min-h-0 mt-0 overflow-hidden">
             {executeMutation.isPending ? (
               <div className="h-full flex flex-col items-center justify-center p-6 text-center">
                 <Loader2 className="w-12 h-12 text-primary animate-spin mb-4" />
@@ -980,7 +980,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                 </div>
 
                 {/* Sub-tabs for Response details */}
-                <Tabs defaultValue="body" className="flex-1 flex flex-col overflow-hidden">
+                <Tabs defaultValue="body" className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   <div className="border-b px-6">
                     <TabsList className="h-10 bg-transparent p-0 gap-4">
                       <TabsTrigger value="body" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
@@ -1001,39 +1001,41 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                   </div>
 
                   {/* Body Sub-tab */}
-                  <TabsContent value="body" className="flex-1 mt-0 overflow-hidden flex flex-col">
-                    {executionResult.response?.body ? (
-                      <>
-                        <div className="flex justify-end px-4 py-1.5 border-b bg-muted/20">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className={`h-7 gap-1.5 text-xs ${wordWrap ? 'bg-muted' : ''}`}
-                            onClick={() => setWordWrap(!wordWrap)}
-                          >
-                            <WrapText className="w-3.5 h-3.5" />
-                            Wrap
-                          </Button>
+                  <TabsContent value="body" className="flex-1 min-h-0 mt-0 overflow-hidden">
+                    <div className="h-full flex flex-col">
+                      {executionResult.response?.body ? (
+                        <>
+                          <div className="flex justify-end px-4 py-1.5 border-b bg-muted/20">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className={`h-7 gap-1.5 text-xs ${wordWrap ? 'bg-muted' : ''}`}
+                              onClick={() => setWordWrap(!wordWrap)}
+                            >
+                              <WrapText className="w-3.5 h-3.5" />
+                              Wrap
+                            </Button>
+                          </div>
+                          <pre className={`flex-1 overflow-auto p-4 text-sm font-mono bg-muted/30 ${wordWrap ? 'whitespace-pre-wrap break-all' : ''}`}>
+                            {(() => {
+                              try {
+                                return JSON.stringify(JSON.parse(executionResult.response.body), null, 2);
+                              } catch {
+                                return executionResult.response.body;
+                              }
+                            })()}
+                          </pre>
+                        </>
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-muted-foreground">
+                          No response body
                         </div>
-                        <pre className={`flex-1 overflow-auto p-4 text-sm font-mono bg-muted/30 ${wordWrap ? 'whitespace-pre-wrap break-all' : ''}`}>
-                          {(() => {
-                            try {
-                              return JSON.stringify(JSON.parse(executionResult.response.body), null, 2);
-                            } catch {
-                              return executionResult.response.body;
-                            }
-                          })()}
-                        </pre>
-                      </>
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-muted-foreground">
-                        No response body
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </TabsContent>
 
                   {/* Headers Sub-tab */}
-                  <TabsContent value="headers" className="flex-1 mt-0 overflow-hidden">
+                  <TabsContent value="headers" className="flex-1 min-h-0 mt-0 overflow-hidden">
                     {executionResult.response && Object.keys(executionResult.response.headers).length > 0 ? (
                       <div className="h-full overflow-auto">
                         <table className="w-full text-sm">
@@ -1055,7 +1057,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                   </TabsContent>
 
                   {/* Request Sub-tab */}
-                  <TabsContent value="request" className="flex-1 mt-0 overflow-hidden">
+                  <TabsContent value="request" className="flex-1 min-h-0 mt-0 overflow-hidden">
                     <div className="h-full overflow-auto p-4 space-y-4">
                       {executionResult.request && (
                         <>
@@ -1088,7 +1090,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                           {executionResult.request.body && (
                             <div>
                               <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST BODY</h4>
-                              <pre className="text-sm font-mono bg-muted/50 p-3 rounded overflow-auto max-h-[300px]">
+                              <pre className="text-sm font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
                                 {(() => {
                                   try {
                                     return JSON.stringify(JSON.parse(executionResult.request.body), null, 2);
