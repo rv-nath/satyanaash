@@ -294,8 +294,8 @@ export function SettingsPanel({ project }: { project: Project }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete environment?</AlertDialogTitle>
             <AlertDialogDescription>
-              "{environments.find((e) => e.id === deleteEnvId)?.name || "This environment"}" and its variables will be
-              removed when you Save. This can't be undone.
+              Remove "{environments.find((e) => e.id === deleteEnvId)?.name || "this environment"}" and its variables?
+              The change takes effect when you click Save.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
