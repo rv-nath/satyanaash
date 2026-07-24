@@ -4,7 +4,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Plus, X, Trash2, Copy, Braces, Layers, Info } from "lucide-react";
+import { Plus, X, Trash2, Copy, Pencil, Braces, Layers, Info } from "lucide-react";
 import {
   AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogFooter,
   AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel,
@@ -220,6 +220,15 @@ export function SettingsPanel({ project }: { project: Project }) {
                         {env.name || "(unnamed)"}
                       </button>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"
+                      onClick={() => setRenamingEnvId(env.id)}
+                      title="Rename environment"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
