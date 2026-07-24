@@ -1,24 +1,22 @@
 import { FolderTree, Plus, Edit2, Trash2, MoreVertical } from "lucide-react";
-import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useTestProject } from "@/contexts/TestProjectContext";
 
 interface FlowsListProps {
+  onOpenFlow: (flowId: string) => void;
   onAddGroup: () => void;
   onEditGroup: (group: any) => void;
   onDeleteGroup: (groupId: string) => void;
 }
 
-export const FlowsList = ({ onAddGroup, onEditGroup, onDeleteGroup }: FlowsListProps) => {
-  const { id: projectId } = useParams();
-  const navigate = useNavigate();
-  const { testGroups, activeFlowId, sidebarTab } = useTestProject();
+export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }: FlowsListProps) => {
+  const { testGroups, activeFlowId } = useTestProject();
 
-  // Navigate to flow - this closes any open editor and switches to canvas
+  // Open the flow as a workspace tab (reuse-if-unedited handled by the parent).
   const handleFlowClick = (flowId: string) => {
-    navigate(`/project/${projectId}?flow=${flowId}&tab=${sidebarTab}`);
+    onOpenFlow(flowId);
   };
 
   return (

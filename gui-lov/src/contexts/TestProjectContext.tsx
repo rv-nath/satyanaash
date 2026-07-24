@@ -2,8 +2,8 @@ import { createContext, useContext, useState, ReactNode, useCallback, useEffect 
 import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import {
-  WorkspaceState, WorkspaceTab, initialWorkspaceState,
-  openTestTab as openTab, closeTestTab as closeTab, setActive as setActiveWsTab, switchFlow,
+  WorkspaceState, initialWorkspaceState,
+  openTest, openFlow, openSettings, closeTab as closeWsTab, setActive as setActiveWsTab,
 } from "@/lib/workspaceTabs";
 import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
@@ -63,11 +63,13 @@ interface TestProjectContextType {
   edgeType: 'default' | 'straight' | 'step' | 'smoothstep';
   activeFlowId: string | null;
   setActiveFlowId: (id: string | null) => void;
-  // Tabbed workspace state (pinned canvas + open test-case tabs)
+  // Tabbed workspace state (flow/test tabs + singleton settings; no pinned tab)
   workspace: WorkspaceState;
   openTestTab: (id: string) => void;
-  closeTestTab: (id: string) => void;
-  setActiveWorkspaceTab: (tab: WorkspaceTab) => void;
+  openFlowTab: (id: string, canReuseActive: boolean) => void;
+  openSettingsTab: () => void;
+  closeWorkspaceTab: (key: string) => void;
+  setActiveWorkspaceTab: (key: string) => void;
   // Selection and editing state for test cases
   selectedTestCaseId: string | null;
   setSelectedTestCaseId: (id: string | null) => void;
@@ -233,14 +235,18 @@ export const TestProjectProvider = ({
 
   // Tabbed workspace: pinned canvas + open test-case tabs (persist across flow switches)
   const [workspace, setWorkspace] = useState<WorkspaceState>(initialWorkspaceState);
-  const openTestTab = useCallback((id: string) => setWorkspace((s) => openTab(s, id)), []);
-  const closeTestTab = useCallback((id: string) => setWorkspace((s) => closeTab(s, id)), []);
-  const setActiveWorkspaceTab = useCallback((tab: WorkspaceTab) => setWorkspace((s) => setActiveWsTab(s, tab)), []);
+  const openTestTab = useCallback((id: string) => setWorkspace((s) => openTest(s, id).state), []);
+  const openFlowTab = useCallback(
+    (id: string, canReuseActive: boolean) => setWorkspace((s) => openFlow(s, id, { canReuseActive }).state),
+    []
+  );
+  const openSettingsTab = useCallback(() => setWorkspace((s) => openSettings(s)), []);
+  const closeWorkspaceTab = useCallback((key: string) => setWorkspace((s) => closeWsTab(s, key)), []);
+  const setActiveWorkspaceTab = useCallback((key: string) => setWorkspace((s) => setActiveWsTab(s, key)), []);
 
   // Wrapper to update URL when active flow changes
   const setActiveFlowId = useCallback((id: string | null) => {
     setActiveFlowIdState(id);
-    setWorkspace((s) => switchFlow(s));
     if (id) {
       setSearchParams(prev => {
         const newParams = new URLSearchParams(prev);
@@ -757,7 +763,9 @@ export const TestProjectProvider = ({
         setActiveFlowId,
         workspace,
         openTestTab,
-        closeTestTab,
+        openFlowTab,
+        openSettingsTab,
+        closeWorkspaceTab,
         setActiveWorkspaceTab,
         selectedTestCaseId,
         setSelectedTestCaseId,

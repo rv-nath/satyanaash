@@ -44,9 +44,10 @@ import { ValidationBadge } from "@/components/ValidationBadge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
-import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateProject, useTestCases } from "@/hooks/useApi";
-import { WorkspaceTabs } from "@/components/WorkspaceTabs";
-import { ProjectSettingsDialog } from "@/components/ProjectSettingsDialog";
+import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useTestCases } from "@/hooks/useApi";
+import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
+import { SettingsPanel } from "@/components/SettingsPanel";
+import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { useExecutionStream } from "@/hooks/useExecutionStream";
 import { Card } from "@/components/ui/card";
@@ -64,7 +65,9 @@ const ProjectDetailContent = () => {
     setActiveFlowId,
     workspace,
     openTestTab,
-    closeTestTab,
+    openFlowTab,
+    openSettingsTab,
+    closeWorkspaceTab,
     setActiveWorkspaceTab,
     showConsole,
     setShowConsole,
@@ -100,19 +103,60 @@ const ProjectDetailContent = () => {
   // Test cases (for workspace tab labels)
   const { data: apiTestCases } = useTestCases(projectId || '');
 
-  // Workspace tab info for the tab bar (open test ids -> {id,name,method})
-  const workspaceTabInfos = workspace.openTestIds.map((tid) => {
-    if (tid === '__new__') return { id: '__new__', name: 'New Test', method: 'NEW' };
-    const tc = (apiTestCases || []).find((t) => t.id === tid);
-    return { id: tid, name: tc?.name || 'Test', method: (tc?.method as string) || '' };
+  // Flows edited this session — a flow tab stops being reused once edited
+  // (VS Code preview-tab semantics).
+  const [modifiedFlowIds, setModifiedFlowIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (activeFlowId && (saveStatus === 'pending' || saveStatus === 'saving')) {
+      setModifiedFlowIds((prev) => (prev.has(activeFlowId) ? prev : new Set(prev).add(activeFlowId)));
+    }
+  }, [saveStatus, activeFlowId]);
+
+  // Active tab kind
+  const activeIsFlow = !!workspace.active?.startsWith('flow:');
+  const activeIsTest = !!workspace.active?.startsWith('test:');
+  const activeIsSettings = workspace.active === 'settings';
+  const activeTestId = activeIsTest ? workspace.active!.slice('test:'.length) : null;
+
+  // Tab-bar render models
+  const renderTabs: RenderTab[] = workspace.tabs.map((t) => {
+    if (t.kind === 'flow') {
+      const flow = testGroups.find((g) => g.id === t.id);
+      return { key: tabKey('flow', t.id), kind: 'flow', label: flow?.name || 'Flow' };
+    }
+    if (t.id === '__new__') return { key: tabKey('test', t.id), kind: 'test', label: 'New Test', method: 'NEW' };
+    const tc = (apiTestCases || []).find((x) => x.id === t.id);
+    return { key: tabKey('test', t.id), kind: 'test', label: tc?.name || 'Test', method: (tc?.method as string) || '' };
   });
 
-  // A test-case tab is active (vs the pinned canvas tab)
-  const isEditing = workspace.active !== 'canvas';
+  // Activate a tab; keep activeFlowId in sync for flow tabs.
+  const activateTab = (key: string) => {
+    setActiveWorkspaceTab(key);
+    if (key.startsWith('flow:')) setActiveFlowId(key.slice('flow:'.length));
+  };
 
   // Open a test case as a workspace tab (undefined = create mode)
   const openTestCaseEditor = (testCaseId?: string) => {
-    openTestTab(testCaseId ?? '__new__');
+    const tid = testCaseId ?? '__new__';
+    const alreadyOpen = workspace.tabs.some((t) => t.kind === 'test' && t.id === tid);
+    if (!alreadyOpen && atCap(workspace)) {
+      toast.warning(`Too many tabs open (max ${MAX_TABS}). Close one first.`);
+      return;
+    }
+    openTestTab(tid);
+  };
+
+  // Open a flow as a (reuse-if-unedited) workspace tab
+  const handleOpenFlow = (flowId: string) => {
+    const alreadyOpen = workspace.tabs.some((t) => t.kind === 'flow' && t.id === flowId);
+    const activeFlowKey = activeIsFlow ? workspace.active!.slice('flow:'.length) : null;
+    const canReuse = !!activeFlowKey && !modifiedFlowIds.has(activeFlowKey);
+    if (!alreadyOpen && !canReuse && atCap(workspace)) {
+      toast.warning(`Too many tabs open (max ${MAX_TABS}). Close one first.`);
+      return;
+    }
+    setActiveFlowId(flowId);
+    openFlowTab(flowId, canReuse);
   };
 
   // Deep-link support: /project/:id/test/:testId opens that test as a tab
@@ -138,7 +182,6 @@ const ProjectDetailContent = () => {
 
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [flowVarsOpen, setFlowVarsOpen] = useState(false);
   const [editingGroup, setEditingGroup] = useState<{ id: string; name: string; description?: string } | null>(null);
 
@@ -147,9 +190,6 @@ const ProjectDetailContent = () => {
   const [editingDescription, setEditingDescription] = useState(false);
   const [tempName, setTempName] = useState("");
   const [tempDescription, setTempDescription] = useState("");
-
-  // API mutation for project settings
-  const updateProjectMutation = useUpdateProject();
 
   // Environments & globals (Plan 4)
   const globals = useMemo(() => readGlobals(project?.settings), [project?.settings]);
@@ -316,7 +356,7 @@ const ProjectDetailContent = () => {
                 <span className="text-lg font-semibold font-mono text-foreground">
                   {project?.name || 'Project'}
                 </span>
-                {!isEditing && activeFlow && (
+                {activeIsFlow && activeFlow && (
                   <>
                     <span className="text-muted-foreground font-normal"> / </span>
                     {editingFlowName ? (
@@ -347,16 +387,16 @@ const ProjectDetailContent = () => {
                     )}
                   </>
                 )}
-                {isEditing && workspace.active === '__new__' && (
+                {activeIsTest && activeTestId === '__new__' && (
                   <span className="text-muted-foreground font-normal"> / New Test</span>
                 )}
-                {isEditing && workspace.active !== '__new__' && (
+                {activeIsTest && activeTestId !== '__new__' && (
                   <span className="text-muted-foreground font-normal"> / Edit Test</span>
                 )}
               </div>
 
               {/* Description row - only when flow active */}
-              {!isEditing && activeFlow && (
+              {activeIsFlow && activeFlow && (
                 editingDescription ? (
                   <Input
                     value={tempDescription}
@@ -381,7 +421,7 @@ const ProjectDetailContent = () => {
               )}
             </div>
             {/* Save status - only when on canvas with flow */}
-            {!isEditing && activeFlow && (
+            {activeIsFlow && activeFlow && (
               <div className="text-xs">
                 {saveStatus === 'idle' && (
                   <span className="flex items-center gap-1.5 text-muted-foreground">
@@ -416,7 +456,7 @@ const ProjectDetailContent = () => {
         {/* Right: Contextual Actions */}
         <div className="flex items-center gap-1">
           {/* Canvas actions - only when on canvas with flow */}
-          {!isEditing && activeFlow && (
+          {activeIsFlow && activeFlow && (
             <>
               {/* Environment switcher */}
               <DropdownMenu>
@@ -440,7 +480,7 @@ const ProjectDetailContent = () => {
                     </DropdownMenuItem>
                   ))}
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+                  <DropdownMenuItem onClick={() => openSettingsTab()}>
                     <Settings className="w-3.5 h-3.5 mr-2" /> Manage environments…
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -541,7 +581,7 @@ const ProjectDetailContent = () => {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               {/* Canvas settings - only when flow active */}
-              {!isEditing && activeFlow && (
+              {activeIsFlow && activeFlow && (
                 <>
                   <DropdownMenuLabel>Canvas</DropdownMenuLabel>
                   <DropdownMenuCheckboxItem checked={showEdgeLabels} onCheckedChange={setShowEdgeLabels}>
@@ -601,7 +641,7 @@ const ProjectDetailContent = () => {
                 </>
               )}
               <DropdownMenuLabel>Project</DropdownMenuLabel>
-              <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+              <DropdownMenuItem onClick={() => openSettingsTab()}>
                 <Settings className="w-4 h-4 mr-2" /> Project Settings...
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -616,8 +656,27 @@ const ProjectDetailContent = () => {
         <ResizablePanel defaultSize={18} minSize={14} maxSize={26} className="min-w-[200px] max-w-[300px]">
           <div className="h-full bg-sidebar border-r border-sidebar-border">
             <ResizablePanelGroup direction="vertical">
+              <ResizablePanel defaultSize={60} minSize={20}>
+                <TestInventory
+                  onAddTestCase={() => openTestCaseEditor()}
+                  onEditTestCase={(test) => openTestCaseEditor(test.id)}
+                  onDeleteTestCase={async (testCaseId) => {
+                    if (!projectId) return;
+                    try {
+                      await deleteTestCaseMutation.mutateAsync({ id: testCaseId, projectId });
+                      deleteTestCase(testCaseId);
+                      toast.success("Test case deleted");
+                    } catch (err) {
+                      toast.error("Failed to delete test case");
+                      console.error(err);
+                    }
+                  }}
+                />
+              </ResizablePanel>
+              <ResizableHandle />
               <ResizablePanel defaultSize={40} minSize={15}>
                 <FlowsList
+                  onOpenFlow={handleOpenFlow}
                   onAddGroup={handleCreateFlow}
                   onEditGroup={(group) => {
                     setEditingGroup({ id: group.id, name: group.name, description: group.description });
@@ -636,24 +695,6 @@ const ProjectDetailContent = () => {
                   }}
                 />
               </ResizablePanel>
-              <ResizableHandle />
-              <ResizablePanel defaultSize={60} minSize={20}>
-                <TestInventory
-                  onAddTestCase={() => openTestCaseEditor()}
-                  onEditTestCase={(test) => openTestCaseEditor(test.id)}
-                  onDeleteTestCase={async (testCaseId) => {
-                    if (!projectId) return;
-                    try {
-                      await deleteTestCaseMutation.mutateAsync({ id: testCaseId, projectId });
-                      deleteTestCase(testCaseId);
-                      toast.success("Test case deleted");
-                    } catch (err) {
-                      toast.error("Failed to delete test case");
-                      console.error(err);
-                    }
-                  }}
-                />
-              </ResizablePanel>
             </ResizablePanelGroup>
           </div>
         </ResizablePanel>
@@ -664,14 +705,16 @@ const ProjectDetailContent = () => {
         <ResizablePanel defaultSize={78}>
           <div className="flex h-full flex-col">
             <WorkspaceTabs
-              openTestIds={workspace.openTestIds}
+              tabs={renderTabs}
+              settingsOpen={workspace.settingsOpen}
               active={workspace.active}
-              tests={workspaceTabInfos}
-              onActivate={setActiveWorkspaceTab}
-              onClose={closeTestTab}
+              onActivate={activateTab}
+              onClose={closeWorkspaceTab}
             />
             <div className="min-h-0 flex-1">
-              {workspace.active === 'canvas' ? (
+              {activeIsSettings && project ? (
+                <SettingsPanel project={project} />
+              ) : activeIsFlow ? (
                 showConsole ? (
                   <ResizablePanelGroup direction="vertical">
                     <ResizablePanel defaultSize={65} minSize={30}>
@@ -685,16 +728,23 @@ const ProjectDetailContent = () => {
                 ) : (
                   <TestCanvas />
                 )
-              ) : (
+              ) : activeIsTest ? (
                 <TestCaseEditor
-                  key={workspace.active}
-                  testCaseId={workspace.active === '__new__' ? undefined : (workspace.active as string)}
-                  onClose={() => closeTestTab(workspace.active as string)}
+                  key={workspace.active as string}
+                  testCaseId={activeTestId === '__new__' ? undefined : (activeTestId as string)}
+                  onClose={() => closeWorkspaceTab(workspace.active as string)}
                   onCreated={(newId) => {
-                    closeTestTab(workspace.active as string);
+                    closeWorkspaceTab(workspace.active as string);
                     openTestTab(newId);
                   }}
                 />
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center text-center p-8">
+                  <p className="text-sm text-muted-foreground">Pick a test or flow to begin</p>
+                  <p className="text-xs text-muted-foreground/70 mt-1">
+                    Open a test case or a flow from the left, or create a new one.
+                  </p>
+                </div>
               )}
             </div>
           </div>
@@ -737,21 +787,6 @@ const ProjectDetailContent = () => {
           testGroups={testGroups}
           activeFlowId={activeFlowId}
           onClose={() => setValidatorOpen(false)}
-        />
-      )}
-
-      {project && (
-        <ProjectSettingsDialog
-          open={settingsOpen}
-          onOpenChange={setSettingsOpen}
-          project={project}
-          onSave={async (settings) => {
-            if (!projectId) return;
-            await updateProjectMutation.mutateAsync({
-              id: projectId,
-              data: { settings },
-            });
-          }}
         />
       )}
 

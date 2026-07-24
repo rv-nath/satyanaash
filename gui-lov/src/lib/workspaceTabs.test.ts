@@ -1,58 +1,107 @@
 import { describe, it, expect } from "vitest";
 import {
-  initialWorkspaceState, openTestTab, closeTestTab, setActive, switchFlow,
+  MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings,
+  closeTab, setActive, tabCount, atCap,
 } from "@/lib/workspaceTabs";
 
 describe("workspaceTabs", () => {
-  it("starts on the pinned canvas tab with no open tests", () => {
+  it("starts empty (no active tab)", () => {
     const s = initialWorkspaceState();
-    expect(s.active).toBe("canvas");
-    expect(s.openTestIds).toEqual([]);
+    expect(s.tabs).toEqual([]);
+    expect(s.settingsOpen).toBe(false);
+    expect(s.active).toBeNull();
   });
 
-  it("opening a test adds it and activates it", () => {
-    const s = openTestTab(initialWorkspaceState(), "t1");
-    expect(s.openTestIds).toEqual(["t1"]);
-    expect(s.active).toBe("t1");
+  it("opens a test tab and activates it", () => {
+    const { state } = openTest(initialWorkspaceState(), "t1");
+    expect(state.tabs).toEqual([{ kind: "test", id: "t1" }]);
+    expect(state.active).toBe(tabKey("test", "t1"));
   });
 
-  it("opening an already-open test does not duplicate, just activates", () => {
-    let s = openTestTab(initialWorkspaceState(), "t1");
-    s = openTestTab(s, "t2");
-    s = openTestTab(s, "t1");
-    expect(s.openTestIds).toEqual(["t1", "t2"]);
-    expect(s.active).toBe("t1");
+  it("opening an already-open test just activates it (no dup)", () => {
+    let s = openTest(initialWorkspaceState(), "t1").state;
+    s = openTest(s, "t2").state;
+    s = openTest(s, "t1").state;
+    expect(s.tabs.map((t) => t.id)).toEqual(["t1", "t2"]);
+    expect(s.active).toBe(tabKey("test", "t1"));
   });
 
-  it("closing the active test activates its right neighbor, else left, else canvas", () => {
+  it("opens a flow tab", () => {
+    const { state } = openFlow(initialWorkspaceState(), "f1");
+    expect(state.tabs).toEqual([{ kind: "flow", id: "f1" }]);
+    expect(state.active).toBe(tabKey("flow", "f1"));
+  });
+
+  it("reuses the active flow tab when it is unedited (canReuseActive)", () => {
+    const { state: s1 } = openFlow(initialWorkspaceState(), "f1");
+    const { state: s2 } = openFlow(s1, "f2", { canReuseActive: true });
+    expect(s2.tabs).toEqual([{ kind: "flow", id: "f2" }]); // f1 replaced
+    expect(s2.active).toBe(tabKey("flow", "f2"));
+  });
+
+  it("opens a new flow tab when the active flow is edited (no reuse)", () => {
+    const { state: s1 } = openFlow(initialWorkspaceState(), "f1");
+    const { state: s2 } = openFlow(s1, "f2", { canReuseActive: false });
+    expect(s2.tabs.map((t) => t.id)).toEqual(["f1", "f2"]);
+    expect(s2.active).toBe(tabKey("flow", "f2"));
+  });
+
+  it("does not reuse when the active tab is a test (canReuseActive ignored)", () => {
+    let s = openTest(initialWorkspaceState(), "t1").state;
+    const { state } = openFlow(s, "f1", { canReuseActive: true });
+    expect(state.tabs.map((t) => `${t.kind}:${t.id}`)).toEqual(["test:t1", "flow:f1"]);
+  });
+
+  it("opens settings as a singleton and activates it", () => {
+    const s = openSettings(initialWorkspaceState());
+    expect(s.settingsOpen).toBe(true);
+    expect(s.active).toBe("settings");
+    // opening again is idempotent
+    const s2 = openSettings(s);
+    expect(s2.settingsOpen).toBe(true);
+  });
+
+  it("caps flow/test tabs at MAX_TABS and signals when capped", () => {
     let s = initialWorkspaceState();
-    s = openTestTab(s, "t1");
-    s = openTestTab(s, "t2");
-    s = openTestTab(s, "t3");
-    s = setActive(s, "t2");
-    s = closeTestTab(s, "t2");
-    expect(s.openTestIds).toEqual(["t1", "t3"]);
-    expect(s.active).toBe("t3"); // right neighbor
-    s = closeTestTab(s, "t3");
-    expect(s.active).toBe("t1"); // left neighbor when no right
-    s = closeTestTab(s, "t1");
-    expect(s.active).toBe("canvas"); // nothing left
+    for (let i = 0; i < MAX_TABS; i++) s = openTest(s, `t${i}`).state;
+    expect(tabCount(s)).toBe(MAX_TABS);
+    expect(atCap(s)).toBe(true);
+    const r = openTest(s, "overflow");
+    expect(r.capped).toBe(true);
+    expect(r.state.tabs.length).toBe(MAX_TABS); // unchanged
   });
 
-  it("closing a non-active test keeps the active tab", () => {
-    let s = openTestTab(initialWorkspaceState(), "t1");
-    s = openTestTab(s, "t2");
-    s = setActive(s, "t2");
-    s = closeTestTab(s, "t1");
-    expect(s.openTestIds).toEqual(["t2"]);
-    expect(s.active).toBe("t2");
+  it("settings does not count toward the cap", () => {
+    let s = initialWorkspaceState();
+    for (let i = 0; i < MAX_TABS; i++) s = openTest(s, `t${i}`).state;
+    const withSettings = openSettings(s);
+    expect(withSettings.settingsOpen).toBe(true);
+    expect(tabCount(withSettings)).toBe(MAX_TABS);
   });
 
-  it("switching flow keeps open test tabs but returns to canvas", () => {
-    let s = openTestTab(initialWorkspaceState(), "t1");
-    s = openTestTab(s, "t2");
-    s = switchFlow(s);
-    expect(s.openTestIds).toEqual(["t1", "t2"]);
-    expect(s.active).toBe("canvas");
+  it("closing the active tab picks the right neighbor, then left, then null", () => {
+    let s = initialWorkspaceState();
+    s = openTest(s, "t1").state;
+    s = openTest(s, "t2").state;
+    s = openTest(s, "t3").state;
+    s = setActive(s, tabKey("test", "t2"));
+    s = closeTab(s, tabKey("test", "t2"));
+    expect(s.active).toBe(tabKey("test", "t3")); // right neighbor
+    s = closeTab(s, tabKey("test", "t3"));
+    expect(s.active).toBe(tabKey("test", "t1")); // left neighbor
+    s = closeTab(s, tabKey("test", "t1"));
+    expect(s.active).toBeNull(); // empty
+  });
+
+  it("closing settings falls back to the last tab, or null", () => {
+    let s = openTest(initialWorkspaceState(), "t1").state;
+    s = openSettings(s);
+    s = closeTab(s, "settings");
+    expect(s.settingsOpen).toBe(false);
+    expect(s.active).toBe(tabKey("test", "t1"));
+
+    let empty = openSettings(initialWorkspaceState());
+    empty = closeTab(empty, "settings");
+    expect(empty.active).toBeNull();
   });
 });
