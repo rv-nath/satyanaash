@@ -738,8 +738,8 @@ const ProjectDetailContent = () => {
                   }}
                 />
               ) : (
-                <div className="relative flex h-full flex-col items-center justify-center text-center p-8 overflow-hidden">
-                  {/* Faint welcome watermark — a subtle flow motif that blends into the bg */}
+                <div className="flex h-full flex-col items-center justify-center text-center p-8">
+                  {/* Subtle welcome illustration — a small flow motif above the message */}
                   <svg
                     aria-hidden="true"
                     viewBox="0 0 260 210"
@@ -748,7 +748,7 @@ const ProjectDetailContent = () => {
                     strokeWidth={2.5}
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] max-w-[55%] text-foreground opacity-[0.05]"
+                    className="pointer-events-none w-28 mb-6 text-muted-foreground opacity-[0.18]"
                   >
                     {/* edges */}
                     <path d="M130 40 V64" />
@@ -764,12 +764,10 @@ const ProjectDetailContent = () => {
                     <circle cx="130" cy="116" r="2.5" />
                   </svg>
 
-                  <div className="relative">
-                    <p className="text-sm text-muted-foreground">Pick a test or flow to begin</p>
-                    <p className="text-xs text-muted-foreground/70 mt-1">
-                      Open a test case or a flow from the left, or create a new one.
-                    </p>
-                  </div>
+                  <p className="text-sm text-muted-foreground">Pick a test or flow to begin</p>
+                  <p className="text-xs text-muted-foreground/70 mt-1">
+                    Open a test case or a flow from the left, or create a new one.
+                  </p>
                 </div>
               )}
             </div>
