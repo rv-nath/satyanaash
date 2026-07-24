@@ -1,5 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
+import {
+  readGlobals, readEnvironments, effectiveEnv,
+  getActiveEnvId, setActiveEnvId as persistActiveEnvId,
+} from "@/lib/environments";
 import { generateUUID } from "@/lib/utils/uuid";
 import {
   ArrowLeft, Play, Settings, CheckCircle2, Download, Bug, Loader2, AlertCircle,
@@ -147,6 +151,18 @@ const ProjectDetailContent = () => {
   // API mutation for project settings
   const updateProjectMutation = useUpdateProject();
 
+  // Environments & globals (Plan 4)
+  const globals = useMemo(() => readGlobals(project?.settings), [project?.settings]);
+  const environments = useMemo(() => readEnvironments(project?.settings), [project?.settings]);
+  const [activeEnvId, setActiveEnvIdState] = useState<string | null>(
+    () => (id ? getActiveEnvId(id) : null)
+  );
+  const activeEnv = environments.find((e) => e.id === activeEnvId);
+  const selectEnv = (envId: string | null) => {
+    setActiveEnvIdState(envId);
+    if (id) persistActiveEnvId(id, envId);
+  };
+
   const handleExecute = async (mode: "run" | "debug" = "run") => {
     if (!activeFlowId) {
       toast.error("No flow selected to execute");
@@ -156,13 +172,13 @@ const ProjectDetailContent = () => {
     // Show console panel when executing
     setShowConsole(true);
 
-    // Extract project-level variables to pass as environment
-    const projectVars = (project?.settings?.variables as Record<string, unknown>) || {};
+    // Globals overlaid with the active environment (env wins) — see Plan 4.
+    const env = effectiveEnv(globals, environments, activeEnvId);
 
     // Execute using SSE streaming - logs are handled by the hook
     await executeFlow(activeFlowId, {
       debug_mode: mode === "debug",
-      environment: projectVars,
+      environment: env,
     });
   };
 
@@ -402,6 +418,36 @@ const ProjectDetailContent = () => {
           {/* Canvas actions - only when on canvas with flow */}
           {!isEditing && activeFlow && (
             <>
+              {/* Environment switcher */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-1.5 font-normal">
+                    <span className="text-muted-foreground">Env:</span>
+                    {activeEnv ? activeEnv.name : "None"}
+                    <ChevronDown className="w-3 h-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem onClick={() => selectEnv(null)}>
+                    {!activeEnvId && <CheckCircle2 className="w-3.5 h-3.5 mr-2 text-primary" />}
+                    <span className={!activeEnvId ? "" : "ml-[22px]"}>No environment</span>
+                  </DropdownMenuItem>
+                  {environments.length > 0 && <DropdownMenuSeparator />}
+                  {environments.map((env) => (
+                    <DropdownMenuItem key={env.id} onClick={() => selectEnv(env.id)}>
+                      {activeEnvId === env.id && <CheckCircle2 className="w-3.5 h-3.5 mr-2 text-primary" />}
+                      <span className={activeEnvId === env.id ? "" : "ml-[22px]"}>{env.name}</span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+                    <Settings className="w-3.5 h-3.5 mr-2" /> Manage environments…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
+              <div className="h-5 w-px bg-border mx-2" />
+
               {/* Run - prominent, first */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
