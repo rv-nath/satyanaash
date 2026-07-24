@@ -4,7 +4,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Plus, X, Trash2, Braces, Layers, Info } from "lucide-react";
+import { Plus, X, Trash2, Copy, Braces, Layers, Info } from "lucide-react";
+import {
+  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogFooter,
+  AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
 import { Project } from "@/lib/api/types";
 import { readGlobals, readEnvironments, genEnvId } from "@/lib/environments";
 import { useUpdateProject } from "@/hooks/useApi";
@@ -70,6 +74,7 @@ export function SettingsPanel({ project }: { project: Project }) {
   const [globals, setGlobals] = useState<VariableRow[]>([]);
   const [environments, setEnvironments] = useState<EnvDraft[]>([]);
   const [renamingEnvId, setRenamingEnvId] = useState<string | null>(null);
+  const [deleteEnvId, setDeleteEnvId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -86,14 +91,22 @@ export function SettingsPanel({ project }: { project: Project }) {
     setEnvironments((prev) => [...prev, draft]);
     setView(`env:${draft.id}`);
   };
-  const removeEnv = (envId: string) => {
-    const env = environments.find((e) => e.id === envId);
-    if (!window.confirm(`Delete environment "${env?.name || "this environment"}"? Its variables are removed when you Save.`)) {
-      return;
-    }
+  const performDeleteEnv = (envId: string) => {
     setEnvironments((prev) => prev.filter((e) => e.id !== envId));
     setView((cur) => (cur === `env:${envId}` ? "globals" : cur));
     if (renamingEnvId === envId) setRenamingEnvId(null);
+  };
+  const cloneEnv = (envId: string) => {
+    const env = environments.find((e) => e.id === envId);
+    if (!env) return;
+    const draft: EnvDraft = { id: genEnvId(), name: `${env.name} copy`, rows: env.rows.map((r) => ({ ...r })) };
+    setEnvironments((prev) => {
+      const idx = prev.findIndex((e) => e.id === envId);
+      const next = prev.slice();
+      next.splice(idx + 1, 0, draft);
+      return next;
+    });
+    setView(`env:${draft.id}`);
   };
   const renameEnv = (envId: string, n: string) =>
     setEnvironments((prev) => prev.map((e) => (e.id === envId ? { ...e, name: n } : e)));
@@ -197,8 +210,17 @@ export function SettingsPanel({ project }: { project: Project }) {
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground"
+                      onClick={() => cloneEnv(env.id)}
+                      title="Clone environment"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       className="h-6 w-6 mr-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
-                      onClick={() => removeEnv(env.id)}
+                      onClick={() => setDeleteEnvId(env.id)}
                       title="Delete environment"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -266,6 +288,30 @@ export function SettingsPanel({ project }: { project: Project }) {
           {isSaving ? "Saving..." : "Save"}
         </Button>
       </div>
+
+      <AlertDialog open={!!deleteEnvId} onOpenChange={(o) => { if (!o) setDeleteEnvId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete environment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              "{environments.find((e) => e.id === deleteEnvId)?.name || "This environment"}" and its variables will be
+              removed when you Save. This can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (deleteEnvId) performDeleteEnv(deleteEnvId);
+                setDeleteEnvId(null);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
