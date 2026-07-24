@@ -739,34 +739,36 @@ const ProjectDetailContent = () => {
                 />
               ) : (
                 <div className="flex h-full flex-col items-center justify-center text-center p-8">
-                  {/* Subtle welcome illustration — a small flow motif above the message */}
+                  {/* Brand mark — an S-shaped test flow that arrives at a checkmark ("truth"). */}
                   <svg
                     aria-hidden="true"
-                    viewBox="0 0 260 210"
+                    viewBox="0 0 96 122"
                     fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2.5}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="pointer-events-none w-28 mb-6 text-muted-foreground opacity-[0.18]"
+                    className="pointer-events-none w-[84px] mb-5"
                   >
-                    {/* edges */}
-                    <path d="M130 40 V64" />
-                    <path d="M130 104 V128" />
-                    <path d="M130 168 V186" />
-                    {/* nodes */}
-                    <rect x="100" y="14" width="60" height="26" rx="13" />
-                    <rect x="88" y="64" width="84" height="40" rx="9" />
-                    <rect x="88" y="128" width="84" height="40" rx="9" />
-                    <rect x="100" y="186" width="60" height="24" rx="12" />
-                    {/* little connector dots */}
-                    <circle cx="130" cy="52" r="2.5" />
-                    <circle cx="130" cy="116" r="2.5" />
+                    {/* the flow path (S) */}
+                    <path
+                      d="M70 22 C 40 14, 26 40, 48 60 C 70 80, 56 108, 28 100"
+                      stroke="hsl(var(--muted-foreground))"
+                      strokeWidth={3.5}
+                      strokeLinecap="round"
+                      opacity={0.4}
+                    />
+                    {/* start node */}
+                    <circle cx="70" cy="22" r="5" fill="hsl(var(--background))" stroke="hsl(var(--muted-foreground))" strokeWidth={3} opacity={0.5} />
+                    {/* mid waypoint */}
+                    <circle cx="48" cy="60" r="3.5" fill="hsl(var(--muted-foreground))" opacity={0.45} />
+                    {/* terminal: verified (the one accent) */}
+                    <circle cx="28" cy="100" r="12" fill="hsl(var(--primary))" />
+                    <path d="M22.5 100.5 l4 4 L34 95" stroke="hsl(var(--primary-foreground))" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
 
-                  <p className="text-sm text-muted-foreground">Pick a test or flow to begin</p>
-                  <p className="text-xs text-muted-foreground/70 mt-1">
-                    Open a test case or a flow from the left, or create a new one.
+                  <p className="font-mono text-sm lowercase tracking-[0.32em] text-muted-foreground/70 pl-[0.32em]">
+                    satyanaash
+                  </p>
+                  <p className="mt-4 text-sm text-muted-foreground">Pick a test or flow to begin</p>
+                  <p className="mt-1 text-xs text-muted-foreground/70">
+                    Open one from the left, or create a new one.
                   </p>
                 </div>
               )}
