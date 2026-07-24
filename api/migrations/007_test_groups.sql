@@ -1,4 +1,4 @@
--- Test groups: single-level, user-created buckets for organizing test cases
+-- Test groups: single-level user-created buckets for organizing test cases
 CREATE TABLE IF NOT EXISTS test_groups (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -7,5 +7,6 @@ CREATE TABLE IF NOT EXISTS test_groups (
     updated_at TEXT NOT NULL
 );
 
--- Nullable group_id on test_cases; NULL = Ungrouped (idempotent via pool.rs guard)
+-- Nullable group_id on test_cases. A NULL value means Ungrouped.
+-- Idempotent via the duplicate-column guard in pool.rs.
 ALTER TABLE test_cases ADD COLUMN group_id TEXT;

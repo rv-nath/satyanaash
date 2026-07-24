@@ -18,11 +18,11 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::api::{executions, flows, projects, test_cases};
+use crate::api::{executions, flows, groups, projects, test_cases};
 use crate::api::executions::ExecutionState;
 use crate::config::Config;
 use crate::db::pool::init_pool;
-use crate::db::repositories::{SqlxFlowRepository, SqlxProjectRepository, SqlxTestCaseRepository};
+use crate::db::repositories::{SqlxFlowRepository, SqlxProjectRepository, SqlxTestCaseRepository, SqlxTestGroupRepository};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,6 +44,7 @@ async fn main() -> anyhow::Result<()> {
     // Create repositories
     let project_repo = Arc::new(SqlxProjectRepository::new(pool.clone()));
     let test_case_repo = Arc::new(SqlxTestCaseRepository::new(pool.clone()));
+    let test_group_repo = Arc::new(SqlxTestGroupRepository::new(pool.clone()));
     let flow_repo = Arc::new(SqlxFlowRepository::new(pool.clone()));
 
     // Configure CORS
@@ -71,6 +72,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/test-cases/{id}", patch(test_cases::update_test_case))
         .route("/api/v1/test-cases/{id}", delete(test_cases::delete_test_case))
         .with_state(test_case_repo.clone());
+
+    // Build test group routes
+    let group_routes = Router::new()
+        .route("/api/v1/projects/{project_id}/groups", post(groups::create_group))
+        .route("/api/v1/projects/{project_id}/groups", get(groups::list_groups))
+        .route("/api/v1/groups/{id}", patch(groups::update_group))
+        .route("/api/v1/groups/{id}", delete(groups::delete_group))
+        .with_state(test_group_repo.clone());
 
     // Build flow routes
     let flow_routes = Router::new()
@@ -105,6 +114,7 @@ async fn main() -> anyhow::Result<()> {
         // Merge all route groups
         .merge(project_routes)
         .merge(test_case_routes)
+        .merge(group_routes)
         .merge(flow_routes)
         .merge(execution_routes)
         .layer(cors)
