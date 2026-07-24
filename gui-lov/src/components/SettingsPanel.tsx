@@ -84,7 +84,10 @@ export function SettingsPanel({ project }: { project: Project }) {
     setEnvironments(readEnvironments(project.settings).map((e) => ({ id: e.id, name: e.name, rows: objToRows(e.variables) })));
     setName(project.name || "");
     setDescription(project.description || "");
-  }, [project]);
+    // Initialize once per project — avoids clobbering in-progress edits when the
+    // project cache updates (e.g. after an immediate env delete).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
 
   const addEnv = () => {
     const draft: EnvDraft = { id: genEnvId(), name: `env-${environments.length + 1}`, rows: [] };
@@ -92,6 +95,16 @@ export function SettingsPanel({ project }: { project: Project }) {
     setView(`env:${draft.id}`);
   };
   const performDeleteEnv = (envId: string) => {
+    // Persist the removal immediately, built from the *saved* settings so it
+    // doesn't drag in other unsaved edits in this panel.
+    const remaining = readEnvironments(project.settings).filter((e) => e.id !== envId);
+    const newSettings: Record<string, unknown> = { ...(project.settings || {}) };
+    newSettings.environments = remaining.length > 0 ? remaining : undefined;
+    updateProject.mutate(
+      { id: project.id, data: { settings: newSettings } },
+      { onSuccess: () => toast.success("Environment deleted"), onError: () => toast.error("Failed to delete environment") }
+    );
+    // Reflect in the local draft too.
     setEnvironments((prev) => prev.filter((e) => e.id !== envId));
     setView((cur) => (cur === `env:${envId}` ? "globals" : cur));
     if (renamingEnvId === envId) setRenamingEnvId(null);
@@ -294,8 +307,8 @@ export function SettingsPanel({ project }: { project: Project }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete environment?</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove "{environments.find((e) => e.id === deleteEnvId)?.name || "this environment"}" and its variables?
-              The change takes effect when you click Save.
+              "{environments.find((e) => e.id === deleteEnvId)?.name || "This environment"}" and its variables will be
+              deleted. This can't be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
