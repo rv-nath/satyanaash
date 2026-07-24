@@ -79,10 +79,10 @@ const VarRows = ({ rows, onChange }: { rows: VariableRow[]; onChange: (rows: Var
   );
 };
 
-export function SettingsPanel({ project }: { project: Project }) {
+export function SettingsPanel({ project, initialView }: { project: Project; initialView?: string }) {
   const updateProject = useUpdateProject();
-  // view: "globals" | "project" | `env:<id>`
-  const [view, setView] = useState<string>("globals");
+  // view: "globals" | "project" | "environments" (empty landing) | `env:<id>`
+  const [view, setView] = useState<string>(() => initialView || "globals");
   const [globals, setGlobals] = useState<VariableRow[]>([]);
   const [environments, setEnvironments] = useState<EnvDraft[]>([]);
   const [renamingEnvId, setRenamingEnvId] = useState<string | null>(null);
@@ -296,6 +296,19 @@ export function SettingsPanel({ project }: { project: Project }) {
                 </p>
               </div>
               <VarRows rows={selectedEnv.rows} onChange={(rows) => setEnvRows(selectedEnv.id, rows)} />
+            </div>
+          )}
+
+          {view === "environments" && (
+            <div className="max-w-3xl">
+              <h3 className="text-base font-semibold">Environments</h3>
+              <p className="text-sm text-muted-foreground mt-0.5 mb-4">
+                Environments hold variables that override globals when active — e.g. a per-stage{" "}
+                <code className="px-1 py-0.5 bg-muted rounded">baseUrl</code>. You don't have any yet.
+              </p>
+              <Button variant="outline" size="sm" onClick={addEnv}>
+                <Plus className="w-4 h-4 mr-2" /> New environment
+              </Button>
             </div>
           )}
 

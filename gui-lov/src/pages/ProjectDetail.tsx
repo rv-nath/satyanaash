@@ -12,6 +12,7 @@ import {
   AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WorkspaceWelcome } from "@/components/WorkspaceWelcome";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
@@ -203,6 +204,18 @@ const ProjectDetailContent = () => {
     if (id) persistActiveEnvId(id, envId);
   };
 
+  // Settings tab landing section. Open with an optional view so, e.g., the
+  // Environments card / "Manage environments" land on the environments area.
+  const [settingsInitialView, setSettingsInitialView] = useState<string | undefined>(undefined);
+  const envLandingView = useMemo(
+    () => (environments[0] ? `env:${environments[0].id}` : "environments"),
+    [environments]
+  );
+  const openSettings = (view?: string) => {
+    setSettingsInitialView(view);
+    openSettingsTab();
+  };
+
   const handleExecute = async (mode: "run" | "debug" = "run") => {
     if (!activeFlowId) {
       toast.error("No flow selected to execute");
@@ -280,6 +293,7 @@ const ProjectDetailContent = () => {
         }
       });
       setActiveFlowId(newFlow.id);
+      openFlowTab(newFlow.id, false);
       toast.success(`Created "${flowName}"`);
     } catch (err) {
       toast.error("Failed to create flow");
@@ -477,7 +491,7 @@ const ProjectDetailContent = () => {
                 </DropdownMenuItem>
               ))}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => openSettingsTab()}>
+              <DropdownMenuItem onClick={() => openSettings(envLandingView)}>
                 <Settings className="w-3.5 h-3.5 mr-2" /> Manage environments…
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -640,7 +654,7 @@ const ProjectDetailContent = () => {
                 </>
               )}
               <DropdownMenuLabel>Project</DropdownMenuLabel>
-              <DropdownMenuItem onClick={() => openSettingsTab()}>
+              <DropdownMenuItem onClick={() => openSettings()}>
                 <Settings className="w-4 h-4 mr-2" /> Project Settings...
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -712,7 +726,7 @@ const ProjectDetailContent = () => {
             />
             <div className="min-h-0 flex-1">
               {activeIsSettings && project ? (
-                <SettingsPanel project={project} />
+                <SettingsPanel project={project} initialView={settingsInitialView} />
               ) : activeIsFlow ? (
                 showConsole ? (
                   <ResizablePanelGroup direction="vertical">
@@ -738,39 +752,11 @@ const ProjectDetailContent = () => {
                   }}
                 />
               ) : (
-                <div className="flex h-full flex-col items-center justify-center text-center p-8">
-                  {/* Brand mark — an S-shaped test flow that arrives at a checkmark ("truth"). */}
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 96 122"
-                    fill="none"
-                    className="pointer-events-none w-[84px] mb-5"
-                  >
-                    {/* the flow path (S) */}
-                    <path
-                      d="M70 22 C 40 14, 26 40, 48 60 C 70 80, 56 108, 28 100"
-                      stroke="hsl(var(--muted-foreground))"
-                      strokeWidth={3.5}
-                      strokeLinecap="round"
-                      opacity={0.4}
-                    />
-                    {/* start node */}
-                    <circle cx="70" cy="22" r="5" fill="hsl(var(--background))" stroke="hsl(var(--muted-foreground))" strokeWidth={3} opacity={0.5} />
-                    {/* mid waypoint */}
-                    <circle cx="48" cy="60" r="3.5" fill="hsl(var(--muted-foreground))" opacity={0.45} />
-                    {/* terminal: verified (the one accent) */}
-                    <circle cx="28" cy="100" r="12" fill="hsl(var(--primary))" />
-                    <path d="M22.5 100.5 l4 4 L34 95" stroke="hsl(var(--primary-foreground))" strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-
-                  <p className="font-mono text-sm lowercase tracking-[0.32em] text-muted-foreground/70 pl-[0.32em]">
-                    satyanaash
-                  </p>
-                  <p className="mt-4 text-sm text-muted-foreground">Pick a test or flow to begin</p>
-                  <p className="mt-1 text-xs text-muted-foreground/70">
-                    Open one from the left, or create a new one.
-                  </p>
-                </div>
+                <WorkspaceWelcome
+                  onNewTest={() => openTestCaseEditor()}
+                  onNewFlow={handleCreateFlow}
+                  onOpenEnvironments={() => openSettings(envLandingView)}
+                />
               )}
             </div>
           </div>
