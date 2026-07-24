@@ -13,6 +13,7 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCase, useCreateTestCase, useUpdateTestCase, useExecuteTestCase, useDeleteTestCase } from "@/hooks/useApi";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { getUpstreamVariables } from "@/lib/variableUtils";
 import { preTestSnippets, postTestSnippets, getSnippetsByCategory } from "@/lib/testSnippets";
 import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/components/HeadersEditor";
@@ -334,9 +335,9 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
     }
   };
 
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const handleDelete = async () => {
     if (isCreateMode || !testCaseId || !projectId) return;
-    if (!window.confirm(`Delete test case "${name || "this test"}"? This can't be undone.`)) return;
     try {
       await deleteMutation.mutateAsync({ id: testCaseId, projectId });
       toast.success("Test case deleted");
@@ -531,7 +532,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
             <Button
               variant="ghost"
               size="icon"
-              onClick={handleDelete}
+              onClick={() => setConfirmDeleteOpen(true)}
               disabled={deleteMutation.isPending}
               title="Delete test case"
               className="text-destructive hover:text-destructive"
@@ -1145,6 +1146,14 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           </span>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onOpenChange={setConfirmDeleteOpen}
+        title="Delete test case?"
+        description={`"${name || "This test"}" will be deleted. This can't be undone.`}
+        onConfirm={() => { setConfirmDeleteOpen(false); handleDelete(); }}
+      />
     </div>
   );
 };

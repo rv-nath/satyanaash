@@ -17,6 +17,7 @@ import {
   useTestCases, useTestGroups, useCreateGroup, useRenameGroup, useDeleteGroup,
   useUpdateTestCase, useCreateTestCase,
 } from "@/hooks/useApi";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface TestInventoryProps {
   onAddTestCase: () => void;
@@ -178,17 +179,33 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
     setRenameValue("");
   };
 
+  // Confirmation dialog (shared for group + test deletes)
+  const [pendingConfirm, setPendingConfirm] = useState<
+    { title: string; description: React.ReactNode; onConfirm: () => void } | null
+  >(null);
+
   const handleDeleteGroup = (id: string, name: string) => {
     if (!projectId) return;
-    if (!window.confirm(`Delete group "${name}"? Its test cases move to Ungrouped.`)) return;
-    deleteGroup.mutate(
-      { id, projectId },
-      {
-        onSuccess: () => toast.success(`Deleted "${name}" — its tests moved to Ungrouped`),
-        onError: () => toast.error("Failed to delete group"),
-      }
-    );
+    setPendingConfirm({
+      title: "Delete group?",
+      description: `"${name}" will be deleted. Its test cases move to Ungrouped.`,
+      onConfirm: () =>
+        deleteGroup.mutate(
+          { id, projectId },
+          {
+            onSuccess: () => toast.success(`Deleted "${name}" — its tests moved to Ungrouped`),
+            onError: () => toast.error("Failed to delete group"),
+          }
+        ),
+    });
   };
+
+  const requestDeleteTest = (test: UiTest) =>
+    setPendingConfirm({
+      title: "Delete test case?",
+      description: `"${test.name}" will be deleted. This can't be undone.`,
+      onConfirm: () => onDeleteTestCase(test.id),
+    });
 
   const handleMoveTest = (testId: string, groupId: string) => {
     if (!projectId) return;
@@ -530,7 +547,7 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
                             }}
                             onDoubleClick={() => handleDoubleClick(test.id)}
                             onEditTestCase={onEditTestCase}
-                            onDeleteTestCase={onDeleteTestCase}
+                            onRequestDelete={requestDeleteTest}
                             onMove={handleMoveTest}
                             onClone={handleClone}
                             getMethodColor={getMethodColor}
@@ -555,6 +572,16 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
           </p>
         </div>
       )}
+
+      {pendingConfirm && (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => { if (!o) setPendingConfirm(null); }}
+          title={pendingConfirm.title}
+          description={pendingConfirm.description}
+          onConfirm={() => { pendingConfirm.onConfirm(); setPendingConfirm(null); }}
+        />
+      )}
     </div>
   );
 };
@@ -577,14 +604,14 @@ interface TestRowProps {
   onClick: () => void;
   onDoubleClick: () => void;
   onEditTestCase: (test: UiTest) => void;
-  onDeleteTestCase: (testId: string) => void;
+  onRequestDelete: (test: UiTest) => void;
   onMove: (testId: string, groupId: string) => void;
   onClone: (testId: string) => void;
   getMethodColor: (method: string) => string;
 }
 
 const TestRow = ({
-  test, groups, isSelected, onClick, onDoubleClick, onEditTestCase, onDeleteTestCase, onMove, onClone, getMethodColor,
+  test, groups, isSelected, onClick, onDoubleClick, onEditTestCase, onRequestDelete, onMove, onClone, getMethodColor,
 }: TestRowProps) => {
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData(
@@ -671,14 +698,7 @@ const TestRow = ({
             </DropdownMenuSubContent>
           </DropdownMenuSub>
           <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className="text-destructive"
-            onClick={() => {
-              if (window.confirm(`Delete test case "${test.name}"? This can't be undone.`)) {
-                onDeleteTestCase(test.id);
-              }
-            }}
-          >
+          <DropdownMenuItem className="text-destructive" onClick={() => onRequestDelete(test)}>
             <Trash2 className="w-3 h-3 mr-2" />
             Delete
           </DropdownMenuItem>

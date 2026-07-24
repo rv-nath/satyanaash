@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { FolderTree, Plus, Edit2, Trash2, MoreVertical } from "lucide-react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -16,6 +17,7 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }
   const { testGroups } = useTestProject();
   // Single click selects (highlights); double click opens — mirrors the tests rail.
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
 
   return (
     <div className="h-full flex flex-col">
@@ -80,9 +82,9 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }
                         <Edit2 className="w-3 h-3 mr-2" />
                         Edit Flow
                       </DropdownMenuItem>
-                      <DropdownMenuItem 
+                      <DropdownMenuItem
                         className="text-destructive"
-                        onClick={() => onDeleteGroup(group.id)}
+                        onClick={() => setPendingDelete({ id: group.id, name: group.name })}
                       >
                         <Trash2 className="w-3 h-3 mr-2" />
                         Delete Flow
@@ -94,6 +96,16 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }
           )}
         </div>
       </ScrollArea>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => { if (!o) setPendingDelete(null); }}
+          title="Delete flow?"
+          description={`"${pendingDelete.name}" will be deleted. This can't be undone.`}
+          onConfirm={() => { onDeleteGroup(pendingDelete.id); setPendingDelete(null); }}
+        />
+      )}
     </div>
   );
 };
