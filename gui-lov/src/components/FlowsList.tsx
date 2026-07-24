@@ -54,8 +54,8 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }
                   key={group.id}
                   onClick={() => setSelectedFlowId(group.id)}
                   onDoubleClick={() => { setSelectedFlowId(group.id); onOpenFlow(group.id); }}
-                  className={`flex items-center gap-2 h-[var(--rail-row-h)] px-2 hover:bg-sidebar-accent rounded-md transition-colors group cursor-pointer ${
-                    selectedFlowId === group.id ? 'bg-sidebar-accent border-l-2 border-primary' : ''
+                  className={`group flex items-center gap-2 h-[var(--rail-row-h)] px-2 rounded-md border cursor-pointer ${
+                    selectedFlowId === group.id ? 'bg-primary/10 border-primary/40' : 'border-transparent hover:bg-sidebar-accent'
                   }`}
                 >
                   <FolderTree className="w-4 h-4 flex-shrink-0 text-node-group" />
