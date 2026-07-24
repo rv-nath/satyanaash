@@ -738,11 +738,38 @@ const ProjectDetailContent = () => {
                   }}
                 />
               ) : (
-                <div className="flex h-full flex-col items-center justify-center text-center p-8">
-                  <p className="text-sm text-muted-foreground">Pick a test or flow to begin</p>
-                  <p className="text-xs text-muted-foreground/70 mt-1">
-                    Open a test case or a flow from the left, or create a new one.
-                  </p>
+                <div className="relative flex h-full flex-col items-center justify-center text-center p-8 overflow-hidden">
+                  {/* Faint welcome watermark — a subtle flow motif that blends into the bg */}
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 260 210"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2.5}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] max-w-[55%] text-foreground opacity-[0.05]"
+                  >
+                    {/* edges */}
+                    <path d="M130 40 V64" />
+                    <path d="M130 104 V128" />
+                    <path d="M130 168 V186" />
+                    {/* nodes */}
+                    <rect x="100" y="14" width="60" height="26" rx="13" />
+                    <rect x="88" y="64" width="84" height="40" rx="9" />
+                    <rect x="88" y="128" width="84" height="40" rx="9" />
+                    <rect x="100" y="186" width="60" height="24" rx="12" />
+                    {/* little connector dots */}
+                    <circle cx="130" cy="52" r="2.5" />
+                    <circle cx="130" cy="116" r="2.5" />
+                  </svg>
+
+                  <div className="relative">
+                    <p className="text-sm text-muted-foreground">Pick a test or flow to begin</p>
+                    <p className="text-xs text-muted-foreground/70 mt-1">
+                      Open a test case or a flow from the left, or create a new one.
+                    </p>
+                  </div>
                 </div>
               )}
             </div>
