@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,7 +34,19 @@ const rowsToObj = (rows: VariableRow[]): Record<string, string> => {
 
 /** Editable name/value table — the only thing on the right pane. */
 const VarRows = ({ rows, onChange }: { rows: VariableRow[]; onChange: (rows: VariableRow[]) => void }) => {
-  const add = () => onChange([...rows, { name: "", value: "" }]);
+  const nameRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const [focusIdx, setFocusIdx] = useState<number | null>(null);
+  useEffect(() => {
+    if (focusIdx !== null) {
+      nameRefs.current[focusIdx]?.focus();
+      setFocusIdx(null);
+    }
+  }, [focusIdx]);
+
+  const add = () => {
+    onChange([...rows, { name: "", value: "" }]);
+    setFocusIdx(rows.length); // focus the new row's Name input
+  };
   const remove = (i: number) => onChange(rows.filter((_, x) => x !== i));
   const update = (i: number, field: "name" | "value", val: string) =>
     onChange(rows.map((r, x) => (x === i ? { ...r, [field]: val } : r)));
@@ -50,7 +62,7 @@ const VarRows = ({ rows, onChange }: { rows: VariableRow[]; onChange: (rows: Var
           </div>
           {rows.map((v, i) => (
             <div key={i} className="grid grid-cols-[1fr_1fr_32px] gap-2 items-center">
-              <Input value={v.name} onChange={(e) => update(i, "name", e.target.value)} placeholder="variableName" className="font-mono h-8 text-sm" />
+              <Input ref={(el) => (nameRefs.current[i] = el)} value={v.name} onChange={(e) => update(i, "name", e.target.value)} placeholder="variableName" className="font-mono h-8 text-sm" />
               <Input value={v.value} onChange={(e) => update(i, "value", e.target.value)} placeholder="value" className="font-mono h-8 text-sm" />
               <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={() => remove(i)}>
                 <X className="w-3.5 h-3.5" />
@@ -200,6 +212,7 @@ export function SettingsPanel({ project }: { project: Project }) {
                     {renamingEnvId === env.id ? (
                       <Input
                         autoFocus
+                        onFocus={(e) => e.target.select()}
                         value={env.name}
                         onChange={(e) => renameEnv(env.id, e.target.value)}
                         onBlur={() => setRenamingEnvId(null)}
