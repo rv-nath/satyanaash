@@ -84,17 +84,15 @@ single test-case execute — verify all three pass `environment` through.
 - The standalone top **"Base URL" prepend field** is the confusing duplicate.
   **Open decision (see below).**
 
-## Open decisions
+## Decisions (resolved)
 
-1. **Fate of the top "Base URL" prepend field:**
-   - (a) **Retire it** — remove from the UI; on first load, seed a `baseUrl`
-     global (or a "Default" environment) from any existing value so nothing
-     breaks. Cleanest; recommended. Endpoints use `{{baseUrl}}`.
-   - (b) **Keep as legacy** — leave the prepend working for relative endpoints,
-     just de-emphasized. Less clean; keeps two mechanisms.
-2. **Environment scope:** environments live at the **project** level (shared
-   definitions; only the *active selection* is per-user). Confirm that's right
-   (vs. per-user environment definitions).
+1. **Retire the top "Base URL" prepend field.** Remove it from Project Settings.
+   On save, migrate: if `settings.baseUrl` has a value and Globals has no
+   `baseUrl`, copy it into Globals as `baseUrl`, then drop `settings.baseUrl`.
+   Endpoints use `{{baseUrl}}`. (The backend prepend logic can stay dormant —
+   with no `settings.baseUrl`, `base_url` is `None` and nothing is prepended.)
+2. **Environment definitions live at the project level; only the active
+   selection is per-user** (localStorage). Confirmed.
 
 ## Non-goals (v1)
 
