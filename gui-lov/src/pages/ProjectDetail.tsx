@@ -455,39 +455,38 @@ const ProjectDetailContent = () => {
 
         {/* Right: Contextual Actions */}
         <div className="flex items-center gap-1">
+          {/* Environment switcher — always visible so the active env is clear */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-1.5 font-normal">
+                <span className="text-muted-foreground">Env:</span>
+                <span className={activeEnv ? "text-primary font-medium" : ""}>{activeEnv ? activeEnv.name : "None"}</span>
+                <ChevronDown className="w-3 h-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onClick={() => selectEnv(null)}>
+                {!activeEnvId && <CheckCircle2 className="w-3.5 h-3.5 mr-2 text-primary" />}
+                <span className={!activeEnvId ? "" : "ml-[22px]"}>No environment</span>
+              </DropdownMenuItem>
+              {environments.length > 0 && <DropdownMenuSeparator />}
+              {environments.map((env) => (
+                <DropdownMenuItem key={env.id} onClick={() => selectEnv(env.id)}>
+                  {activeEnvId === env.id && <CheckCircle2 className="w-3.5 h-3.5 mr-2 text-primary" />}
+                  <span className={activeEnvId === env.id ? "" : "ml-[22px]"}>{env.name}</span>
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => openSettingsTab()}>
+                <Settings className="w-3.5 h-3.5 mr-2" /> Manage environments…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <div className="h-5 w-px bg-border mx-2" />
+
           {/* Canvas actions - only when on canvas with flow */}
           {activeIsFlow && activeFlow && (
             <>
-              {/* Environment switcher */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-1.5 font-normal">
-                    <span className="text-muted-foreground">Env:</span>
-                    {activeEnv ? activeEnv.name : "None"}
-                    <ChevronDown className="w-3 h-3" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48">
-                  <DropdownMenuItem onClick={() => selectEnv(null)}>
-                    {!activeEnvId && <CheckCircle2 className="w-3.5 h-3.5 mr-2 text-primary" />}
-                    <span className={!activeEnvId ? "" : "ml-[22px]"}>No environment</span>
-                  </DropdownMenuItem>
-                  {environments.length > 0 && <DropdownMenuSeparator />}
-                  {environments.map((env) => (
-                    <DropdownMenuItem key={env.id} onClick={() => selectEnv(env.id)}>
-                      {activeEnvId === env.id && <CheckCircle2 className="w-3.5 h-3.5 mr-2 text-primary" />}
-                      <span className={activeEnvId === env.id ? "" : "ml-[22px]"}>{env.name}</span>
-                    </DropdownMenuItem>
-                  ))}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => openSettingsTab()}>
-                    <Settings className="w-3.5 h-3.5 mr-2" /> Manage environments…
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-
-              <div className="h-5 w-px bg-border mx-2" />
-
               {/* Run - prominent, first */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

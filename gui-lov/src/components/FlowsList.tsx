@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { FolderTree, Plus, Edit2, Trash2, MoreVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -12,12 +13,9 @@ interface FlowsListProps {
 }
 
 export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }: FlowsListProps) => {
-  const { testGroups, activeFlowId } = useTestProject();
-
-  // Open the flow as a workspace tab (reuse-if-unedited handled by the parent).
-  const handleFlowClick = (flowId: string) => {
-    onOpenFlow(flowId);
-  };
+  const { testGroups } = useTestProject();
+  // Single click selects (highlights); double click opens — mirrors the tests rail.
+  const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
 
   return (
     <div className="h-full flex flex-col">
@@ -54,15 +52,16 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }
             testGroups.map((group) => (
                 <div
                   key={group.id}
-                  onClick={() => handleFlowClick(group.id)}
+                  onClick={() => setSelectedFlowId(group.id)}
+                  onDoubleClick={() => { setSelectedFlowId(group.id); onOpenFlow(group.id); }}
                   className={`flex items-center gap-2 h-[var(--rail-row-h)] px-2 hover:bg-sidebar-accent rounded-md transition-colors group cursor-pointer ${
-                    activeFlowId === group.id ? 'bg-sidebar-accent border-l-2 border-primary' : ''
+                    selectedFlowId === group.id ? 'bg-sidebar-accent border-l-2 border-primary' : ''
                   }`}
                 >
                   <FolderTree className="w-4 h-4 flex-shrink-0 text-node-group" />
                   <span
                     className="flex-1 truncate text-[13px] font-normal"
-                    style={{ color: activeFlowId === group.id ? undefined : 'hsl(var(--rail-name-color))' }}
+                    style={{ color: selectedFlowId === group.id ? undefined : 'hsl(var(--rail-name-color))' }}
                   >
                     {group.name}
                   </span>
