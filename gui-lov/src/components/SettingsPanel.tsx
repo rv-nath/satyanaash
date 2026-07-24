@@ -87,6 +87,10 @@ export function SettingsPanel({ project }: { project: Project }) {
     setView(`env:${draft.id}`);
   };
   const removeEnv = (envId: string) => {
+    const env = environments.find((e) => e.id === envId);
+    if (!window.confirm(`Delete environment "${env?.name || "this environment"}"? Its variables are removed when you Save.`)) {
+      return;
+    }
     setEnvironments((prev) => prev.filter((e) => e.id !== envId));
     setView((cur) => (cur === `env:${envId}` ? "globals" : cur));
     if (renamingEnvId === envId) setRenamingEnvId(null);
