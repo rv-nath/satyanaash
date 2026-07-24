@@ -18,7 +18,6 @@ interface EnvDraft {
   name: string;
   rows: VariableRow[];
 }
-type Section = "globals" | "environments" | "project";
 
 const objToRows = (obj: Record<string, string>): VariableRow[] =>
   Object.entries(obj).map(([name, value]) => ({ name, value: String(value) }));
@@ -29,7 +28,7 @@ const rowsToObj = (rows: VariableRow[]): Record<string, string> => {
   return out;
 };
 
-/** Editable name/value table shared by Globals and each environment. */
+/** Editable name/value table — the only thing on the right pane. */
 const VarRows = ({ rows, onChange }: { rows: VariableRow[]; onChange: (rows: VariableRow[]) => void }) => {
   const add = () => onChange([...rows, { name: "", value: "" }]);
   const remove = (i: number) => onChange(rows.filter((_, x) => x !== i));
@@ -66,19 +65,18 @@ const VarRows = ({ rows, onChange }: { rows: VariableRow[]; onChange: (rows: Var
 
 export function SettingsPanel({ project }: { project: Project }) {
   const updateProject = useUpdateProject();
-  const [section, setSection] = useState<Section>("globals");
+  // view: "globals" | "project" | `env:<id>`
+  const [view, setView] = useState<string>("globals");
   const [globals, setGlobals] = useState<VariableRow[]>([]);
   const [environments, setEnvironments] = useState<EnvDraft[]>([]);
-  const [selectedEnvId, setSelectedEnvId] = useState<string | null>(null);
+  const [renamingEnvId, setRenamingEnvId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     setGlobals(objToRows(readGlobals(project.settings)));
-    const envs = readEnvironments(project.settings).map((e) => ({ id: e.id, name: e.name, rows: objToRows(e.variables) }));
-    setEnvironments(envs);
-    setSelectedEnvId(envs[0]?.id ?? null);
+    setEnvironments(readEnvironments(project.settings).map((e) => ({ id: e.id, name: e.name, rows: objToRows(e.variables) })));
     setName(project.name || "");
     setDescription(project.description || "");
   }, [project]);
@@ -86,11 +84,12 @@ export function SettingsPanel({ project }: { project: Project }) {
   const addEnv = () => {
     const draft: EnvDraft = { id: genEnvId(), name: `env-${environments.length + 1}`, rows: [] };
     setEnvironments((prev) => [...prev, draft]);
-    setSelectedEnvId(draft.id);
+    setView(`env:${draft.id}`);
   };
   const removeEnv = (envId: string) => {
     setEnvironments((prev) => prev.filter((e) => e.id !== envId));
-    setSelectedEnvId((cur) => (cur === envId ? null : cur));
+    setView((cur) => (cur === `env:${envId}` ? "globals" : cur));
+    if (renamingEnvId === envId) setRenamingEnvId(null);
   };
   const renameEnv = (envId: string, n: string) =>
     setEnvironments((prev) => prev.map((e) => (e.id === envId ? { ...e, name: n } : e)));
@@ -109,7 +108,7 @@ export function SettingsPanel({ project }: { project: Project }) {
         .map((e) => ({ id: e.id, name: e.name.trim(), variables: rowsToObj(e.rows) }));
 
       const newSettings: Record<string, unknown> = { ...(project.settings || {}) };
-      delete newSettings.baseUrl; // retired
+      delete newSettings.baseUrl;
       newSettings.variables = Object.keys(globalsObj).length > 0 ? globalsObj : undefined;
       newSettings.environments = envs.length > 0 ? envs : undefined;
 
@@ -126,41 +125,94 @@ export function SettingsPanel({ project }: { project: Project }) {
     }
   };
 
-  const nav: { key: Section; label: string; Icon: typeof Braces }[] = [
-    { key: "globals", label: "Globals", Icon: Braces },
-    { key: "environments", label: "Environments", Icon: Layers },
-    { key: "project", label: "Project", Icon: Info },
-  ];
+  const navBtn = (active: boolean) =>
+    `w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left ${
+      active ? "bg-primary/10 text-primary font-medium" : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+    }`;
 
-  const selectedEnv = environments.find((e) => e.id === selectedEnvId) || null;
+  const selectedEnv = view.startsWith("env:") ? environments.find((e) => `env:${e.id}` === view) || null : null;
 
   return (
     <div className="h-full flex flex-col bg-background">
-      <div className="flex-1 min-h-0 grid grid-cols-[190px_1fr]">
+      <div className="flex-1 min-h-0 grid grid-cols-[210px_1fr]">
         {/* sub-rail */}
-        <nav className="border-r border-border bg-sidebar p-3">
+        <nav className="border-r border-border bg-sidebar p-3 overflow-auto">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-2 pb-2">
             Project Settings
           </div>
-          {nav.map(({ key, label, Icon }) => (
-            <button
-              key={key}
-              onClick={() => setSection(key)}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left ${
-                section === key
-                  ? "bg-primary/10 text-primary font-medium"
-                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {label}
-            </button>
-          ))}
+
+          <button className={navBtn(view === "globals")} onClick={() => setView("globals")}>
+            <Braces className="w-4 h-4" /> Globals
+          </button>
+
+          {/* Environments group header + add */}
+          <div className="flex items-center gap-1 mt-1 pl-3 pr-1 py-1.5">
+            <Layers className="w-4 h-4 text-muted-foreground" />
+            <span className="flex-1 text-sm text-muted-foreground">Environments</span>
+            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={addEnv} title="New environment">
+              <Plus className="w-3.5 h-3.5" />
+            </Button>
+          </div>
+          {/* Environment list (nested) */}
+          <div className="flex flex-col">
+            {environments.length === 0 ? (
+              <span className="pl-9 pr-2 py-1 text-xs text-muted-foreground/60 italic">No environments</span>
+            ) : (
+              environments.map((env) => {
+                const active = view === `env:${env.id}`;
+                return (
+                  <div
+                    key={env.id}
+                    className={`group flex items-center gap-1 rounded-md ${
+                      active ? "bg-primary/10" : "hover:bg-sidebar-accent"
+                    }`}
+                  >
+                    {renamingEnvId === env.id ? (
+                      <Input
+                        autoFocus
+                        value={env.name}
+                        onChange={(e) => renameEnv(env.id, e.target.value)}
+                        onBlur={() => setRenamingEnvId(null)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === "Escape") setRenamingEnvId(null);
+                        }}
+                        className="h-7 text-sm mx-1 my-0.5"
+                      />
+                    ) : (
+                      <button
+                        className={`flex-1 min-w-0 truncate pl-9 pr-1 py-1.5 text-sm text-left ${
+                          active ? "text-primary font-medium" : "text-foreground"
+                        }`}
+                        onClick={() => setView(`env:${env.id}`)}
+                        onDoubleClick={() => setRenamingEnvId(env.id)}
+                        title="Double-click to rename"
+                      >
+                        {env.name || "(unnamed)"}
+                      </button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 mr-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
+                      onClick={() => removeEnv(env.id)}
+                      title="Delete environment"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <button className={`${navBtn(view === "project")} mt-1`} onClick={() => setView("project")}>
+            <Info className="w-4 h-4" /> Project
+          </button>
         </nav>
 
-        {/* content */}
+        {/* content — keys/values (or globals table, or project fields) */}
         <div className="overflow-auto p-6">
-          {section === "globals" && (
+          {view === "globals" && (
             <div className="space-y-4 max-w-3xl">
               <div>
                 <h3 className="text-base font-semibold">Globals</h3>
@@ -173,71 +225,20 @@ export function SettingsPanel({ project }: { project: Project }) {
             </div>
           )}
 
-          {section === "environments" && (
-            <div className="space-y-4">
+          {selectedEnv && (
+            <div className="space-y-4 max-w-3xl">
               <div>
-                <h3 className="text-base font-semibold">Environments</h3>
+                <h3 className="text-base font-semibold">{selectedEnv.name || "(unnamed)"}</h3>
                 <p className="text-sm text-muted-foreground mt-0.5">
-                  Switchable var sets (dev / staging / prod). An environment value overrides a global of the same name.
-                  Pick the active one from the header dropdown.
+                  Variables for this environment. They override globals of the same name when this env is active.
+                  Double-click the name in the list to rename.
                 </p>
               </div>
-              <div className="grid grid-cols-[190px_1fr] gap-6 items-start">
-                <div>
-                  <div className="flex flex-col gap-1">
-                    {environments.map((env) => (
-                      <button
-                        key={env.id}
-                        onClick={() => setSelectedEnvId(env.id)}
-                        className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left ${
-                          selectedEnvId === env.id ? "bg-primary/10 text-primary font-medium" : "hover:bg-sidebar-accent"
-                        }`}
-                      >
-                        {env.name || "(unnamed)"}
-                      </button>
-                    ))}
-                  </div>
-                  <button
-                    onClick={addEnv}
-                    className="mt-2 w-full border border-dashed border-border rounded-md py-2 text-xs text-muted-foreground hover:border-primary hover:text-primary"
-                  >
-                    + Add environment
-                  </button>
-                </div>
-
-                <div>
-                  {selectedEnv ? (
-                    <>
-                      <div className="flex items-center gap-2 mb-3">
-                        <Input
-                          value={selectedEnv.name}
-                          onChange={(e) => renameEnv(selectedEnv.id, e.target.value)}
-                          placeholder="environment name"
-                          className="h-8 text-sm font-medium max-w-xs"
-                        />
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                          onClick={() => removeEnv(selectedEnv.id)}
-                          title="Delete environment"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
-                      <VarRows rows={selectedEnv.rows} onChange={(rows) => setEnvRows(selectedEnv.id, rows)} />
-                    </>
-                  ) : (
-                    <div className="border border-dashed rounded-md p-6 text-center text-sm text-muted-foreground">
-                      No environment selected. Add one to switch base URLs / credentials per stage.
-                    </div>
-                  )}
-                </div>
-              </div>
+              <VarRows rows={selectedEnv.rows} onChange={(rows) => setEnvRows(selectedEnv.id, rows)} />
             </div>
           )}
 
-          {section === "project" && (
+          {view === "project" && (
             <div className="space-y-4 max-w-xl">
               <div>
                 <h3 className="text-base font-semibold">Project</h3>
