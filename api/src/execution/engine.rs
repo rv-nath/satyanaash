@@ -15,6 +15,50 @@ use crate::error::AppError;
 use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine};
 use super::http::{RequestLog, ResponseLog};
 
+/// The last meaningful line of a script — for an assertion that's the expression
+/// whose value decided pass/fail, which is what a failure report should quote.
+fn last_expression(script: &str) -> String {
+    script
+        .lines()
+        .map(|l| l.trim().trim_end_matches(';'))
+        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+        .next_back()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Collect `{{name}}` placeholders still present in an outgoing request, i.e.
+/// variables that failed to resolve.
+fn find_unresolved(
+    url: &str,
+    headers: &HashMap<String, String>,
+    body: Option<&str>,
+) -> Vec<String> {
+    let re = match regex::Regex::new(r"\{\{([^{}]+)\}\}") {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut sources: Vec<&str> = vec![url];
+    for v in headers.values() {
+        sources.push(v.as_str());
+    }
+    if let Some(b) = body {
+        sources.push(b);
+    }
+    let mut names: Vec<String> = Vec::new();
+    for s in sources {
+        for caps in re.captures_iter(s) {
+            if let Some(m) = caps.get(1) {
+                let name = format!("{{{{{}}}}}", m.as_str().trim());
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names
+}
+
 /// Result status for a node execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -593,7 +637,9 @@ impl ExecutionEngine {
             logs.push(format!("Response status: {}", http_result.response.status));
         }
 
-        // Run assertions
+        // Run assertions. On failure we record *why*, so the console shows a reason
+        // instead of a bare "failed".
+        let mut assertion_failure: Option<String> = None;
         let assertion_passed = if let Some(ref assertion_script) = test_case.assertion_script {
             match self.assertions.evaluate(
                 assertion_script,
@@ -606,6 +652,15 @@ impl ExecutionEngine {
                 Ok(outcome) => {
                     if self.debug_mode {
                         logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
+                    }
+                    if !outcome.passed {
+                        let reason = format!(
+                            "Assertion returned false: {}  (actual: HTTP {})",
+                            last_expression(assertion_script),
+                            http_result.response.status
+                        );
+                        logs.push(reason.clone());
+                        assertion_failure = Some(reason);
                     }
                     for (k, v) in outcome.vars {
                         ctx.set(&k, v);
@@ -637,6 +692,14 @@ impl ExecutionEngine {
             let passed = AssertionEngine::default_assertion(http_result.response.status);
             if self.debug_mode {
                 logs.push(format!("Default assertion (2xx): {}", if passed { "PASS" } else { "FAIL" }));
+            }
+            if !passed {
+                let reason = format!(
+                    "Assertion failed: expected a 2xx status, got HTTP {}",
+                    http_result.response.status
+                );
+                logs.push(reason.clone());
+                assertion_failure = Some(reason);
             }
             passed
         };
@@ -684,7 +747,7 @@ impl ExecutionEngine {
             response: Some(http_result.response),
             exports,
             env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
-            error_message: None,
+            error_message: assertion_failure,
             logs,
         }
     }
@@ -911,6 +974,16 @@ impl ExecutionEngine {
             None
         };
 
+        // Variables that never resolved go out as literal "{{name}}" text — usually
+        // the real cause of a puzzling 4xx. Say so instead of failing silently.
+        let unresolved = find_unresolved(&url, &headers, body.as_deref());
+        if !unresolved.is_empty() {
+            logs.push(format!(
+                "⚠ Unresolved variable(s) sent literally: {}",
+                unresolved.join(", ")
+            ));
+        }
+
         // Capture request info
         let request_log = RequestLog {
             method: test_case.method.clone(),
@@ -948,7 +1021,9 @@ impl ExecutionEngine {
             logs.push(format!("Response status: {}", http_result.response.status));
         }
 
-        // Run assertions
+        // Run assertions. On failure we record *why*, so the console shows a reason
+        // instead of a bare "failed".
+        let mut assertion_failure: Option<String> = None;
         let assertion_passed = if let Some(ref assertion_script) = test_case.assertion_script {
             match self.assertions.evaluate(
                 assertion_script,
@@ -961,6 +1036,15 @@ impl ExecutionEngine {
                 Ok(outcome) => {
                     if self.debug_mode {
                         logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
+                    }
+                    if !outcome.passed {
+                        let reason = format!(
+                            "Assertion returned false: {}  (actual: HTTP {})",
+                            last_expression(assertion_script),
+                            http_result.response.status
+                        );
+                        logs.push(reason.clone());
+                        assertion_failure = Some(reason);
                     }
                     for (k, v) in outcome.vars {
                         ctx.set(&k, v);
@@ -993,6 +1077,14 @@ impl ExecutionEngine {
             if self.debug_mode {
                 logs.push(format!("Default assertion (2xx): {}", if passed { "PASS" } else { "FAIL" }));
             }
+            if !passed {
+                let reason = format!(
+                    "Assertion failed: expected a 2xx status, got HTTP {}",
+                    http_result.response.status
+                );
+                logs.push(reason.clone());
+                assertion_failure = Some(reason);
+            }
             passed
         };
 
@@ -1019,7 +1111,7 @@ impl ExecutionEngine {
             response: Some(http_result.response),
             exports,
             env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
-            error_message: None,
+            error_message: assertion_failure,
             logs,
         }
     }
@@ -1034,6 +1126,31 @@ impl Default for ExecutionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_last_expression_picks_the_deciding_line() {
+        let script = "// save it\nSAT.vars.token = response.json.token;\n\nresponse.status == 230;\n";
+        assert_eq!(last_expression(script), "response.status == 230");
+        assert_eq!(last_expression(""), "");
+    }
+
+    #[test]
+    fn test_find_unresolved_reports_literal_placeholders() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer {{token}}".to_string());
+        let found = find_unresolved(
+            "http://x/api/{{id}}",
+            &headers,
+            Some(r#"{"phone":"{{my_phone_number}}","ok":"resolved"}"#),
+        );
+        assert!(found.contains(&"{{id}}".to_string()));
+        assert!(found.contains(&"{{token}}".to_string()));
+        assert!(found.contains(&"{{my_phone_number}}".to_string()));
+        assert_eq!(found.len(), 3);
+
+        // Nothing left over once everything resolved
+        assert!(find_unresolved("http://x/api/1", &HashMap::new(), Some("{}")).is_empty());
+    }
     use crate::db::models::{Flow, GraphData, GraphNode, GraphEdge, Position, TestCase, ExportVariable};
     use crate::db::repositories::TestCaseRepository;
     use crate::error::AppError;

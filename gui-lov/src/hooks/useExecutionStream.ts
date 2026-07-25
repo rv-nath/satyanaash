@@ -289,6 +289,10 @@ function handleEvent(
       if (result.error_message) {
         details.push({ label: 'Error', value: result.error_message, type: 'error' });
       }
+      // Engine notes for this node (unresolved variables, assertion reason, debug logs)
+      if (result.logs && result.logs.length > 0) {
+        details.push({ label: 'Logs', value: result.logs.join('\n') });
+      }
       if (result.exports && Object.keys(result.exports).length > 0) {
         details.push({ label: 'Exports', value: JSON.stringify(result.exports, null, 2) });
       }
