@@ -538,24 +538,44 @@ const ProjectDetailContent = () => {
           {/* Canvas actions - only when on canvas with flow */}
           {activeIsFlow && activeFlow && (
             <>
-              {/* Run - prominent, first */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="default" size="sm" disabled={isExecuting} className="gap-1">
-                    {isExecuting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-                    Run
-                    <ChevronDown className="w-3 h-3" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => handleExecute("run")}>
-                    <Play className="w-4 h-4 mr-2" /> Run
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleExecute("debug")}>
-                    <Bug className="w-4 h-4 mr-2" /> Debug
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* Run — split button: the main area runs immediately, the caret
+                  offers the alternate (Debug). */}
+              <div className="flex items-stretch">
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={isExecuting}
+                  onClick={() => handleExecute("run")}
+                  className="gap-1.5 rounded-r-none pr-2.5"
+                  title="Run flow"
+                >
+                  {isExecuting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                  {isExecuting ? "Running…" : "Run"}
+                </Button>
+                <div className="w-px bg-primary-foreground/25" />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      disabled={isExecuting}
+                      className="rounded-l-none px-1.5"
+                      aria-label="More run options"
+                      title="More run options"
+                    >
+                      <ChevronDown className="w-3 h-3" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => handleExecute("run")}>
+                      <Play className="w-4 h-4 mr-2" /> Run
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleExecute("debug")}>
+                      <Bug className="w-4 h-4 mr-2" /> Debug
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
 
               <div className="h-5 w-px bg-border mx-2" />
 
@@ -757,6 +777,7 @@ const ProjectDetailContent = () => {
             <WorkspaceTabs
               tabs={renderTabs}
               settingsOpen={workspace.settingsOpen}
+              settingsDirty={dirtyTabs['settings']}
               active={workspace.active}
               onActivate={activateTab}
               onClose={requestCloseTab}
@@ -794,11 +815,23 @@ const ProjectDetailContent = () => {
                   );
                 })}
 
-              {activeIsSettings && project ? (
-                <div className="absolute inset-0">
-                  <SettingsPanel project={project} initialView={settingsInitialView} />
+              {/* Settings stays mounted for the same reason — unsaved edits there
+                  must survive switching tabs. */}
+              {workspace.settingsOpen && project && (
+                <div
+                  className="absolute inset-0"
+                  style={{ display: activeIsSettings ? 'block' : 'none' }}
+                  aria-hidden={!activeIsSettings}
+                >
+                  <SettingsPanel
+                    project={project}
+                    initialView={settingsInitialView}
+                    onDirtyChange={(dirty) => markTabDirty('settings', dirty)}
+                  />
                 </div>
-              ) : activeIsFlow ? (
+              )}
+
+              {activeIsFlow ? (
                 <div className="absolute inset-0">
                   {showConsole ? (
                     <ResizablePanelGroup direction="vertical">
@@ -814,7 +847,7 @@ const ProjectDetailContent = () => {
                     <TestCanvas />
                   )}
                 </div>
-              ) : !activeIsTest ? (
+              ) : !activeIsTest && !activeIsSettings ? (
                 <div className="absolute inset-0">
                   <WorkspaceWelcome
                     onNewTest={() => openTestCaseEditor()}
@@ -879,7 +912,11 @@ const ProjectDetailContent = () => {
           open
           onOpenChange={(o) => { if (!o) setPendingCloseKey(null); }}
           title="Discard unsaved changes?"
-          description={`"${renderTabs.find((t) => t.key === pendingCloseKey)?.label ?? 'This test'}" has changes that haven't been saved. Closing it will discard them.`}
+          description={`${
+            pendingCloseKey === 'settings'
+              ? 'Settings has'
+              : `"${renderTabs.find((t) => t.key === pendingCloseKey)?.label ?? 'This tab'}" has`
+          } changes that haven't been saved. Closing it will discard them.`}
           confirmLabel="Discard changes"
           cancelLabel="Keep editing"
           onConfirm={() => { doCloseTab(pendingCloseKey); setPendingCloseKey(null); }}

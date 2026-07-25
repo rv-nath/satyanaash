@@ -11,6 +11,7 @@ export interface RenderTab {
 interface Props {
   tabs: RenderTab[];
   settingsOpen: boolean;
+  settingsDirty?: boolean;
   active: string | null;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
@@ -52,7 +53,7 @@ function TabShell({
   );
 }
 
-export function WorkspaceTabs({ tabs, settingsOpen, active, onActivate, onClose }: Props) {
+export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, active, onActivate, onClose }: Props) {
   return (
     <div className="flex items-end gap-0.5 border-b border-border bg-card px-2 pt-1.5 min-h-[38px]">
       {tabs.map((t) => (
@@ -89,7 +90,14 @@ export function WorkspaceTabs({ tabs, settingsOpen, active, onActivate, onClose 
           onClose={() => onClose("settings")}
         >
           <Settings className="h-3.5 w-3.5" />
-          Settings
+          <span className={settingsDirty ? "italic" : undefined}>Settings</span>
+          {settingsDirty && (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full bg-warning"
+              title="Unsaved changes"
+              aria-label="Unsaved changes"
+            />
+          )}
         </TabShell>
       )}
     </div>

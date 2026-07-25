@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -79,7 +79,19 @@ const VarRows = ({ rows, onChange }: { rows: VariableRow[]; onChange: (rows: Var
   );
 };
 
-export function SettingsPanel({ project, initialView }: { project: Project; initialView?: string }) {
+/** Order-independent snapshot of a name→value map, for change detection. */
+const stableVars = (obj: Record<string, string>) =>
+  JSON.stringify(Object.keys(obj).sort().map((k) => [k, obj[k]]));
+
+export function SettingsPanel({
+  project,
+  initialView,
+  onDirtyChange,
+}: {
+  project: Project;
+  initialView?: string;
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const updateProject = useUpdateProject();
   // view: "globals" | "project" | "environments" (empty landing) | `env:<id>`
   const [view, setView] = useState<string>(() => initialView || "globals");
@@ -166,6 +178,33 @@ export function SettingsPanel({ project, initialView }: { project: Project; init
       setIsSaving(false);
     }
   };
+
+  // Unsaved-changes detection: compare the drafts against what's persisted, so the
+  // workspace tab can show a dot and warn before closing.
+  const savedSnapshot = useMemo(
+    () =>
+      JSON.stringify({
+        globals: stableVars(readGlobals(project.settings)),
+        envs: readEnvironments(project.settings)
+          .map((e) => [e.id, e.name, stableVars(e.variables)])
+          .sort(),
+        name: project.name || "",
+        description: project.description || "",
+      }),
+    [project.settings, project.name, project.description]
+  );
+  const draftSnapshot = JSON.stringify({
+    globals: stableVars(rowsToObj(globals)),
+    envs: environments.map((e) => [e.id, e.name, stableVars(rowsToObj(e.rows))]).sort(),
+    name,
+    description,
+  });
+  const isDirty = draftSnapshot !== savedSnapshot;
+  const dirtyCbRef = useRef(onDirtyChange);
+  dirtyCbRef.current = onDirtyChange;
+  useEffect(() => {
+    dirtyCbRef.current?.(isDirty);
+  }, [isDirty]);
 
   const navBtn = (active: boolean) =>
     `w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left ${

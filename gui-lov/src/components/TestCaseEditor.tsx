@@ -601,6 +601,7 @@ export const TestCaseEditor = ({
                     <div className="pl-3 border-l-2" style={{ borderColor: "hsl(214 90% 62% / 0.5)" }}>
                       <Textarea
                         id="given"
+                        spellCheck
                         value={givenCondition}
                         onChange={(e) => handleFieldChange(setGivenCondition)(e.target.value)}
                         placeholder="e.g., A valid auth token and a well-formed payload"
@@ -618,6 +619,7 @@ export const TestCaseEditor = ({
                     <div className="pl-3 border-l-2" style={{ borderColor: "hsl(38 92% 55% / 0.5)" }}>
                       <Textarea
                         id="when"
+                        spellCheck
                         value={whenAction}
                         onChange={(e) => handleFieldChange(setWhenAction)(e.target.value)}
                         placeholder="e.g., The Send SMS API is called"
@@ -635,6 +637,7 @@ export const TestCaseEditor = ({
                     <div className="pl-3 border-l-2" style={{ borderColor: "hsl(142 71% 50% / 0.5)" }}>
                       <Textarea
                         id="then"
+                        spellCheck
                         value={thenExpected}
                         onChange={(e) => handleFieldChange(setThenExpected)(e.target.value)}
                         placeholder="e.g., Responds 201 with a message id"
