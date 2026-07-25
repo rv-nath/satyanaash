@@ -23,6 +23,10 @@ interface TestCaseEditorProps {
   testCaseId?: string; // Optional - undefined means create mode
   onClose: () => void;
   onCreated?: (newTestCaseId: string) => void; // Callback when a new test case is created
+  initialSubTab?: string; // Restore the sub-tab this editor was last on
+  onSubTabChange?: (tab: string) => void; // Report sub-tab changes so they persist
+  initialResult?: TestCaseExecutionResult | null; // Restore the last run's result
+  onResultChange?: (result: TestCaseExecutionResult | null) => void; // Persist result
 }
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
@@ -99,7 +103,7 @@ function FolderTabs({ active, onChange }: { active: string; onChange: (v: string
   );
 }
 
-export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEditorProps) => {
+export const TestCaseEditor = ({ testCaseId, onClose, onCreated, initialSubTab, onSubTabChange, initialResult, onResultChange }: TestCaseEditorProps) => {
   const { projectId, nodes, edges, closeTestCaseEditor, effectiveEnvironment, applyEnvWrites } = useTestProject();
 
   const isCreateMode = !testCaseId;
@@ -112,7 +116,11 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
   const executeMutation = useExecuteTestCase();
 
   // Execution result state
-  const [executionResult, setExecutionResult] = useState<TestCaseExecutionResult | null>(null);
+  const [executionResult, setExecutionResult] = useState<TestCaseExecutionResult | null>(initialResult ?? null);
+  // Report result changes upward so they survive the editor's per-tab remount.
+  useEffect(() => {
+    onResultChange?.(executionResult);
+  }, [executionResult, onResultChange]);
   const [wordWrap, setWordWrap] = useState(true);
 
   // Form state
@@ -126,7 +134,11 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
   const [payload, setPayload] = useState("");
   const [preTestScript, setPreTestScript] = useState("");
   const [postTestScript, setPostTestScript] = useState("");
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState(() => initialSubTab || "overview");
+  // Report sub-tab changes upward so they survive the editor's per-tab remount.
+  useEffect(() => {
+    onSubTabChange?.(activeTab);
+  }, [activeTab, onSubTabChange]);
   const [isDirty, setIsDirty] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -932,7 +944,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                       Last expression must be true (pass) or false (fail). Set vars first if needed.
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Read: <code className="px-1 py-0.5 bg-muted rounded">response.status</code>, <code className="px-1 py-0.5 bg-muted rounded">response.json</code>, <code className="px-1 py-0.5 bg-muted rounded">response.body</code>, <code className="px-1 py-0.5 bg-muted rounded">response.headers</code> · Persist to environment: <code className="px-1 py-0.5 bg-muted rounded">SAT.env.x = …</code>
+                      Read: <code className="px-1 py-0.5 bg-muted rounded">response.status</code>, <code className="px-1 py-0.5 bg-muted rounded">response.json</code>, <code className="px-1 py-0.5 bg-muted rounded">response.body</code>, <code className="px-1 py-0.5 bg-muted rounded">response.headers</code> · Set vars: <code className="px-1 py-0.5 bg-muted rounded">SAT.vars.x</code> (temp) / <code className="px-1 py-0.5 bg-muted rounded">SAT.env.x</code> (persist)
                     </p>
                   </div>
                 </div>
@@ -979,10 +991,21 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                       <span className="text-sm text-destructive">• {executionResult.error_message}</span>
                     )}
                   </div>
-                  <Button variant="ghost" size="sm" className="gap-1.5" onClick={handleRunTest} disabled={executeMutation.isPending}>
-                    <Play className="w-3.5 h-3.5" />
-                    Run Again
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="sm" className="gap-1.5" onClick={handleRunTest} disabled={executeMutation.isPending}>
+                      <Play className="w-3.5 h-3.5" />
+                      Run Again
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                      onClick={() => setExecutionResult(null)}
+                      title="Clear response"
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
                 </div>
 
                 {/* Sub-tabs for Response details */}

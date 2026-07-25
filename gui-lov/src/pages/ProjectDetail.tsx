@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { generateUUID } from "@/lib/utils/uuid";
 import {
@@ -41,6 +41,7 @@ import { ValidationBadge } from "@/components/ValidationBadge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
+import type { TestCaseExecutionResult } from "@/lib/api/types";
 import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useTestCases } from "@/hooks/useApi";
 import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
 import { SettingsPanel } from "@/components/SettingsPanel";
@@ -207,6 +208,21 @@ const ProjectDetailContent = () => {
     setSettingsInitialView(view);
     openSettingsTab();
   };
+
+  // Remember each test tab's active sub-tab (Overview/Request/Scripts/Response)
+  // so switching workspace tabs doesn't reset it — the editor remounts per tab.
+  const editorSubTabRef = useRef<Record<string, string>>({});
+  const activeTabKey = workspace.active;
+  const persistEditorSubTab = useCallback((tab: string) => {
+    if (activeTabKey) editorSubTabRef.current[activeTabKey] = tab;
+  }, [activeTabKey]);
+  // Same idea for the run result — keep it until re-run or explicitly cleared.
+  const editorResultRef = useRef<Record<string, unknown>>({});
+  const persistEditorResult = useCallback((result: unknown) => {
+    if (!activeTabKey) return;
+    if (result == null) delete editorResultRef.current[activeTabKey];
+    else editorResultRef.current[activeTabKey] = result;
+  }, [activeTabKey]);
 
   const handleExecute = async (mode: "run" | "debug" = "run") => {
     if (!activeFlowId) {
@@ -738,6 +754,10 @@ const ProjectDetailContent = () => {
                 <TestCaseEditor
                   key={workspace.active as string}
                   testCaseId={activeTestId === '__new__' ? undefined : (activeTestId as string)}
+                  initialSubTab={editorSubTabRef.current[workspace.active as string]}
+                  onSubTabChange={persistEditorSubTab}
+                  initialResult={editorResultRef.current[workspace.active as string] as TestCaseExecutionResult | undefined ?? null}
+                  onResultChange={persistEditorResult}
                   onClose={() => closeWorkspaceTab(workspace.active as string)}
                   onCreated={(newId) => {
                     closeWorkspaceTab(workspace.active as string);
