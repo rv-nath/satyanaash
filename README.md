@@ -169,14 +169,43 @@ value. Resolution walks these tiers **top-to-bottom and stops at the first match
 
 ### Built-in variables
 
-Generated on the fly — no setup needed:
+Generated on the fly — no setup needed. Write them with a `$` prefix:
 
-`{{$UUID}}` · `{{$Timestamp}}` · `{{$TimestampMs}}` · `{{$ISODate}}` ·
-`{{$RandomEmail}}` · `{{$RandomInt}}` · `{{$RandomString}}` ·
-`{{$RandomPassword}}` · `{{$RandomUsername}}` · `{{$RandomName}}` ·
-`{{$RandomPhone}}` · `{{$RandomAddress}}` · `{{$RandomCompany}}`
+| Macro | Produces | Arguments |
+|-------|----------|-----------|
+| `{{$RandomEmail}}` | a random email address | optional (e.g. a domain) |
+| `{{$RandomName}}` | a person's name | — |
+| `{{$RandomCompany}}` | a company name | — |
+| `{{$RandomPhone}}` | a phone number | — |
+| `{{$RandomAddress}}` | a postal address | — |
+| `{{$RandomUsername}}` | `user_xxxxxxxx` | — |
+| `{{$RandomInt}}` | a random integer | `{{$RandomInt(1000,9999)}}` → `min,max` |
+| `{{$RandomString}}` | a random string | `{{$RandomString(12)}}` → length |
+| `{{$RandomPassword}}` | a random password | `{{$RandomPassword(16)}}` → length |
+| `{{$UUID}}` | a UUID v4 | — |
+| `{{$Timestamp}}` `{{$TimestampMs}}` `{{$ISODate}}` | current time (secs / ms / RFC 3339) | — |
 
-Some accept arguments, e.g. `{{$RandomInt(1000, 9999)}}`.
+Example — dynamic signup payload:
+
+```json
+{
+  "company": "{{$RandomCompany}}",
+  "email":   "{{$RandomEmail}}",
+  "mobile":  "9180{{$RandomInt(100000,999999)}}",
+  "name":    "{{$RandomName}}"
+}
+```
+
+> **⚠️ Each `{{$…}}` regenerates on every use.** Writing `{{$RandomEmail}}` in one
+> request and again in another yields **two different emails**. If a later step
+> needs the *same* value you generated, don't repeat the macro — **capture it once
+> and reference it by name**:
+>
+> - **In a flow:** add an [Output variable](#exports--chaining-values) (e.g.
+>   `signup_email ← $.email`) and use `{{signup_email}}` downstream.
+> - **Across standalone runs:** save it in a post-test script
+>   (`SAT.session.signup_email = response.json.email;`) and reference
+>   `{{signup_email}}`. See [Session variables](#session-variables).
 
 ---
 
@@ -237,7 +266,8 @@ response.status == 200 && response.json.ok == true   // combined
 ## Exports — chaining values
 
 Exports declaratively pull values from a response using **JSONPath** and store them
-in the flow context so later test cases can use them as `{{name}}`.
+in the flow context. You define them per node (Configure Node → **Output
+variables**) or on the test case itself — each is a **name** plus a **JSONPath**:
 
 | Export name | JSONPath |
 |-------------|----------|
@@ -245,11 +275,27 @@ in the flow context so later test cases can use them as `{{name}}`.
 | `accountId` | `$.data.id` |
 | `firstItem` | `$.items[0].id` |
 
-JSONPath is rooted at the response JSON body with `$`. A path that matches nothing
-is skipped silently, and exports only run **if the assertion passed**.
+Downstream nodes then reference the value by its **name** with the usual
+interpolation syntax — same `{{ }}` you use everywhere else:
 
-**Exports vs. session:** exports are the mechanism for chaining **within a flow**.
-Session variables (below) chain **standalone** runs.
+```
+Authorization: Bearer {{token}}
+GET {{baseUrl}}/accounts/{{accountId}}
+```
+
+Things to remember:
+
+- **Reference the name, not the path** — `{{token}}`, never `{{$.access_token}}`.
+- **Downstream only** — a value is available to nodes that run *after* the
+  producer, following the flow's edges.
+- **Only if the assertion passed** — if the producing node fails its check, the
+  export doesn't run and `{{token}}` stays **literal** in the request (a handy
+  debugging tell). JSONPath is rooted at the body with `$`; a path that matches
+  nothing is skipped silently.
+- **Scope is one flow run** — the context is fresh each run.
+
+**Exports vs. session:** exports chain values **within a flow**. Session variables
+(below) chain **standalone** runs.
 
 ---
 
