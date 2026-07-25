@@ -44,6 +44,8 @@ interface NodeResult {
     body?: string;
   };
   exports?: Record<string, unknown>;
+  /** SAT.env writes made by this node, to persist into the active environment */
+  env?: Record<string, unknown>;
   error_message?: string;
   logs: string[];
 }
@@ -96,7 +98,13 @@ export interface ExecuteFlowRequest {
   variables?: Record<string, unknown>;
 }
 
-export function useExecutionStream() {
+interface UseExecutionStreamOptions {
+  /** Called once per run with the SAT.env writes made by any node, so a flow run
+   *  persists them to the active environment just like a standalone run does. */
+  onEnvWrites?: (writes: Record<string, unknown>) => void;
+}
+
+export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = {}) {
   const [logs, setLogs] = useState<ConsoleLog[]>([
     { timestamp: new Date().toISOString(), message: 'Ready to execute tests', type: 'info' }
   ]);
@@ -104,6 +112,10 @@ export function useExecutionStream() {
 
   // Store AbortController to cancel previous stream
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Held in a ref so `execute` stays stable as the callback's identity changes.
+  const onEnvWritesRef = useRef(onEnvWrites);
+  onEnvWritesRef.current = onEnvWrites;
 
   const addLog = useCallback((message: string, type: ConsoleLog['type'] = 'info', details?: ConsoleLogDetail[]) => {
     setLogs(prev => [...prev, {
@@ -139,6 +151,10 @@ export function useExecutionStream() {
 
     setIsExecuting(true);
     addLog(`Starting ${options.debug_mode ? 'debug' : 'test'} execution...`, 'info');
+
+    // SAT.env writes from every node in this run. Collected as events stream in and
+    // applied once at the end — one project update instead of one per node.
+    const envWrites: Record<string, unknown> = {};
 
     try {
       const response = await fetch(`${API_URL}/flows/${flowId}/execute-stream`, {
@@ -190,7 +206,7 @@ export function useExecutionStream() {
             const jsonStr = line.slice(6); // Remove 'data: ' prefix
             try {
               const event: ExecutionEvent = JSON.parse(jsonStr);
-              handleEvent(event, addLog, options.debug_mode ?? false);
+              handleEvent(event, addLog, options.debug_mode ?? false, envWrites);
             } catch (parseError) {
               console.warn('Failed to parse SSE event:', jsonStr, parseError);
             }
@@ -203,10 +219,17 @@ export function useExecutionStream() {
         const jsonStr = buffer.slice(6);
         try {
           const event: ExecutionEvent = JSON.parse(jsonStr);
-          handleEvent(event, addLog, options.debug_mode ?? false);
+          handleEvent(event, addLog, options.debug_mode ?? false, envWrites);
         } catch (parseError) {
           console.warn('Failed to parse final SSE event:', jsonStr, parseError);
         }
+      }
+
+      // Persist SAT.env writes made during the run (matches standalone behaviour).
+      const written = Object.keys(envWrites);
+      if (written.length > 0) {
+        onEnvWritesRef.current?.(envWrites);
+        addLog(`Saved ${written.length} environment variable(s): ${written.join(', ')}`, 'info');
       }
 
     } catch (error) {
@@ -238,7 +261,8 @@ export function useExecutionStream() {
 function handleEvent(
   event: ExecutionEvent,
   addLog: (message: string, type: ConsoleLog['type']) => void,
-  debugMode: boolean
+  debugMode: boolean,
+  envWrites?: Record<string, unknown>
 ) {
   switch (event.type) {
     case 'started':
@@ -255,6 +279,10 @@ function handleEvent(
 
     case 'node_completed': {
       const { result } = event;
+      // Collect SAT.env writes; the caller persists them once the run finishes.
+      if (result.env && envWrites) {
+        Object.assign(envWrites, result.env);
+      }
       const statusIcon = result.status === 'passed' ? '✓' :
                         result.status === 'failed' ? '✗' :
                         result.status === 'error' ? '⚠' : '○';

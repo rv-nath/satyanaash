@@ -99,6 +99,7 @@ const ProjectDetailContent = () => {
     activeEnv,
     selectEnv,
     effectiveEnvironment,
+    applyEnvWrites,
   } = useTestProject();
 
   // Derive active flow for header
@@ -224,7 +225,11 @@ const ProjectDetailContent = () => {
   const deleteTestCaseMutation = useDeleteTestCase();
 
   // SSE streaming for real-time execution logs
-  const { logs: consoleLogs, isExecuting, execute: executeFlow, clearLogs } = useExecutionStream();
+  // onEnvWrites: a flow run persists SAT.env writes to the active environment,
+  // the same as a standalone run.
+  const { logs: consoleLogs, isExecuting, execute: executeFlow, clearLogs } = useExecutionStream({
+    onEnvWrites: applyEnvWrites,
+  });
 
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);
