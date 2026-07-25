@@ -71,3 +71,24 @@ export function effectiveEnv(
 export function genEnvId(): string {
   return generateUUID();
 }
+
+/**
+ * Merge script-written vars (SAT.env) into the active environment — or Globals
+ * when no environment is active — and return updated settings to persist.
+ */
+export function mergeEnvWrites(
+  settings: Settings,
+  activeId: string | null,
+  writes: Record<string, unknown>
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(settings || {}) };
+  const strWrites = Object.fromEntries(Object.entries(writes).map(([k, v]) => [k, String(v)]));
+  if (activeId) {
+    next.environments = readEnvironments(settings).map((e) =>
+      e.id === activeId ? { ...e, variables: { ...e.variables, ...strWrites } } : e
+    );
+  } else {
+    next.variables = { ...readGlobals(settings), ...strWrites };
+  }
+  return next;
+}

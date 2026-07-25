@@ -1,7 +1,6 @@
 //! Variable interpolation and execution context management
 //!
 //! Resolution order (highest priority first):
-//! 0. Session variables (SAT.session — persist across standalone runs)
 //! 1. Execution variables (passed in execute request)
 //! 2. Context variables (exports from previous test cases + pre-test script vars)
 //! 3. Node input variables (static per-node overrides set in flow editor)
@@ -20,9 +19,6 @@ use crate::error::AppError;
 /// Execution context that holds all variables during flow execution
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
-    /// Session variables (tier 0) — set by SAT.session in scripts, persist across
-    /// standalone runs via the client. Highest priority: shadows everything.
-    session: HashMap<String, Value>,
     /// Variables passed in the execute request
     execution_vars: HashMap<String, Value>,
     /// Accumulated exports from test cases during execution
@@ -43,7 +39,6 @@ impl ExecutionContext {
         flow_vars: HashMap<String, Value>,
     ) -> Self {
         Self {
-            session: HashMap::new(),
             execution_vars,
             context: HashMap::new(),
             node_input_vars: HashMap::new(),
@@ -52,20 +47,16 @@ impl ExecutionContext {
         }
     }
 
-    /// Seed the session store (tier 0) — called from the incoming execute request.
-    pub fn set_session_store(&mut self, session: HashMap<String, Value>) {
-        self.session = session;
+    /// Set an environment variable at run time (from SAT.env writes in scripts).
+    /// Available immediately as {{name}} for the rest of this run.
+    pub fn set_environment_var(&mut self, name: &str, value: Value) {
+        self.environment.insert(name.to_string(), value);
     }
 
-    /// A copy of the current session store — returned to the client to persist,
-    /// and passed into scripts so they can read existing session values.
-    pub fn session_snapshot(&self) -> HashMap<String, Value> {
-        self.session.clone()
-    }
-
-    /// Replace the session store with the map a script produced (handles removals).
-    pub fn apply_session(&mut self, session: HashMap<String, Value>) {
-        self.session = session;
+    /// A copy of the current environment — passed into scripts so `SAT.env.x`
+    /// can read existing values.
+    pub fn environment_snapshot(&self) -> HashMap<String, Value> {
+        self.environment.clone()
     }
 
     /// Set node input variables (fully replaces previous node's vars)
@@ -75,8 +66,7 @@ impl ExecutionContext {
 
     /// Resolve a variable by name using the resolution order
     pub fn resolve(&self, name: &str) -> Option<&Value> {
-        self.session.get(name)
-            .or_else(|| self.execution_vars.get(name))
+        self.execution_vars.get(name)
             .or_else(|| self.context.get(name))
             .or_else(|| self.node_input_vars.get(name))
             .or_else(|| self.flow_vars.get(name))
@@ -200,7 +190,7 @@ fn value_to_string(value: &Value) -> String {
 }
 
 /// Simple random number generator (no external dependency)
-fn rand_simple() -> i64 {
+pub(crate) fn rand_simple() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -210,7 +200,7 @@ fn rand_simple() -> i64 {
 }
 
 /// Generate a random alphanumeric string
-fn generate_random_string(len: usize) -> String {
+pub(crate) fn generate_random_string(len: usize) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     (0..len)
         .map(|_| {
@@ -221,7 +211,7 @@ fn generate_random_string(len: usize) -> String {
 }
 
 /// Generate a random password with mixed case, digits, and special chars
-fn generate_random_password(len: usize) -> String {
+pub(crate) fn generate_random_password(len: usize) -> String {
     const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
     (0..len)
         .map(|_| {

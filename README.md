@@ -26,7 +26,7 @@ exports for chaining, and Rhai scripting throughout.
 - [Pre-test scripts](#pre-test-scripts)
 - [Assertions (post-test)](#assertions-post-test)
 - [Exports — chaining values](#exports--chaining-values)
-- [Session variables](#session-variables)
+- [Script variables](#script-variables)
 - [Building a flow](#building-a-flow)
 - [Environments & globals](#environments--globals)
 - [API reference](#api-reference)
@@ -94,8 +94,8 @@ Open the app, create a **Project**, and start adding test cases and flows.
   Environment (e.g. *Dev*, *Staging*) overrides globals when it's active.
 - **Exports** — values pulled out of a response via JSONPath and made available to
   later test cases in a flow.
-- **Session variables** — a disposable, per-project store that scripts can write to
-  so you can chain standalone runs without a flow. (See below.)
+- **Script variables** — pre/post-test scripts set `SAT.vars.x` (temporary, this
+  run) or `SAT.env.x` (persisted to the active environment). (See below.)
 
 ---
 
@@ -154,17 +154,15 @@ Run it standalone from the editor's **Run Test**, or drop it into a flow.
 ## Variables & interpolation
 
 Anywhere in a URL, header, or payload, `{{name}}` is replaced with a resolved
-value. Resolution walks these tiers **top-to-bottom and stops at the first match**
-(so tier 0 shadows everything):
+value. Resolution walks these tiers **top-to-bottom and stops at the first match**:
 
 | Priority | Tier | Where it comes from |
 |:--:|------|---------------------|
-| 0 | **Session** | `SAT.session.x` written by scripts (persists across standalone runs) |
 | 1 | **Execution vars** | one-off values passed into a run |
-| 2 | **Context** | exports from earlier test cases + `SAT.vars` from pre-test scripts |
+| 2 | **Context** | exports from earlier test cases + `SAT.vars` from scripts (this run) |
 | 3 | Node input vars | per-node overrides set on the flow canvas |
 | 4 | Flow vars | variables scoped to a flow |
-| 5 | **Environment** | active Environment layered over Globals (env wins) |
+| 5 | **Environment** | active Environment layered over Globals (env wins); `SAT.env` writes land here |
 | 6 | **Built-ins** | generated values (below) |
 
 ### Built-in variables
@@ -201,11 +199,12 @@ Example — dynamic signup payload:
 > needs the *same* value you generated, don't repeat the macro — **capture it once
 > and reference it by name**:
 >
-> - **In a flow:** add an [Output variable](#exports--chaining-values) (e.g.
->   `signup_email ← $.email`) and use `{{signup_email}}` downstream.
-> - **Across standalone runs:** save it in a post-test script
->   (`SAT.session.signup_email = response.json.email;`) and reference
->   `{{signup_email}}`. See [Session variables](#session-variables).
+> - **Generate it once in a script and reuse it.** In a pre-test script, use the
+>   generator functions and store the result:
+>   `SAT.vars.email = randomEmail();` — then reference `{{email}}` in the payload
+>   and everywhere downstream. See [Script variables](#script-variables).
+> - **From the response:** add an [Output variable](#exports--chaining-values)
+>   (e.g. `signup_email ← $.email`) and use `{{signup_email}}` downstream.
 
 ---
 
@@ -215,16 +214,16 @@ A [Rhai](https://rhai.rs) script that runs **before** the request — use it to
 prepare values. It cannot see the response (it hasn't happened yet).
 
 ```rhai
-// This-run-only variables (tier 2) — gone after the run
-SAT.vars.pageSize = 20;
-SAT.vars.greeting = "hello " + "world";
+// Temporary — available as {{...}} for this run only, then gone
+SAT.vars.mobile = randomPhone();
+SAT.vars.email  = randomEmail();
 
-// Persistent session variables (tier 0) — survive across standalone runs
-SAT.session.lastActor = "smoke-test";
+// Persist into the active Environment (or Globals) — survives future runs
+SAT.env.apiSecret = "ZXlvI14oYWZq";
 ```
 
-- `SAT.vars.x = …` → a **transient** variable, available as `{{x}}` in this run.
-- `SAT.session.x = …` → a **session** variable (see below).
+See [Script variables](#script-variables) for `SAT.vars` vs `SAT.env` and the
+generator functions (`randomPhone()`, `randomEmail()`, `randomInt(min,max)`, …).
 
 ---
 
@@ -242,8 +241,8 @@ The `response` object exposes:
 - `response.headers` — response header map
 
 ```rhai
-// Save a value for later runs, THEN assert
-SAT.session.token = response.json.access_token;
+// Persist a value into the environment, THEN assert
+SAT.env.token = response.json.access_token;
 
 // The final expression decides pass (true) / fail (false)
 response.status == 200 && response.json.access_token != ()
@@ -258,7 +257,7 @@ response.json.user.email.contains("@")               // string check
 response.status == 200 && response.json.ok == true   // combined
 ```
 
-> Side-effects (like `SAT.session.x = …`) apply **even if the assertion returns
+> Side-effects (like `SAT.env.x = …`) apply **even if the assertion returns
 > `false`** — matching Postman. A *script error* (bad syntax) applies nothing.
 
 ---
@@ -294,32 +293,53 @@ Things to remember:
   nothing is skipped silently.
 - **Scope is one flow run** — the context is fresh each run.
 
-**Exports vs. session:** exports chain values **within a flow**. Session variables
-(below) chain **standalone** runs.
+**Exports vs. scripts:** exports pull values from a **response**. To chain a value
+you *generated* (a random mobile/email that the API never echoes back), set it in a
+script instead — see below.
 
 ---
 
-## Session variables
+## Script variables
 
-A **Postman-style, disposable store** that scripts write to via `SAT.session.x`.
-It's per-project, kept in the browser (localStorage), never saved into your project
-config, and sits at the **top** of the resolution order — so a value you just set
-always wins. Use it to run a series of standalone test cases and chain values
-**without building a flow**.
+Pre-test and post-test scripts can set variables two ways:
+
+| | `SAT.vars.x` | `SAT.env.x` |
+|---|---|---|
+| **Lifetime** | this execution only | persisted to the environment |
+| **Within a flow run** | visible to all downstream nodes | visible to all downstream nodes |
+| **After the run** | gone | stays in the active Environment (or Globals) |
+| **Use it for** | chaining inside one flow run | keeping a value across separate runs |
+
+`SAT.env.x` writes into the **active Environment** (or **Globals** when "No
+environment" is selected) and is saved to the project — it *will* add variables to
+your environment, by design.
+
+### Generator functions
+
+Scripts can call the same generators behind the `{{$…}}` macros:
 
 ```rhai
-// In "Sign up" — post-test script
-SAT.session.token = response.json.token;
-response.status == 200
+SAT.vars.mobile  = randomPhone();
+SAT.vars.email   = randomEmail();          // or randomEmail("loadtest.com")
+SAT.vars.company = randomCompany();
+SAT.vars.otp     = randomInt(1000, 9999);
 ```
 
-```
-// In "Set password" — header, run standalone right after
-Authorization: Bearer {{token}}
+Available: `randomEmail()`, `randomPhone()`, `randomCompany()`, `randomName()`,
+`randomUsername()`, `randomAddress()`, `randomInt(min,max)`, `randomString(len)`,
+`randomPassword(len)`, `uuid()`, `timestamp()`, `timestampMs()`, `isoDate()`.
+
+### Example — generate once, reuse everywhere (a flow)
+
+In the **Sign up** node's pre-test script:
+
+```rhai
+SAT.vars.mobile = randomPhone();
+SAT.vars.email  = randomEmail();
 ```
 
-The header's **⚡ Session** indicator shows what's currently set; clear it any time.
-`SAT.vars` = this run only; `SAT.session` = persists across runs until cleared.
+Then `{{mobile}}` / `{{email}}` resolve the same value in the signup payload **and**
+in every downstream node (Set Password, Verify OTP) for that run.
 
 ---
 
@@ -383,7 +403,7 @@ Base path: `http://127.0.0.1:3001/api/v1`
 |--------|------|---------|
 | `GET/POST` | `/projects` | list / create projects |
 | `GET/POST` | `/test-cases` | list / create test cases |
-| `POST` | `/test-cases/:id/execute` | run a single test case (accepts overrides + `session`) |
+| `POST` | `/test-cases/:id/execute` | run a single test case (accepts overrides + `environment`) |
 | `GET/POST` | `/flows` | list / create flows |
 | `POST` | `/flows/:id/execute` | run a flow (streams over SSE) |
 | `GET/POST` | `/groups` | list / create groups |

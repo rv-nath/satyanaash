@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode, useCallback, useEffect } from "react";
+import { createContext, useContext, useState, ReactNode, useCallback, useEffect, useMemo } from "react";
 import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -11,7 +11,12 @@ import { useAutoValidate, ValidationStatus } from "@/hooks/useAutoValidate";
 import { toast } from "sonner";
 import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
 import { generateUUID } from "@/lib/utils/uuid";
-import { readSession, writeSession, clearSession, type SessionVars } from "@/lib/session";
+import {
+  readGlobals, readEnvironments, effectiveEnv, mergeEnvWrites,
+  getActiveEnvId, setActiveEnvId as persistActiveEnvId,
+  type EnvVars, type Environment,
+} from "@/lib/environments";
+import { useUpdateProject } from "@/hooks/useApi";
 
 export interface TestCase {
   id: string;
@@ -71,10 +76,14 @@ interface TestProjectContextType {
   openSettingsTab: () => void;
   closeWorkspaceTab: (key: string) => void;
   setActiveWorkspaceTab: (key: string) => void;
-  // Session variables (SAT.session) — disposable, per-project, localStorage-backed
-  sessionVars: SessionVars;
-  setSessionVars: (vars: SessionVars) => void;
-  clearSessionVars: () => void;
+  // Environments & globals (per-user active env; SAT.env writes persist here)
+  globals: EnvVars;
+  environments: Environment[];
+  activeEnvId: string | null;
+  activeEnv: Environment | undefined;
+  selectEnv: (id: string | null) => void;
+  effectiveEnvironment: () => EnvVars;
+  applyEnvWrites: (writes: Record<string, unknown>) => void;
   // Selection and editing state for test cases
   selectedTestCaseId: string | null;
   setSelectedTestCaseId: (id: string | null) => void;
@@ -247,23 +256,31 @@ export const TestProjectProvider = ({
   );
   const openSettingsTab = useCallback(() => setWorkspace((s) => openSettings(s)), []);
 
-  // Session variables — seed from localStorage; keep in state so the header
-  // indicator and the editor share one reactive source of truth.
-  const [sessionVars, setSessionVarsState] = useState<SessionVars>(() =>
-    projectId ? readSession(projectId) : {}
+  // Environments & globals — derived from project settings; active env per-user.
+  const updateProjectMutation = useUpdateProject();
+  const globals = useMemo(() => readGlobals(project?.settings), [project?.settings]);
+  const environments = useMemo(() => readEnvironments(project?.settings), [project?.settings]);
+  const [activeEnvId, setActiveEnvIdState] = useState<string | null>(
+    () => (projectId ? getActiveEnvId(projectId) : null)
   );
   useEffect(() => {
-    setSessionVarsState(projectId ? readSession(projectId) : {});
+    setActiveEnvIdState(projectId ? getActiveEnvId(projectId) : null);
   }, [projectId]);
-  const setSessionVars = useCallback((vars: SessionVars) => {
-    const next = vars ?? {};
-    setSessionVarsState(next);
-    if (projectId) writeSession(projectId, next);
+  const activeEnv = environments.find((e) => e.id === activeEnvId);
+  const selectEnv = useCallback((id: string | null) => {
+    setActiveEnvIdState(id);
+    if (projectId) persistActiveEnvId(projectId, id);
   }, [projectId]);
-  const clearSessionVars = useCallback(() => {
-    setSessionVarsState({});
-    if (projectId) clearSession(projectId);
-  }, [projectId]);
+  const effectiveEnvironment = useCallback(
+    () => effectiveEnv(globals, environments, activeEnvId),
+    [globals, environments, activeEnvId]
+  );
+  // Persist SAT.env writes into the active environment (or Globals if none active).
+  const applyEnvWrites = useCallback((writes: Record<string, unknown>) => {
+    if (!project || !projectId || !writes || Object.keys(writes).length === 0) return;
+    const settings = mergeEnvWrites(project.settings, activeEnvId, writes);
+    updateProjectMutation.mutate({ id: projectId, data: { settings } });
+  }, [project, projectId, activeEnvId, updateProjectMutation]);
   const closeWorkspaceTab = useCallback((key: string) => setWorkspace((s) => closeWsTab(s, key)), []);
   const setActiveWorkspaceTab = useCallback((key: string) => setWorkspace((s) => setActiveWsTab(s, key)), []);
 
@@ -775,9 +792,13 @@ export const TestProjectProvider = ({
       value={{
         project: project || null,
         projectId: projectId || null,
-        sessionVars,
-        setSessionVars,
-        clearSessionVars,
+        globals,
+        environments,
+        activeEnvId,
+        activeEnv,
+        selectEnv,
+        effectiveEnvironment,
+        applyEnvWrites,
         testGroups,
         nodes,
         edges,

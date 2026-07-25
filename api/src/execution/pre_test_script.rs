@@ -10,12 +10,12 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
-/// What a pre-test script produced: transient run vars (SAT.vars) and
-/// persistent session writes (SAT.session).
+/// What a pre-test script produced: transient run vars (SAT.vars, this run only)
+/// and environment writes (SAT.env, persisted to the active environment).
 #[derive(Debug, Default)]
 pub struct PreTestOutcome {
     pub vars: HashMap<String, Value>,
-    pub session: HashMap<String, Value>,
+    pub env: HashMap<String, Value>,
 }
 
 /// Pre-test script engine using Rhai for variable setup
@@ -36,48 +36,58 @@ impl PreTestScriptEngine {
         engine.set_max_array_size(10_000);
         engine.set_max_map_size(10_000);
 
+        // Expose randomEmail(), randomPhone(), randomInt(min,max), etc.
+        super::generators::register(&mut engine);
+
         Self { engine }
     }
 
-    /// Execute a pre-test script and return variables set via SAT.vars or vars
+    /// Execute a pre-test script.
     ///
-    /// Rhai doesn't support nested map mutation (SAT.vars.x = "v" modifies a copy),
-    /// so we expose `vars` as a top-level mutable map and rewrite `SAT.vars.` references.
+    /// Rhai can't mutate a nested map in place, so we expose `vars` and `env` as
+    /// top-level mutable maps and rewrite `SAT.vars.` / `SAT.env.` references.
+    /// `SAT.vars` is transient (this run); `SAT.env` writes get persisted.
+    /// Only genuinely new/changed `env` keys are returned (diffed against `env_in`).
     pub fn execute(
         &self,
         script: &str,
-        session_in: &HashMap<String, Value>,
+        env_in: &HashMap<String, Value>,
     ) -> Result<PreTestOutcome, AppError> {
         let mut scope = Scope::new();
 
-        // Expose `vars` as a top-level mutable map (single-level access works in Rhai)
+        // `vars` — a fresh mutable map for transient values
         scope.push("vars", Map::new());
 
-        // Expose `session`, seeded with existing session values so scripts can read them
-        let mut session_map = Map::new();
-        for (k, v) in session_in {
-            session_map.insert(k.as_str().into(), json_to_rhai(v));
+        // `env` — seeded with the current environment so scripts can read existing values
+        let mut env_map = Map::new();
+        for (k, v) in env_in {
+            env_map.insert(k.as_str().into(), json_to_rhai(v));
         }
-        scope.push("session", session_map);
+        scope.push("env", env_map);
 
-        // Rewrite SAT.session.xxx → session.xxx and SAT.vars.xxx → vars.xxx
+        // Rewrite SAT.env.xxx → env.xxx and SAT.vars.xxx → vars.xxx
         let rewritten = script
-            .replace("SAT.session.", "session.")
+            .replace("SAT.env.", "env.")
             .replace("SAT.vars.", "vars.");
 
-        // Run the script (we only care about side effects on `vars` / `session`)
+        // Run the script (we only care about side effects on `vars` / `env`)
         self.engine.run_with_scope(&mut scope, &rewritten)
             .map_err(|e| AppError::Internal(format!("Pre-test script error: {}", e)))?;
 
         let vars_map: Map = scope.get_value("vars").unwrap_or_default();
-        let session_out: Map = scope.get_value("session").unwrap_or_default();
+        let env_out: Map = scope.get_value("env").unwrap_or_default();
 
         let mut outcome = PreTestOutcome::default();
         for (k, v) in vars_map {
             outcome.vars.insert(k.to_string(), rhai_to_json(&v));
         }
-        for (k, v) in session_out {
-            outcome.session.insert(k.to_string(), rhai_to_json(&v));
+        // Only return env keys the script actually added or changed
+        for (k, v) in env_out {
+            let json = rhai_to_json(&v);
+            let key = k.to_string();
+            if env_in.get(&key) != Some(&json) {
+                outcome.env.insert(key, json);
+            }
         }
         Ok(outcome)
     }
@@ -186,7 +196,7 @@ mod tests {
         let engine = PreTestScriptEngine::new();
         let out = engine.execute("", &empty()).unwrap();
         assert!(out.vars.is_empty());
-        assert!(out.session.is_empty());
+        assert!(out.env.is_empty());
     }
 
     #[test]
@@ -204,15 +214,27 @@ mod tests {
     }
 
     #[test]
-    fn test_session_write_and_read() {
+    fn test_env_write_and_read_diff() {
         let engine = PreTestScriptEngine::new();
         let mut seed = HashMap::new();
         seed.insert("existing".to_string(), Value::String("v1".to_string()));
         let out = engine.execute(
-            r#"SAT.session.token = "abc"; SAT.session.copied = SAT.session.existing;"#,
+            r#"SAT.env.token = "abc"; SAT.env.copied = SAT.env.existing;"#,
             &seed,
         ).unwrap();
-        assert_eq!(out.session.get("token"), Some(&Value::String("abc".to_string())));
-        assert_eq!(out.session.get("copied"), Some(&Value::String("v1".to_string())));
+        // Only new/changed keys are returned — not the untouched seed value
+        assert_eq!(out.env.get("token"), Some(&Value::String("abc".to_string())));
+        assert_eq!(out.env.get("copied"), Some(&Value::String("v1".to_string())));
+        assert_eq!(out.env.get("existing"), None);
+    }
+
+    #[test]
+    fn test_generator_functions() {
+        let engine = PreTestScriptEngine::new();
+        let out = engine
+            .execute(r#"SAT.vars.n = randomInt(5, 5); SAT.vars.u = randomUsername();"#, &empty())
+            .unwrap();
+        assert_eq!(out.vars.get("n"), Some(&Value::Number(5.into())));
+        assert!(matches!(out.vars.get("u"), Some(Value::String(s)) if s.starts_with("user_")));
     }
 }

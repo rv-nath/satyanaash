@@ -14,11 +14,11 @@ use std::collections::HashMap;
 use crate::error::AppError;
 
 /// Result of a post-test/assertion script: the pass/fail boolean plus any
-/// SAT.session writes the script performed (side-effects, applied even on fail).
+/// SAT.env writes the script performed (side-effects, applied even on fail).
 #[derive(Debug)]
 pub struct AssertionOutcome {
     pub passed: bool,
-    pub session: HashMap<String, Value>,
+    pub env: HashMap<String, Value>,
 }
 
 /// Assertion engine using Rhai for script evaluation
@@ -39,12 +39,15 @@ impl AssertionEngine {
         engine.set_max_array_size(10_000);
         engine.set_max_map_size(10_000);
 
+        // Expose randomEmail(), randomPhone(), randomInt(min,max), etc.
+        super::generators::register(&mut engine);
+
         Self { engine }
     }
 
-    /// Evaluate an assertion script
-    /// Returns Ok(true) if passed, Ok(false) if failed
-    /// Returns Err if script has syntax/runtime errors
+    /// Evaluate a post-test/assertion script.
+    /// The last expression is the pass/fail boolean; `SAT.env.x = …` writes are
+    /// captured as side-effects (applied even when the assertion returns false).
     pub fn evaluate(
         &self,
         script: &str,
@@ -52,7 +55,7 @@ impl AssertionEngine {
         body: &str,
         json: &Option<Value>,
         headers: &HashMap<String, String>,
-        session_in: &HashMap<String, Value>,
+        env_in: &HashMap<String, Value>,
     ) -> Result<AssertionOutcome, AppError> {
         let mut scope = Scope::new();
 
@@ -76,30 +79,34 @@ impl AssertionEngine {
 
         scope.push("response", response);
 
-        // Expose `session`, seeded with existing values so scripts can read + write
-        let mut session_map = Map::new();
-        for (k, v) in session_in {
-            session_map.insert(k.as_str().into(), json_to_rhai(v));
+        // Expose `env`, seeded with the current environment so scripts can read + write
+        let mut env_map = Map::new();
+        for (k, v) in env_in {
+            env_map.insert(k.as_str().into(), json_to_rhai(v));
         }
-        scope.push("session", session_map);
+        scope.push("env", env_map);
 
-        // Rewrite SAT.session.xxx → session.xxx (side-effects run as the script does)
-        let rewritten = script.replace("SAT.session.", "session.");
+        // Rewrite SAT.env.xxx → env.xxx (side-effects run as the script does)
+        let rewritten = script.replace("SAT.env.", "env.");
 
-        // Evaluate: last expression is the pass/fail boolean; session writes are side-effects
+        // Evaluate: last expression is the pass/fail boolean; env writes are side-effects
         let passed = match self.engine.eval_with_scope::<bool>(&mut scope, &rewritten) {
             Ok(result) => result,
             Err(e) => return Err(AppError::AssertionError(format!("Assertion script error: {}", e))),
         };
 
-        // Read back any session writes (applied even if `passed` is false)
-        let session_out: Map = scope.get_value("session").unwrap_or_default();
-        let mut session = HashMap::new();
-        for (k, v) in session_out {
-            session.insert(k.to_string(), rhai_to_json(&v));
+        // Read back any env writes (applied even if `passed` is false); only new/changed keys
+        let env_out: Map = scope.get_value("env").unwrap_or_default();
+        let mut env = HashMap::new();
+        for (k, v) in env_out {
+            let json = rhai_to_json(&v);
+            let key = k.to_string();
+            if env_in.get(&key) != Some(&json) {
+                env.insert(key, json);
+            }
         }
 
-        Ok(AssertionOutcome { passed, session })
+        Ok(AssertionOutcome { passed, env })
     }
 
     /// Default assertion: pass if status is 2xx

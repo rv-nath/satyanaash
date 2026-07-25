@@ -1,7 +1,10 @@
 # Session Variables — Design Spec
 
 **Date:** 2026-07-25
-**Status:** Approved design (pending user review of this doc)
+**Status:** ⚠️ Superseded. The separate persistent "session" tier proved to be one
+concept too many. It was collapsed into: `SAT.vars` (temporary, this execution) +
+`SAT.env` (persisted to the active environment). See the README's *Script
+variables* section for the shipped model.
 
 ## Goal
 

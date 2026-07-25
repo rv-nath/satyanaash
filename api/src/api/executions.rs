@@ -270,9 +270,9 @@ pub struct ExecuteTestCaseRequest {
     /// Variables to use during execution
     #[serde(default)]
     pub variables: HashMap<String, Value>,
-    /// Session variables (SAT.session) carried in from the client's local store
-    #[serde(default)]
-    pub session: HashMap<String, Value>,
+    /// Effective environment (Globals + active Environment, merged client-side).
+    /// If omitted, the server falls back to project Globals only.
+    pub environment: Option<HashMap<String, Value>>,
     /// Override: HTTP method (if provided, uses this instead of saved value)
     pub method: Option<String>,
     /// Override: Endpoint URL
@@ -309,11 +309,8 @@ pub async fn execute_test_case(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // Extract project-level variables
-    let project_variables = extract_project_variables(&project.settings);
-
     // Apply overrides from request body (for running unsaved changes)
-    let (variables, session) = if let Some(Json(req)) = body {
+    let (variables, env_override) = if let Some(Json(req)) = body {
         if let Some(method) = req.method {
             test_case.method = method;
         }
@@ -332,16 +329,19 @@ pub async fn execute_test_case(
         if let Some(pre_test_script) = req.pre_test_script {
             test_case.pre_test_script = Some(pre_test_script);
         }
-        (req.variables, req.session)
+        (req.variables, req.environment)
     } else {
-        (HashMap::new(), HashMap::new())
+        (HashMap::new(), None)
     };
+
+    // Effective environment: client-supplied (Globals + active env) if present,
+    // else fall back to project Globals only.
+    let environment = env_override.unwrap_or_else(|| extract_project_variables(&project.settings));
 
     // Create execution engine
     let engine = ExecutionEngine::new(false, base_url);
 
-    // Execute the test case with project variables as environment
-    let result = engine.execute_test_case(&test_case, project_variables, variables, session).await;
+    let result = engine.execute_test_case(&test_case, environment, variables).await;
 
     Ok(Json(result))
 }

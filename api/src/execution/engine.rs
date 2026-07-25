@@ -50,9 +50,9 @@ pub struct NodeResult {
     pub response: Option<ResponseLog>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exports: Option<HashMap<String, Value>>,
-    /// Session store after this run (SAT.session writes) — client persists it.
+    /// Environment writes made by SAT.env during this run — client persists them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<HashMap<String, Value>>,
+    pub env: Option<HashMap<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub logs: Vec<String>,
@@ -368,7 +368,7 @@ impl ExecutionEngine {
                     request: None,
                     response: None,
                     exports: None,
-                    session: None,
+                    env: None,
                     error_message: Some("Node missing testCaseId".to_string()),
                     logs,
                 };
@@ -394,7 +394,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
-                        session: None,
+                        env: None,
                         error_message: Some("Test case not found".to_string()),
                         logs,
                     };
@@ -409,7 +409,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
-                        session: None,
+                        env: None,
                         error_message: Some(format!("Failed to fetch test case: {}", e)),
                         logs,
                     };
@@ -455,10 +455,13 @@ impl ExecutionEngine {
         }
         ctx.set_node_input_vars(node_input_vars);
 
+        // Accumulates SAT.env writes from pre-test + assertion scripts (persisted by the client)
+        let mut env_writes: HashMap<String, Value> = HashMap::new();
+
         // Execute pre-test script if present (sets variables before interpolation)
         if let Some(ref script) = test_case.pre_test_script {
             if !script.trim().is_empty() {
-                match self.pre_test.execute(script, &ctx.session_snapshot()) {
+                match self.pre_test.execute(script, &ctx.environment_snapshot()) {
                     Ok(outcome) => {
                         for (k, v) in outcome.vars {
                             if self.debug_mode {
@@ -466,7 +469,10 @@ impl ExecutionEngine {
                             }
                             ctx.set(&k, v);
                         }
-                        ctx.apply_session(outcome.session);
+                        for (k, v) in outcome.env {
+                            ctx.set_environment_var(&k, v.clone());
+                            env_writes.insert(k, v);
+                        }
                     }
                     Err(e) => {
                         return NodeResult {
@@ -478,7 +484,7 @@ impl ExecutionEngine {
                             request: None,
                             response: None,
                             exports: None,
-                            session: None,
+                            env: None,
                             error_message: Some(format!("Pre-test script failed: {}", e)),
                             logs,
                         };
@@ -500,7 +506,7 @@ impl ExecutionEngine {
                     request: None,
                     response: None,
                     exports: None,
-                    session: None,
+                    env: None,
                     error_message: Some(format!("URL interpolation failed: {}", e)),
                     logs,
                 };
@@ -540,7 +546,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
-                        session: None,
+                        env: None,
                         error_message: Some(format!("Payload interpolation failed: {}", e)),
                         logs,
                     };
@@ -576,7 +582,7 @@ impl ExecutionEngine {
                     request: Some(request_log), // Include request even on failure
                     response: None,
                     exports: None,
-                    session: None,
+                    env: None,
                     error_message: Some(format!("HTTP request failed: {}", e)),
                     logs,
                 };
@@ -595,13 +601,16 @@ impl ExecutionEngine {
                 &http_result.response.body,
                 &http_result.response.json,
                 &http_result.response.headers,
-                &ctx.session_snapshot(),
+                &ctx.environment_snapshot(),
             ) {
                 Ok(outcome) => {
                     if self.debug_mode {
                         logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
                     }
-                    ctx.apply_session(outcome.session);
+                    for (k, v) in outcome.env {
+                        ctx.set_environment_var(&k, v.clone());
+                        env_writes.insert(k, v);
+                    }
                     outcome.passed
                 }
                 Err(e) => {
@@ -614,7 +623,7 @@ impl ExecutionEngine {
                         request: Some(http_result.request),
                         response: Some(http_result.response),
                         exports: None,
-                        session: None,
+                        env: None,
                         error_message: Some(format!("Assertion error: {}", e)),
                         logs,
                     };
@@ -671,7 +680,7 @@ impl ExecutionEngine {
             request: Some(http_result.request),
             response: Some(http_result.response),
             exports,
-            session: Some(ctx.session_snapshot()),
+            env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
             error_message: None,
             logs,
         }
@@ -789,12 +798,13 @@ impl ExecutionEngine {
         test_case: &TestCase,
         environment: HashMap<String, Value>,
         variables: HashMap<String, Value>,
-        session: HashMap<String, Value>,
     ) -> NodeResult {
         let start = std::time::Instant::now();
         let mut logs = Vec::new();
         let mut ctx = ExecutionContext::new(variables, environment, HashMap::new());
-        ctx.set_session_store(session);
+
+        // Accumulates SAT.env writes from pre-test + assertion scripts (persisted by the client)
+        let mut env_writes: HashMap<String, Value> = HashMap::new();
 
         if self.debug_mode {
             logs.push(format!("Executing test case: {}", test_case.name));
@@ -803,7 +813,7 @@ impl ExecutionEngine {
         // Execute pre-test script if present (sets variables before interpolation)
         if let Some(ref script) = test_case.pre_test_script {
             if !script.trim().is_empty() {
-                match self.pre_test.execute(script, &ctx.session_snapshot()) {
+                match self.pre_test.execute(script, &ctx.environment_snapshot()) {
                     Ok(outcome) => {
                         for (k, v) in outcome.vars {
                             if self.debug_mode {
@@ -811,7 +821,10 @@ impl ExecutionEngine {
                             }
                             ctx.set(&k, v);
                         }
-                        ctx.apply_session(outcome.session);
+                        for (k, v) in outcome.env {
+                            ctx.set_environment_var(&k, v.clone());
+                            env_writes.insert(k, v);
+                        }
                     }
                     Err(e) => {
                         return NodeResult {
@@ -823,7 +836,7 @@ impl ExecutionEngine {
                             request: None,
                             response: None,
                             exports: None,
-                            session: None,
+                            env: None,
                             error_message: Some(format!("Pre-test script failed: {}", e)),
                             logs,
                         };
@@ -845,7 +858,7 @@ impl ExecutionEngine {
                     request: None,
                     response: None,
                     exports: None,
-                    session: None,
+                    env: None,
                     error_message: Some(format!("URL interpolation failed: {}", e)),
                     logs,
                 };
@@ -885,7 +898,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
-                        session: None,
+                        env: None,
                         error_message: Some(format!("Payload interpolation failed: {}", e)),
                         logs,
                     };
@@ -921,7 +934,7 @@ impl ExecutionEngine {
                     request: Some(request_log),
                     response: None,
                     exports: None,
-                    session: None,
+                    env: None,
                     error_message: Some(format!("HTTP request failed: {}", e)),
                     logs,
                 };
@@ -940,13 +953,16 @@ impl ExecutionEngine {
                 &http_result.response.body,
                 &http_result.response.json,
                 &http_result.response.headers,
-                &ctx.session_snapshot(),
+                &ctx.environment_snapshot(),
             ) {
                 Ok(outcome) => {
                     if self.debug_mode {
                         logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
                     }
-                    ctx.apply_session(outcome.session);
+                    for (k, v) in outcome.env {
+                        ctx.set_environment_var(&k, v.clone());
+                        env_writes.insert(k, v);
+                    }
                     outcome.passed
                 }
                 Err(e) => {
@@ -959,7 +975,7 @@ impl ExecutionEngine {
                         request: Some(http_result.request),
                         response: Some(http_result.response),
                         exports: None,
-                        session: None,
+                        env: None,
                         error_message: Some(format!("Assertion error: {}", e)),
                         logs,
                     };
@@ -996,7 +1012,7 @@ impl ExecutionEngine {
             request: Some(http_result.request),
             response: Some(http_result.response),
             exports,
-            session: Some(ctx.session_snapshot()),
+            env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
             error_message: None,
             logs,
         }

@@ -100,7 +100,7 @@ function FolderTabs({ active, onChange }: { active: string; onChange: (v: string
 }
 
 export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEditorProps) => {
-  const { projectId, nodes, edges, closeTestCaseEditor, sessionVars, setSessionVars } = useTestProject();
+  const { projectId, nodes, edges, closeTestCaseEditor, effectiveEnvironment, applyEnvWrites } = useTestProject();
 
   const isCreateMode = !testCaseId;
 
@@ -371,15 +371,15 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           payload: hasPayload && payload.trim() ? payload : undefined,
           assertion_script: postTestScript || undefined,
           pre_test_script: preTestScript || undefined,
-          session: sessionVars,
+          environment: effectiveEnvironment(),
         },
       });
       setExecutionResult(result);
       setActiveTab("response");
 
-      // Persist any SAT.session writes so the next standalone run can read them
-      if (result.session) {
-        setSessionVars(result.session as Record<string, unknown>);
+      // Persist any SAT.env writes into the active environment (or Globals)
+      if (result.env) {
+        applyEnvWrites(result.env as Record<string, unknown>);
       }
 
       if (result.status === 'passed') {
@@ -853,11 +853,11 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                     id="pre-script"
                     value={preTestScript}
                     onChange={(e) => handleFieldChange(setPreTestScript)(e.target.value)}
-                    placeholder="// Executed before HTTP request&#10;// Access variables: SAT.vars.userId&#10;// Set variables: SAT.vars.customHeader = 'value';"
+                    placeholder="// Runs before the request&#10;// Temp (this run):   SAT.vars.mobile = randomPhone();&#10;// Persist to env:    SAT.env.mobile = randomPhone();&#10;// Generators: randomEmail(), randomPhone(), randomInt(min,max), uuid()"
                     className="font-mono text-xs min-h-[200px]"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Runs before request. This-run vars: <code className="px-1 py-0.5 bg-muted rounded text-xs">SAT.vars.x</code> · persist across runs: <code className="px-1 py-0.5 bg-muted rounded text-xs">SAT.session.x</code>
+                    Runs before request. Temp: <code className="px-1 py-0.5 bg-muted rounded text-xs">SAT.vars.x</code> · persist to environment: <code className="px-1 py-0.5 bg-muted rounded text-xs">SAT.env.x</code>
                   </p>
                 </div>
 
@@ -924,7 +924,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                     id="post-script"
                     value={postTestScript}
                     onChange={(e) => handleFieldChange(setPostTestScript)(e.target.value)}
-                    placeholder="// Save a value for later runs (persists), then assert&#10;SAT.session.token = response.json.access_token;&#10;&#10;// Last expression is the pass/fail result&#10;response.status == 200 && response.json.access_token != ()"
+                    placeholder="// Persist a value to the environment, then assert&#10;SAT.env.token = response.json.access_token;&#10;&#10;// Last expression is the pass/fail result&#10;response.status == 200 && response.json.access_token != ()"
                     className="font-mono text-xs min-h-[250px]"
                   />
                   <div className="space-y-1">
@@ -932,7 +932,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                       Last expression must be true (pass) or false (fail). Set vars first if needed.
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Read: <code className="px-1 py-0.5 bg-muted rounded">response.status</code>, <code className="px-1 py-0.5 bg-muted rounded">response.json</code>, <code className="px-1 py-0.5 bg-muted rounded">response.body</code>, <code className="px-1 py-0.5 bg-muted rounded">response.headers</code> · Save across runs: <code className="px-1 py-0.5 bg-muted rounded">SAT.session.x = …</code>
+                      Read: <code className="px-1 py-0.5 bg-muted rounded">response.status</code>, <code className="px-1 py-0.5 bg-muted rounded">response.json</code>, <code className="px-1 py-0.5 bg-muted rounded">response.body</code>, <code className="px-1 py-0.5 bg-muted rounded">response.headers</code> · Persist to environment: <code className="px-1 py-0.5 bg-muted rounded">SAT.env.x = …</code>
                     </p>
                   </div>
                 </div>
