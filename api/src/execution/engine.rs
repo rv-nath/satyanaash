@@ -50,6 +50,9 @@ pub struct NodeResult {
     pub response: Option<ResponseLog>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exports: Option<HashMap<String, Value>>,
+    /// Session store after this run (SAT.session writes) — client persists it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<HashMap<String, Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub logs: Vec<String>,
@@ -365,6 +368,7 @@ impl ExecutionEngine {
                     request: None,
                     response: None,
                     exports: None,
+                    session: None,
                     error_message: Some("Node missing testCaseId".to_string()),
                     logs,
                 };
@@ -390,6 +394,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
+                        session: None,
                         error_message: Some("Test case not found".to_string()),
                         logs,
                     };
@@ -404,6 +409,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
+                        session: None,
                         error_message: Some(format!("Failed to fetch test case: {}", e)),
                         logs,
                     };
@@ -452,14 +458,15 @@ impl ExecutionEngine {
         // Execute pre-test script if present (sets variables before interpolation)
         if let Some(ref script) = test_case.pre_test_script {
             if !script.trim().is_empty() {
-                match self.pre_test.execute(script) {
-                    Ok(vars) => {
-                        for (k, v) in vars {
+                match self.pre_test.execute(script, &ctx.session_snapshot()) {
+                    Ok(outcome) => {
+                        for (k, v) in outcome.vars {
                             if self.debug_mode {
                                 logs.push(format!("Pre-test set: {} = {:?}", k, v));
                             }
                             ctx.set(&k, v);
                         }
+                        ctx.apply_session(outcome.session);
                     }
                     Err(e) => {
                         return NodeResult {
@@ -471,6 +478,7 @@ impl ExecutionEngine {
                             request: None,
                             response: None,
                             exports: None,
+                            session: None,
                             error_message: Some(format!("Pre-test script failed: {}", e)),
                             logs,
                         };
@@ -492,6 +500,7 @@ impl ExecutionEngine {
                     request: None,
                     response: None,
                     exports: None,
+                    session: None,
                     error_message: Some(format!("URL interpolation failed: {}", e)),
                     logs,
                 };
@@ -531,6 +540,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
+                        session: None,
                         error_message: Some(format!("Payload interpolation failed: {}", e)),
                         logs,
                     };
@@ -566,6 +576,7 @@ impl ExecutionEngine {
                     request: Some(request_log), // Include request even on failure
                     response: None,
                     exports: None,
+                    session: None,
                     error_message: Some(format!("HTTP request failed: {}", e)),
                     logs,
                 };
@@ -584,12 +595,14 @@ impl ExecutionEngine {
                 &http_result.response.body,
                 &http_result.response.json,
                 &http_result.response.headers,
+                &ctx.session_snapshot(),
             ) {
-                Ok(passed) => {
+                Ok(outcome) => {
                     if self.debug_mode {
-                        logs.push(format!("Assertion result: {}", if passed { "PASS" } else { "FAIL" }));
+                        logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
                     }
-                    passed
+                    ctx.apply_session(outcome.session);
+                    outcome.passed
                 }
                 Err(e) => {
                     return NodeResult {
@@ -601,6 +614,7 @@ impl ExecutionEngine {
                         request: Some(http_result.request),
                         response: Some(http_result.response),
                         exports: None,
+                        session: None,
                         error_message: Some(format!("Assertion error: {}", e)),
                         logs,
                     };
@@ -657,6 +671,7 @@ impl ExecutionEngine {
             request: Some(http_result.request),
             response: Some(http_result.response),
             exports,
+            session: Some(ctx.session_snapshot()),
             error_message: None,
             logs,
         }
@@ -774,10 +789,12 @@ impl ExecutionEngine {
         test_case: &TestCase,
         environment: HashMap<String, Value>,
         variables: HashMap<String, Value>,
+        session: HashMap<String, Value>,
     ) -> NodeResult {
         let start = std::time::Instant::now();
         let mut logs = Vec::new();
         let mut ctx = ExecutionContext::new(variables, environment, HashMap::new());
+        ctx.set_session_store(session);
 
         if self.debug_mode {
             logs.push(format!("Executing test case: {}", test_case.name));
@@ -786,14 +803,15 @@ impl ExecutionEngine {
         // Execute pre-test script if present (sets variables before interpolation)
         if let Some(ref script) = test_case.pre_test_script {
             if !script.trim().is_empty() {
-                match self.pre_test.execute(script) {
-                    Ok(vars) => {
-                        for (k, v) in vars {
+                match self.pre_test.execute(script, &ctx.session_snapshot()) {
+                    Ok(outcome) => {
+                        for (k, v) in outcome.vars {
                             if self.debug_mode {
                                 logs.push(format!("Pre-test set: {} = {:?}", k, v));
                             }
                             ctx.set(&k, v);
                         }
+                        ctx.apply_session(outcome.session);
                     }
                     Err(e) => {
                         return NodeResult {
@@ -805,6 +823,7 @@ impl ExecutionEngine {
                             request: None,
                             response: None,
                             exports: None,
+                            session: None,
                             error_message: Some(format!("Pre-test script failed: {}", e)),
                             logs,
                         };
@@ -826,6 +845,7 @@ impl ExecutionEngine {
                     request: None,
                     response: None,
                     exports: None,
+                    session: None,
                     error_message: Some(format!("URL interpolation failed: {}", e)),
                     logs,
                 };
@@ -865,6 +885,7 @@ impl ExecutionEngine {
                         request: None,
                         response: None,
                         exports: None,
+                        session: None,
                         error_message: Some(format!("Payload interpolation failed: {}", e)),
                         logs,
                     };
@@ -900,6 +921,7 @@ impl ExecutionEngine {
                     request: Some(request_log),
                     response: None,
                     exports: None,
+                    session: None,
                     error_message: Some(format!("HTTP request failed: {}", e)),
                     logs,
                 };
@@ -918,12 +940,14 @@ impl ExecutionEngine {
                 &http_result.response.body,
                 &http_result.response.json,
                 &http_result.response.headers,
+                &ctx.session_snapshot(),
             ) {
-                Ok(passed) => {
+                Ok(outcome) => {
                     if self.debug_mode {
-                        logs.push(format!("Assertion result: {}", if passed { "PASS" } else { "FAIL" }));
+                        logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
                     }
-                    passed
+                    ctx.apply_session(outcome.session);
+                    outcome.passed
                 }
                 Err(e) => {
                     return NodeResult {
@@ -935,6 +959,7 @@ impl ExecutionEngine {
                         request: Some(http_result.request),
                         response: Some(http_result.response),
                         exports: None,
+                        session: None,
                         error_message: Some(format!("Assertion error: {}", e)),
                         logs,
                     };
@@ -971,6 +996,7 @@ impl ExecutionEngine {
             request: Some(http_result.request),
             response: Some(http_result.response),
             exports,
+            session: Some(ctx.session_snapshot()),
             error_message: None,
             logs,
         }

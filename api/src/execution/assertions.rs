@@ -9,7 +9,17 @@
 use rhai::{Engine, Scope, Dynamic, Map, Array};
 use serde_json::Value;
 
+use std::collections::HashMap;
+
 use crate::error::AppError;
+
+/// Result of a post-test/assertion script: the pass/fail boolean plus any
+/// SAT.session writes the script performed (side-effects, applied even on fail).
+#[derive(Debug)]
+pub struct AssertionOutcome {
+    pub passed: bool,
+    pub session: HashMap<String, Value>,
+}
 
 /// Assertion engine using Rhai for script evaluation
 pub struct AssertionEngine {
@@ -41,8 +51,9 @@ impl AssertionEngine {
         status: u16,
         body: &str,
         json: &Option<Value>,
-        headers: &std::collections::HashMap<String, String>,
-    ) -> Result<bool, AppError> {
+        headers: &HashMap<String, String>,
+        session_in: &HashMap<String, Value>,
+    ) -> Result<AssertionOutcome, AppError> {
         let mut scope = Scope::new();
 
         // Build response object
@@ -65,11 +76,30 @@ impl AssertionEngine {
 
         scope.push("response", response);
 
-        // Evaluate the script
-        match self.engine.eval_with_scope::<bool>(&mut scope, script) {
-            Ok(result) => Ok(result),
-            Err(e) => Err(AppError::AssertionError(format!("Assertion script error: {}", e))),
+        // Expose `session`, seeded with existing values so scripts can read + write
+        let mut session_map = Map::new();
+        for (k, v) in session_in {
+            session_map.insert(k.as_str().into(), json_to_rhai(v));
         }
+        scope.push("session", session_map);
+
+        // Rewrite SAT.session.xxx → session.xxx (side-effects run as the script does)
+        let rewritten = script.replace("SAT.session.", "session.");
+
+        // Evaluate: last expression is the pass/fail boolean; session writes are side-effects
+        let passed = match self.engine.eval_with_scope::<bool>(&mut scope, &rewritten) {
+            Ok(result) => result,
+            Err(e) => return Err(AppError::AssertionError(format!("Assertion script error: {}", e))),
+        };
+
+        // Read back any session writes (applied even if `passed` is false)
+        let session_out: Map = scope.get_value("session").unwrap_or_default();
+        let mut session = HashMap::new();
+        for (k, v) in session_out {
+            session.insert(k.to_string(), rhai_to_json(&v));
+        }
+
+        Ok(AssertionOutcome { passed, session })
     }
 
     /// Default assertion: pass if status is 2xx
@@ -113,6 +143,30 @@ fn json_to_rhai(value: &Value) -> Dynamic {
     }
 }
 
+/// Convert a Rhai Dynamic value back to serde_json::Value (for session write-back).
+fn rhai_to_json(dynamic: &Dynamic) -> Value {
+    if dynamic.is_unit() {
+        Value::Null
+    } else if let Some(s) = dynamic.clone().try_cast::<rhai::ImmutableString>() {
+        Value::String(s.to_string())
+    } else if let Some(i) = dynamic.clone().try_cast::<i64>() {
+        Value::Number(i.into())
+    } else if let Some(f) = dynamic.clone().try_cast::<f64>() {
+        serde_json::Number::from_f64(f).map(Value::Number).unwrap_or(Value::Null)
+    } else if let Some(b) = dynamic.clone().try_cast::<bool>() {
+        Value::Bool(b)
+    } else if let Some(arr) = dynamic.clone().try_cast::<Array>() {
+        Value::Array(arr.iter().map(rhai_to_json).collect())
+    } else if let Some(map) = dynamic.clone().try_cast::<Map>() {
+        let obj: serde_json::Map<String, Value> = map.iter()
+            .map(|(k, v)| (k.to_string(), rhai_to_json(v)))
+            .collect();
+        Value::Object(obj)
+    } else {
+        Value::String(dynamic.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,8 +186,9 @@ mod tests {
             200,
             "",
             &None,
-            &headers
-        ).unwrap();
+            &headers,
+            &HashMap::new(),
+        ).unwrap().passed;
         assert!(result);
 
         let result = engine.evaluate(
@@ -141,8 +196,9 @@ mod tests {
             404,
             "",
             &None,
-            &headers
-        ).unwrap();
+            &headers,
+            &HashMap::new(),
+        ).unwrap().passed;
         assert!(!result);
     }
 
@@ -157,8 +213,9 @@ mod tests {
             200,
             "",
             &json,
-            &headers
-        ).unwrap();
+            &headers,
+            &HashMap::new(),
+        ).unwrap().passed;
         assert!(result);
 
         let result = engine.evaluate(
@@ -166,8 +223,9 @@ mod tests {
             200,
             "",
             &json,
-            &headers
-        ).unwrap();
+            &headers,
+            &HashMap::new(),
+        ).unwrap().passed;
         assert!(result);
     }
 
@@ -182,8 +240,9 @@ mod tests {
             200,
             "",
             &json,
-            &headers
-        ).unwrap();
+            &headers,
+            &HashMap::new(),
+        ).unwrap().passed;
         assert!(result);
     }
 
@@ -198,8 +257,9 @@ mod tests {
             201,
             "",
             &json,
-            &headers
-        ).unwrap();
+            &headers,
+            &HashMap::new(),
+        ).unwrap().passed;
         assert!(result);
     }
 
@@ -214,8 +274,9 @@ mod tests {
             200,
             "",
             &json,
-            &headers
-        ).unwrap();
+            &headers,
+            &HashMap::new(),
+        ).unwrap().passed;
         assert!(result);
     }
 

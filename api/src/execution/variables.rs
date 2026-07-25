@@ -1,6 +1,7 @@
 //! Variable interpolation and execution context management
 //!
 //! Resolution order (highest priority first):
+//! 0. Session variables (SAT.session — persist across standalone runs)
 //! 1. Execution variables (passed in execute request)
 //! 2. Context variables (exports from previous test cases + pre-test script vars)
 //! 3. Node input variables (static per-node overrides set in flow editor)
@@ -19,6 +20,9 @@ use crate::error::AppError;
 /// Execution context that holds all variables during flow execution
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
+    /// Session variables (tier 0) — set by SAT.session in scripts, persist across
+    /// standalone runs via the client. Highest priority: shadows everything.
+    session: HashMap<String, Value>,
     /// Variables passed in the execute request
     execution_vars: HashMap<String, Value>,
     /// Accumulated exports from test cases during execution
@@ -39,12 +43,29 @@ impl ExecutionContext {
         flow_vars: HashMap<String, Value>,
     ) -> Self {
         Self {
+            session: HashMap::new(),
             execution_vars,
             context: HashMap::new(),
             node_input_vars: HashMap::new(),
             flow_vars,
             environment,
         }
+    }
+
+    /// Seed the session store (tier 0) — called from the incoming execute request.
+    pub fn set_session_store(&mut self, session: HashMap<String, Value>) {
+        self.session = session;
+    }
+
+    /// A copy of the current session store — returned to the client to persist,
+    /// and passed into scripts so they can read existing session values.
+    pub fn session_snapshot(&self) -> HashMap<String, Value> {
+        self.session.clone()
+    }
+
+    /// Replace the session store with the map a script produced (handles removals).
+    pub fn apply_session(&mut self, session: HashMap<String, Value>) {
+        self.session = session;
     }
 
     /// Set node input variables (fully replaces previous node's vars)
@@ -54,7 +75,8 @@ impl ExecutionContext {
 
     /// Resolve a variable by name using the resolution order
     pub fn resolve(&self, name: &str) -> Option<&Value> {
-        self.execution_vars.get(name)
+        self.session.get(name)
+            .or_else(|| self.execution_vars.get(name))
             .or_else(|| self.context.get(name))
             .or_else(|| self.node_input_vars.get(name))
             .or_else(|| self.flow_vars.get(name))

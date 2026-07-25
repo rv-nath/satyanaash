@@ -220,12 +220,16 @@ export interface TestCaseExecutionResult {
   request?: RequestLog;
   response?: ResponseLog;
   exports?: Record<string, unknown>;
+  /** Full session store after the run — client persists this to localStorage */
+  session?: Record<string, unknown>;
   error_message?: string;
   logs: string[];
 }
 
 export interface ExecuteTestCaseRequest {
   variables?: Record<string, unknown>;
+  /** Session variables (SAT.session) carried from the client's local store */
+  session?: Record<string, unknown>;
   /** Override: HTTP method (runs with this instead of saved value) */
   method?: string;
   /** Override: Endpoint URL */

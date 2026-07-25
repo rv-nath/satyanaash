@@ -270,6 +270,9 @@ pub struct ExecuteTestCaseRequest {
     /// Variables to use during execution
     #[serde(default)]
     pub variables: HashMap<String, Value>,
+    /// Session variables (SAT.session) carried in from the client's local store
+    #[serde(default)]
+    pub session: HashMap<String, Value>,
     /// Override: HTTP method (if provided, uses this instead of saved value)
     pub method: Option<String>,
     /// Override: Endpoint URL
@@ -310,7 +313,7 @@ pub async fn execute_test_case(
     let project_variables = extract_project_variables(&project.settings);
 
     // Apply overrides from request body (for running unsaved changes)
-    let variables = if let Some(Json(req)) = body {
+    let (variables, session) = if let Some(Json(req)) = body {
         if let Some(method) = req.method {
             test_case.method = method;
         }
@@ -329,16 +332,16 @@ pub async fn execute_test_case(
         if let Some(pre_test_script) = req.pre_test_script {
             test_case.pre_test_script = Some(pre_test_script);
         }
-        req.variables
+        (req.variables, req.session)
     } else {
-        HashMap::new()
+        (HashMap::new(), HashMap::new())
     };
 
     // Create execution engine
     let engine = ExecutionEngine::new(false, base_url);
 
     // Execute the test case with project variables as environment
-    let result = engine.execute_test_case(&test_case, project_variables, variables).await;
+    let result = engine.execute_test_case(&test_case, project_variables, variables, session).await;
 
     Ok(Json(result))
 }

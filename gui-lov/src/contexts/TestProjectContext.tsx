@@ -11,6 +11,7 @@ import { useAutoValidate, ValidationStatus } from "@/hooks/useAutoValidate";
 import { toast } from "sonner";
 import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
 import { generateUUID } from "@/lib/utils/uuid";
+import { readSession, writeSession, clearSession, type SessionVars } from "@/lib/session";
 
 export interface TestCase {
   id: string;
@@ -70,6 +71,10 @@ interface TestProjectContextType {
   openSettingsTab: () => void;
   closeWorkspaceTab: (key: string) => void;
   setActiveWorkspaceTab: (key: string) => void;
+  // Session variables (SAT.session) — disposable, per-project, localStorage-backed
+  sessionVars: SessionVars;
+  setSessionVars: (vars: SessionVars) => void;
+  clearSessionVars: () => void;
   // Selection and editing state for test cases
   selectedTestCaseId: string | null;
   setSelectedTestCaseId: (id: string | null) => void;
@@ -241,6 +246,24 @@ export const TestProjectProvider = ({
     []
   );
   const openSettingsTab = useCallback(() => setWorkspace((s) => openSettings(s)), []);
+
+  // Session variables — seed from localStorage; keep in state so the header
+  // indicator and the editor share one reactive source of truth.
+  const [sessionVars, setSessionVarsState] = useState<SessionVars>(() =>
+    projectId ? readSession(projectId) : {}
+  );
+  useEffect(() => {
+    setSessionVarsState(projectId ? readSession(projectId) : {});
+  }, [projectId]);
+  const setSessionVars = useCallback((vars: SessionVars) => {
+    const next = vars ?? {};
+    setSessionVarsState(next);
+    if (projectId) writeSession(projectId, next);
+  }, [projectId]);
+  const clearSessionVars = useCallback(() => {
+    setSessionVarsState({});
+    if (projectId) clearSession(projectId);
+  }, [projectId]);
   const closeWorkspaceTab = useCallback((key: string) => setWorkspace((s) => closeWsTab(s, key)), []);
   const setActiveWorkspaceTab = useCallback((key: string) => setWorkspace((s) => setActiveWsTab(s, key)), []);
 
@@ -752,6 +775,9 @@ export const TestProjectProvider = ({
       value={{
         project: project || null,
         projectId: projectId || null,
+        sessionVars,
+        setSessionVars,
+        clearSessionVars,
         testGroups,
         nodes,
         edges,

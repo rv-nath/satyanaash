@@ -100,7 +100,7 @@ function FolderTabs({ active, onChange }: { active: string; onChange: (v: string
 }
 
 export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEditorProps) => {
-  const { projectId, nodes, edges, closeTestCaseEditor } = useTestProject();
+  const { projectId, nodes, edges, closeTestCaseEditor, sessionVars, setSessionVars } = useTestProject();
 
   const isCreateMode = !testCaseId;
 
@@ -371,10 +371,16 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
           payload: hasPayload && payload.trim() ? payload : undefined,
           assertion_script: postTestScript || undefined,
           pre_test_script: preTestScript || undefined,
+          session: sessionVars,
         },
       });
       setExecutionResult(result);
       setActiveTab("response");
+
+      // Persist any SAT.session writes so the next standalone run can read them
+      if (result.session) {
+        setSessionVars(result.session as Record<string, unknown>);
+      }
 
       if (result.status === 'passed') {
         toast.success(`Test passed in ${result.duration_ms}ms`);
@@ -851,7 +857,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                     className="font-mono text-xs min-h-[200px]"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Runs before request. Access: <code className="px-1 py-0.5 bg-muted rounded text-xs">SAT.vars.variableName</code>
+                    Runs before request. This-run vars: <code className="px-1 py-0.5 bg-muted rounded text-xs">SAT.vars.x</code> · persist across runs: <code className="px-1 py-0.5 bg-muted rounded text-xs">SAT.session.x</code>
                   </p>
                 </div>
 
@@ -918,15 +924,15 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated }: TestCaseEdito
                     id="post-script"
                     value={postTestScript}
                     onChange={(e) => handleFieldChange(setPostTestScript)(e.target.value)}
-                    placeholder="// Simple status check&#10;response.status == 200&#10;&#10;// Check JSON field&#10;response.status == 200 && response.json.access_token != ()&#10;&#10;// String contains&#10;response.json.message.contains(&quot;success&quot;)"
+                    placeholder="// Save a value for later runs (persists), then assert&#10;SAT.session.token = response.json.access_token;&#10;&#10;// Last expression is the pass/fail result&#10;response.status == 200 && response.json.access_token != ()"
                     className="font-mono text-xs min-h-[250px]"
                   />
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-foreground">
-                      Script must return true (pass) or false (fail)
+                      Last expression must be true (pass) or false (fail). Set vars first if needed.
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Available: <code className="px-1 py-0.5 bg-muted rounded">response.status</code>, <code className="px-1 py-0.5 bg-muted rounded">response.json</code>, <code className="px-1 py-0.5 bg-muted rounded">response.body</code>, <code className="px-1 py-0.5 bg-muted rounded">response.headers</code>
+                      Read: <code className="px-1 py-0.5 bg-muted rounded">response.status</code>, <code className="px-1 py-0.5 bg-muted rounded">response.json</code>, <code className="px-1 py-0.5 bg-muted rounded">response.body</code>, <code className="px-1 py-0.5 bg-muted rounded">response.headers</code> · Save across runs: <code className="px-1 py-0.5 bg-muted rounded">SAT.session.x = …</code>
                     </p>
                   </div>
                 </div>

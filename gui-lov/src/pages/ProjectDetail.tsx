@@ -9,7 +9,7 @@ import {
   ArrowLeft, Play, Settings, CheckCircle2, Download, Bug, Loader2, AlertCircle,
   Undo2, Redo2, Cloud, CloudOff, Save, ChevronDown, Spline, Minus, ArrowRightToLine,
   AlignStartHorizontal, AlignStartVertical, AlignEndVertical, AlignEndHorizontal,
-  AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil
+  AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil, Zap, Trash2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkspaceWelcome } from "@/components/WorkspaceWelcome";
@@ -96,6 +96,8 @@ const ProjectDetailContent = () => {
     alignNodes,
     flowVariables,
     setFlowVariables,
+    sessionVars,
+    clearSessionVars,
   } = useTestProject();
 
   // Derive active flow for header
@@ -496,6 +498,52 @@ const ProjectDetailContent = () => {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Session variables — SAT.session store, disposable, per-project */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 font-normal"
+                title="Session variables set by SAT.session in pre/post-test scripts"
+              >
+                <Zap className={`w-3.5 h-3.5 ${Object.keys(sessionVars).length ? "text-primary" : "text-muted-foreground"}`} />
+                <span className="text-muted-foreground">Session</span>
+                {Object.keys(sessionVars).length > 0 && (
+                  <span className="text-primary font-medium">{Object.keys(sessionVars).length}</span>
+                )}
+                <ChevronDown className="w-3 h-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-80">
+              <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Session variables
+              </div>
+              {Object.keys(sessionVars).length === 0 ? (
+                <div className="px-2 py-3 text-xs text-muted-foreground">
+                  None yet. Set them from a pre/post-test script with{" "}
+                  <code className="px-1 py-0.5 bg-muted rounded">SAT.session.name = …</code>
+                </div>
+              ) : (
+                <>
+                  <div className="max-h-64 overflow-auto py-1">
+                    {Object.entries(sessionVars).map(([k, v]) => (
+                      <div key={k} className="flex items-baseline gap-2 px-2 py-1 text-xs font-mono">
+                        <span className="text-muted-foreground shrink-0">{k}</span>
+                        <span className="truncate">{typeof v === "string" ? v : JSON.stringify(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive" onClick={() => clearSessionVars()}>
+                    <Trash2 className="w-3.5 h-3.5 mr-2" /> Clear session
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           <div className="h-5 w-px bg-border mx-2" />
 
           {/* Canvas actions - only when on canvas with flow */}
