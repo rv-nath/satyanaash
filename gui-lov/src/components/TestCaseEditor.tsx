@@ -27,6 +27,10 @@ interface TestCaseEditorProps {
   onSubTabChange?: (tab: string) => void; // Report sub-tab changes so they persist
   initialResult?: TestCaseExecutionResult | null; // Restore the last run's result
   onResultChange?: (result: TestCaseExecutionResult | null) => void; // Persist result
+  onDirtyChange?: (dirty: boolean) => void; // Report unsaved-changes state to the tab bar
+  /** False when this editor is mounted but not the visible tab (keeps its draft
+   *  alive while suppressing global keyboard shortcuts). Defaults to true. */
+  isActive?: boolean;
 }
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
@@ -103,10 +107,18 @@ function FolderTabs({ active, onChange }: { active: string; onChange: (v: string
   );
 }
 
-export const TestCaseEditor = ({ testCaseId, onClose, onCreated, initialSubTab, onSubTabChange, initialResult, onResultChange }: TestCaseEditorProps) => {
+export const TestCaseEditor = ({
+  testCaseId, onClose, onCreated, initialSubTab, onSubTabChange,
+  initialResult, onResultChange, onDirtyChange, isActive = true,
+}: TestCaseEditorProps) => {
   const { projectId, nodes, edges, closeTestCaseEditor, effectiveEnvironment, applyEnvWrites } = useTestProject();
 
   const isCreateMode = !testCaseId;
+
+  // Latest reporting callbacks, held in a ref so the effects below depend only on
+  // the value they report (a fresh closure each render must not re-trigger them).
+  const reportRef = useRef({ onSubTabChange, onResultChange, onDirtyChange });
+  reportRef.current = { onSubTabChange, onResultChange, onDirtyChange };
 
   // Fetch test case data (only in edit mode)
   const { data: testCase, isLoading } = useTestCase(testCaseId || '');
@@ -117,10 +129,10 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated, initialSubTab, 
 
   // Execution result state
   const [executionResult, setExecutionResult] = useState<TestCaseExecutionResult | null>(initialResult ?? null);
-  // Report result changes upward so they survive the editor's per-tab remount.
+  // Report result changes upward so they survive close/reopen of the tab.
   useEffect(() => {
-    onResultChange?.(executionResult);
-  }, [executionResult, onResultChange]);
+    reportRef.current.onResultChange?.(executionResult);
+  }, [executionResult]);
   const [wordWrap, setWordWrap] = useState(true);
 
   // Form state
@@ -135,11 +147,15 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated, initialSubTab, 
   const [preTestScript, setPreTestScript] = useState("");
   const [postTestScript, setPostTestScript] = useState("");
   const [activeTab, setActiveTab] = useState(() => initialSubTab || "overview");
-  // Report sub-tab changes upward so they survive the editor's per-tab remount.
+  // Report sub-tab changes upward so they survive close/reopen of the tab.
   useEffect(() => {
-    onSubTabChange?.(activeTab);
-  }, [activeTab, onSubTabChange]);
+    reportRef.current.onSubTabChange?.(activeTab);
+  }, [activeTab]);
   const [isDirty, setIsDirty] = useState(false);
+  // Report unsaved-changes state so the workspace tab can show a dot and guard close.
+  useEffect(() => {
+    reportRef.current.onDirtyChange?.(isDirty);
+  }, [isDirty]);
   const [isEditingName, setIsEditingName] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -335,16 +351,11 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated, initialSubTab, 
     }
   };
 
+  // The workspace owns the unsaved-changes prompt (it knows which tab is closing),
+  // so just ask it to close — see requestCloseTab in ProjectDetail.
   const handleClose = () => {
-    if (isDirty) {
-      if (window.confirm("You have unsaved changes. Are you sure you want to close?")) {
-        closeTestCaseEditor();
-        onClose();
-      }
-    } else {
-      closeTestCaseEditor();
-      onClose();
-    }
+    closeTestCaseEditor();
+    onClose();
   };
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
@@ -407,8 +418,10 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated, initialSubTab, 
     }
   };
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — only for the visible tab. Inactive editors stay mounted
+  // to preserve their drafts, and must not react to Ctrl+S / Esc.
   useEffect(() => {
+    if (!isActive) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
@@ -421,7 +434,7 @@ export const TestCaseEditor = ({ testCaseId, onClose, onCreated, initialSubTab, 
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleSave, handleClose]);
+  }, [isActive, handleSave, handleClose]);
 
   // Only show loading state in edit mode
   if (!isCreateMode && isLoading) {

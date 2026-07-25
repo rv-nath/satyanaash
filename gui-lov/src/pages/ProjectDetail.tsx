@@ -47,6 +47,7 @@ import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useExecutionStream } from "@/hooks/useExecutionStream";
 import { Card } from "@/components/ui/card";
 
@@ -122,14 +123,56 @@ const ProjectDetailContent = () => {
   const activeTestId = activeIsTest ? workspace.active!.slice('test:'.length) : null;
 
   // Tab-bar render models
+  // Per-tab editor state kept outside the editors, so it survives close/reopen:
+  // the active sub-tab and the last run's result.
+  const editorSubTabRef = useRef<Record<string, string>>({});
+  const persistEditorSubTab = useCallback((key: string, tab: string) => {
+    editorSubTabRef.current[key] = tab;
+  }, []);
+  const editorResultRef = useRef<Record<string, unknown>>({});
+  const persistEditorResult = useCallback((key: string, result: unknown) => {
+    if (result == null) delete editorResultRef.current[key];
+    else editorResultRef.current[key] = result;
+  }, []);
+
+  // Unsaved-changes tracking per test tab — drives the tab dot and the close guard.
+  const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
+  const markTabDirty = useCallback((key: string, dirty: boolean) => {
+    setDirtyTabs((prev) => (prev[key] === dirty ? prev : { ...prev, [key]: dirty }));
+  }, []);
+
+  // Forget a closed tab's remembered state.
+  const forgetTab = useCallback((key: string) => {
+    delete editorSubTabRef.current[key];
+    delete editorResultRef.current[key];
+    setDirtyTabs((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  // Closing a tab with unsaved edits asks first.
+  const [pendingCloseKey, setPendingCloseKey] = useState<string | null>(null);
+  const doCloseTab = useCallback((key: string) => {
+    closeWorkspaceTab(key);
+    forgetTab(key);
+  }, [closeWorkspaceTab, forgetTab]);
+  const requestCloseTab = useCallback((key: string) => {
+    if (dirtyTabs[key]) setPendingCloseKey(key);
+    else doCloseTab(key);
+  }, [dirtyTabs, doCloseTab]);
+
   const renderTabs: RenderTab[] = workspace.tabs.map((t) => {
     if (t.kind === 'flow') {
       const flow = testGroups.find((g) => g.id === t.id);
       return { key: tabKey('flow', t.id), kind: 'flow', label: flow?.name || 'Flow' };
     }
-    if (t.id === '__new__') return { key: tabKey('test', t.id), kind: 'test', label: 'New Test', method: 'NEW' };
+    const key = tabKey('test', t.id);
+    if (t.id === '__new__') return { key, kind: 'test', label: 'New Test', method: 'NEW', dirty: dirtyTabs[key] };
     const tc = (apiTestCases || []).find((x) => x.id === t.id);
-    return { key: tabKey('test', t.id), kind: 'test', label: tc?.name || 'Test', method: (tc?.method as string) || '' };
+    return { key, kind: 'test', label: tc?.name || 'Test', method: (tc?.method as string) || '', dirty: dirtyTabs[key] };
   });
 
   // Activate a tab; keep activeFlowId in sync for flow tabs.
@@ -208,21 +251,6 @@ const ProjectDetailContent = () => {
     setSettingsInitialView(view);
     openSettingsTab();
   };
-
-  // Remember each test tab's active sub-tab (Overview/Request/Scripts/Response)
-  // so switching workspace tabs doesn't reset it — the editor remounts per tab.
-  const editorSubTabRef = useRef<Record<string, string>>({});
-  const activeTabKey = workspace.active;
-  const persistEditorSubTab = useCallback((tab: string) => {
-    if (activeTabKey) editorSubTabRef.current[activeTabKey] = tab;
-  }, [activeTabKey]);
-  // Same idea for the run result — keep it until re-run or explicitly cleared.
-  const editorResultRef = useRef<Record<string, unknown>>({});
-  const persistEditorResult = useCallback((result: unknown) => {
-    if (!activeTabKey) return;
-    if (result == null) delete editorResultRef.current[activeTabKey];
-    else editorResultRef.current[activeTabKey] = result;
-  }, [activeTabKey]);
 
   const handleExecute = async (mode: "run" | "debug" = "run") => {
     if (!activeFlowId) {
@@ -731,46 +759,70 @@ const ProjectDetailContent = () => {
               settingsOpen={workspace.settingsOpen}
               active={workspace.active}
               onActivate={activateTab}
-              onClose={closeWorkspaceTab}
+              onClose={requestCloseTab}
             />
-            <div className="min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
+              {/* Every open test editor stays mounted (hidden unless active) so an
+                  unsaved draft survives switching tabs. */}
+              {workspace.tabs
+                .filter((t) => t.kind === 'test')
+                .map((t) => {
+                  const key = tabKey('test', t.id);
+                  const isActive = workspace.active === key;
+                  return (
+                    <div
+                      key={key}
+                      className="absolute inset-0"
+                      style={{ display: isActive ? 'block' : 'none' }}
+                      aria-hidden={!isActive}
+                    >
+                      <TestCaseEditor
+                        testCaseId={t.id === '__new__' ? undefined : t.id}
+                        isActive={isActive}
+                        initialSubTab={editorSubTabRef.current[key]}
+                        onSubTabChange={(tab) => persistEditorSubTab(key, tab)}
+                        initialResult={(editorResultRef.current[key] as TestCaseExecutionResult | undefined) ?? null}
+                        onResultChange={(result) => persistEditorResult(key, result)}
+                        onDirtyChange={(dirty) => markTabDirty(key, dirty)}
+                        onClose={() => requestCloseTab(key)}
+                        onCreated={(newId) => {
+                          doCloseTab(key);
+                          openTestTab(newId);
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+
               {activeIsSettings && project ? (
-                <SettingsPanel project={project} initialView={settingsInitialView} />
+                <div className="absolute inset-0">
+                  <SettingsPanel project={project} initialView={settingsInitialView} />
+                </div>
               ) : activeIsFlow ? (
-                showConsole ? (
-                  <ResizablePanelGroup direction="vertical">
-                    <ResizablePanel defaultSize={65} minSize={30}>
-                      <TestCanvas />
-                    </ResizablePanel>
-                    <ResizableHandle />
-                    <ResizablePanel defaultSize={35} minSize={20}>
-                      <ConsolePanel logs={consoleLogs} onClose={() => setShowConsole(false)} onClear={clearLogs} />
-                    </ResizablePanel>
-                  </ResizablePanelGroup>
-                ) : (
-                  <TestCanvas />
-                )
-              ) : activeIsTest ? (
-                <TestCaseEditor
-                  key={workspace.active as string}
-                  testCaseId={activeTestId === '__new__' ? undefined : (activeTestId as string)}
-                  initialSubTab={editorSubTabRef.current[workspace.active as string]}
-                  onSubTabChange={persistEditorSubTab}
-                  initialResult={editorResultRef.current[workspace.active as string] as TestCaseExecutionResult | undefined ?? null}
-                  onResultChange={persistEditorResult}
-                  onClose={() => closeWorkspaceTab(workspace.active as string)}
-                  onCreated={(newId) => {
-                    closeWorkspaceTab(workspace.active as string);
-                    openTestTab(newId);
-                  }}
-                />
-              ) : (
-                <WorkspaceWelcome
-                  onNewTest={() => openTestCaseEditor()}
-                  onNewFlow={handleCreateFlow}
-                  onOpenEnvironments={() => openSettings(envLandingView)}
-                />
-              )}
+                <div className="absolute inset-0">
+                  {showConsole ? (
+                    <ResizablePanelGroup direction="vertical">
+                      <ResizablePanel defaultSize={65} minSize={30}>
+                        <TestCanvas />
+                      </ResizablePanel>
+                      <ResizableHandle />
+                      <ResizablePanel defaultSize={35} minSize={20}>
+                        <ConsolePanel logs={consoleLogs} onClose={() => setShowConsole(false)} onClear={clearLogs} />
+                      </ResizablePanel>
+                    </ResizablePanelGroup>
+                  ) : (
+                    <TestCanvas />
+                  )}
+                </div>
+              ) : !activeIsTest ? (
+                <div className="absolute inset-0">
+                  <WorkspaceWelcome
+                    onNewTest={() => openTestCaseEditor()}
+                    onNewFlow={handleCreateFlow}
+                    onOpenEnvironments={() => openSettings(envLandingView)}
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
         </ResizablePanel>
@@ -821,6 +873,18 @@ const ProjectDetailContent = () => {
         variables={flowVariables}
         onSave={setFlowVariables}
       />
+
+      {pendingCloseKey && (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => { if (!o) setPendingCloseKey(null); }}
+          title="Discard unsaved changes?"
+          description={`"${renderTabs.find((t) => t.key === pendingCloseKey)?.label ?? 'This test'}" has changes that haven't been saved. Closing it will discard them.`}
+          confirmLabel="Discard changes"
+          cancelLabel="Keep editing"
+          onConfirm={() => { doCloseTab(pendingCloseKey); setPendingCloseKey(null); }}
+        />
+      )}
     </div>
   );
 };

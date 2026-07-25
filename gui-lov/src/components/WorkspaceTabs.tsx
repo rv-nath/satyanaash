@@ -70,8 +70,14 @@ export function WorkspaceTabs({ tabs, settingsOpen, active, onActivate, onClose 
               {t.method}
             </span>
           )}
-          {t.label}
-          {t.dirty && <span className="h-1.5 w-1.5 rounded-full bg-warning" />}
+          <span className={t.dirty ? "italic" : undefined}>{t.label}</span>
+          {t.dirty && (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full bg-warning"
+              title="Unsaved changes"
+              aria-label="Unsaved changes"
+            />
+          )}
         </TabShell>
       ))}
 
