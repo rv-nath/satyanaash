@@ -192,11 +192,22 @@ fn value_to_string(value: &Value) -> String {
 /// Simple random number generator (no external dependency)
 pub(crate) fn rand_simple() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // A per-call counter decorrelates consecutive calls (nanosecond time alone
+    // repeats when called in a tight loop); splitmix64 spreads the bits.
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos() as i64;
-    nanos.abs()
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let c = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut x = nanos.wrapping_add(c.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x >> 1) as i64 // always non-negative
 }
 
 /// Generate a random alphanumeric string
@@ -212,13 +223,36 @@ pub(crate) fn generate_random_string(len: usize) -> String {
 
 /// Generate a random password with mixed case, digits, and special chars
 pub(crate) fn generate_random_password(len: usize) -> String {
-    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
-    (0..len)
-        .map(|_| {
-            let idx = (rand_simple() as usize) % CHARSET.len();
-            CHARSET[idx] as char
-        })
-        .collect()
+    const LOWER: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+    const UPPER: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const DIGITS: &[u8] = b"0123456789";
+    const SPECIAL: &[u8] = b"!@#$%^&*";
+    const ALL: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
+
+    if len == 0 {
+        return String::new();
+    }
+
+    let pick = |set: &[u8]| set[(rand_simple() as usize) % set.len()];
+
+    // Guarantee at least one from each category (as far as the length allows),
+    // so the result satisfies "must contain a letter and a number" policies.
+    let mut chars: Vec<u8> = [LOWER, UPPER, DIGITS, SPECIAL]
+        .iter()
+        .take(len)
+        .map(|set| pick(set))
+        .collect();
+    while chars.len() < len {
+        chars.push(pick(ALL));
+    }
+
+    // Fisher–Yates shuffle so the guaranteed chars aren't always in front.
+    for i in (1..chars.len()).rev() {
+        let j = (rand_simple() as usize) % (i + 1);
+        chars.swap(i, j);
+    }
+
+    chars.iter().map(|&b| b as char).collect()
 }
 
 #[cfg(test)]
@@ -311,6 +345,17 @@ mod tests {
         let result = ctx.interpolate("pw={{$RandomPassword}}").unwrap();
         assert!(result.starts_with("pw="));
         assert!(result.len() >= 19); // "pw=" + 16 chars
+    }
+
+    #[test]
+    fn test_password_has_letter_and_digit() {
+        // Every generated password must satisfy "at least 1 letter and 1 number".
+        for _ in 0..200 {
+            let pw = generate_random_password(16);
+            assert!(pw.chars().any(|c| c.is_ascii_alphabetic()), "no letter in {pw}");
+            assert!(pw.chars().any(|c| c.is_ascii_digit()), "no digit in {pw}");
+            assert_eq!(pw.chars().count(), 16);
+        }
     }
 
     #[test]

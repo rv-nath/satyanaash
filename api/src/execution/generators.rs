@@ -22,8 +22,11 @@ pub fn register(engine: &mut Engine) {
     engine.register_fn("randomUsername", || {
         format!("user_{}", generate_random_string(8).to_lowercase())
     });
+    engine.register_fn("randomString", || generate_random_string(10));
     engine.register_fn("randomString", |len: i64| generate_random_string(len.max(0) as usize));
+    engine.register_fn("randomPassword", || generate_random_password(16));
     engine.register_fn("randomPassword", |len: i64| generate_random_password(len.max(0) as usize));
+    engine.register_fn("randomInt", || rand_simple() % 1000);
     engine.register_fn("randomInt", |min: i64, max: i64| {
         if max <= min {
             min

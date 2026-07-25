@@ -14,10 +14,12 @@ use std::collections::HashMap;
 use crate::error::AppError;
 
 /// Result of a post-test/assertion script: the pass/fail boolean plus any
-/// SAT.env writes the script performed (side-effects, applied even on fail).
+/// SAT.vars (transient) and SAT.env (persisted) writes the script performed
+/// (side-effects, applied even when the assertion returns false).
 #[derive(Debug)]
 pub struct AssertionOutcome {
     pub passed: bool,
+    pub vars: HashMap<String, Value>,
     pub env: HashMap<String, Value>,
 }
 
@@ -86,16 +88,25 @@ impl AssertionEngine {
         }
         scope.push("env", env_map);
 
-        // Rewrite SAT.env.xxx → env.xxx (side-effects run as the script does)
-        let rewritten = script.replace("SAT.env.", "env.");
+        // `vars` — a fresh mutable map for transient (this-run) values
+        scope.push("vars", Map::new());
 
-        // Evaluate: last expression is the pass/fail boolean; env writes are side-effects
+        // Rewrite SAT.env. → env. and SAT.vars. → vars. (side-effects run as the script does)
+        let rewritten = script.replace("SAT.env.", "env.").replace("SAT.vars.", "vars.");
+
+        // Evaluate: last expression is the pass/fail boolean; var/env writes are side-effects
         let passed = match self.engine.eval_with_scope::<bool>(&mut scope, &rewritten) {
             Ok(result) => result,
             Err(e) => return Err(AppError::AssertionError(format!("Assertion script error: {}", e))),
         };
 
-        // Read back any env writes (applied even if `passed` is false); only new/changed keys
+        // Read back writes (applied even if `passed` is false)
+        let vars_out: Map = scope.get_value("vars").unwrap_or_default();
+        let mut vars = HashMap::new();
+        for (k, v) in vars_out {
+            vars.insert(k.to_string(), rhai_to_json(&v));
+        }
+
         let env_out: Map = scope.get_value("env").unwrap_or_default();
         let mut env = HashMap::new();
         for (k, v) in env_out {
@@ -106,7 +117,7 @@ impl AssertionEngine {
             }
         }
 
-        Ok(AssertionOutcome { passed, env })
+        Ok(AssertionOutcome { passed, vars, env })
     }
 
     /// Default assertion: pass if status is 2xx

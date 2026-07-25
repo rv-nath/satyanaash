@@ -607,6 +607,9 @@ impl ExecutionEngine {
                     if self.debug_mode {
                         logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
                     }
+                    for (k, v) in outcome.vars {
+                        ctx.set(&k, v);
+                    }
                     for (k, v) in outcome.env {
                         ctx.set_environment_var(&k, v.clone());
                         env_writes.insert(k, v);
@@ -958,6 +961,9 @@ impl ExecutionEngine {
                 Ok(outcome) => {
                     if self.debug_mode {
                         logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
+                    }
+                    for (k, v) in outcome.vars {
+                        ctx.set(&k, v);
                     }
                     for (k, v) in outcome.env {
                         ctx.set_environment_var(&k, v.clone());

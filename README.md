@@ -325,9 +325,11 @@ SAT.vars.company = randomCompany();
 SAT.vars.otp     = randomInt(1000, 9999);
 ```
 
-Available: `randomEmail()`, `randomPhone()`, `randomCompany()`, `randomName()`,
-`randomUsername()`, `randomAddress()`, `randomInt(min,max)`, `randomString(len)`,
-`randomPassword(len)`, `uuid()`, `timestamp()`, `timestampMs()`, `isoDate()`.
+Available (arguments are optional — sensible defaults apply):
+`randomEmail([domain])`, `randomPhone()`, `randomCompany()`, `randomName()`,
+`randomUsername()`, `randomAddress()`, `randomInt([min, max])`,
+`randomString([len])`, `randomPassword([len])`, `uuid()`, `timestamp()`,
+`timestampMs()`, `isoDate()`.
 
 ### Example — generate once, reuse everywhere (a flow)
 
