@@ -1,11 +1,8 @@
 import { useState, useEffect } from "react";
 import { Node } from "@xyflow/react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, X, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
 
 interface InputVariable {
@@ -15,7 +12,7 @@ interface InputVariable {
 
 interface OutputVariable {
   name: string;
-  path: string; // JSON path like "response.data.token"
+  path: string; // JSONPath rooted at the response body, e.g. "$.data.token"
   description?: string;
 }
 
@@ -40,33 +37,15 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
     }
   }, [node]);
 
-  const addInputVar = () => {
-    setInputVars([...inputVars, { key: "", value: "" }]);
-  };
+  const addInputVar = () => setInputVars((v) => [...v, { key: "", value: "" }]);
+  const removeInputVar = (index: number) => setInputVars((v) => v.filter((_, i) => i !== index));
+  const updateInputVar = (index: number, field: keyof InputVariable, value: string) =>
+    setInputVars((v) => v.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
 
-  const removeInputVar = (index: number) => {
-    setInputVars(inputVars.filter((_, i) => i !== index));
-  };
-
-  const updateInputVar = (index: number, field: keyof InputVariable, value: string) => {
-    const updated = [...inputVars];
-    updated[index] = { ...updated[index], [field]: value };
-    setInputVars(updated);
-  };
-
-  const addOutputVar = () => {
-    setOutputVars([...outputVars, { name: "", path: "", description: "" }]);
-  };
-
-  const removeOutputVar = (index: number) => {
-    setOutputVars(outputVars.filter((_, i) => i !== index));
-  };
-
-  const updateOutputVar = (index: number, field: keyof OutputVariable, value: string) => {
-    const updated = [...outputVars];
-    updated[index] = { ...updated[index], [field]: value };
-    setOutputVars(updated);
-  };
+  const addOutputVar = () => setOutputVars((v) => [...v, { name: "", path: "", description: "" }]);
+  const removeOutputVar = (index: number) => setOutputVars((v) => v.filter((_, i) => i !== index));
+  const updateOutputVar = (index: number, field: keyof OutputVariable, value: string) =>
+    setOutputVars((v) => v.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
 
   const handleSave = () => {
     if (!node) return;
@@ -74,148 +53,212 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
     onClose();
   };
 
-  if (!node || node.type === 'start' || node.type === 'end') {
+  if (!node || node.type === "start" || node.type === "end") {
     return null;
   }
 
   return (
-    <Card className="absolute top-4 right-4 w-96 max-h-[calc(100vh-120px)] z-50 shadow-lg border-border bg-card">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <CardTitle className="text-lg">Configure Node</CardTitle>
-            <CardDescription className="text-sm mt-1">
-              {(node.data.label as string) || node.id}
-            </CardDescription>
-          </div>
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            ✕
-          </Button>
+    <div className="absolute right-4 top-4 bottom-4 z-50 flex w-[680px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-foreground">Configure node</h2>
+          <p className="mt-0.5 truncate text-[13px] text-muted-foreground">
+            {(node.data.label as string) || node.id}
+          </p>
         </div>
-      </CardHeader>
-      <CardContent className="p-0 flex flex-col overflow-hidden" style={{ maxHeight: 'calc(100vh - 220px)' }}>
-        <ScrollArea className="flex-1 min-h-0">
-          <div className="px-6 pb-4 space-y-6">
-            <div className="bg-muted/50 border border-border rounded-md p-3 mb-4">
-              <p className="text-xs text-muted-foreground">
-                Define input variables to inject values into this node before execution, and output variables to extract values from the response for downstream nodes.
-                Use <code className="px-1 py-0.5 bg-background rounded text-xs">{'{{variableName}}'}</code> syntax in test cases to use these variables.
-              </p>
-            </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={onClose}
+          aria-label="Close"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </div>
 
-            {/* Input Variables */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <Label className="text-sm font-semibold">Input Variables</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Static values injected before this node runs
-                  </p>
+      {/* Scrollable body */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        <p className="mb-6 text-xs leading-relaxed text-muted-foreground">
+          Inject static <span className="text-foreground">input</span> values before this node runs,
+          and extract <span className="text-foreground">output</span> values from its response for
+          downstream nodes. Reference any of them elsewhere as{" "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{"{{name}}"}</code>.
+        </p>
+
+        {/* Input Variables */}
+        <Section
+          icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
+          title="Input variables"
+          subtitle="Static values injected before this node runs"
+          onAdd={addInputVar}
+          accent={false}
+        >
+          {inputVars.length === 0 ? (
+            <EmptyRow label="No input variables" />
+          ) : (
+            <div className="space-y-1.5">
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_auto] gap-2 px-0.5">
+                <ColLabel>Name</ColLabel>
+                <ColLabel>Value</ColLabel>
+                <span className="w-9" />
+              </div>
+              {inputVars.map((v, i) => (
+                <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_auto] items-center gap-2">
+                  <Input
+                    placeholder="variableName"
+                    value={v.key}
+                    onChange={(e) => updateInputVar(i, "key", e.target.value)}
+                    className="h-9 font-mono text-[13px]"
+                  />
+                  <Input
+                    placeholder="value"
+                    value={v.value}
+                    onChange={(e) => updateInputVar(i, "value", e.target.value)}
+                    className="h-9 font-mono text-[13px]"
+                  />
+                  <DeleteButton onClick={() => removeInputVar(i)} label="Remove input variable" />
                 </div>
-                <Button variant="outline" size="sm" onClick={addInputVar}>
-                  <Plus className="h-3 w-3 mr-1" />
-                  Add Variable
-                </Button>
-              </div>
-              <div className="space-y-2">
-                {inputVars.length === 0 ? (
-                  <p className="text-xs text-muted-foreground italic">No input variables defined</p>
-                ) : (
-                  inputVars.map((v, i) => (
-                    <div key={i} className="flex gap-2 items-center p-3 border border-border rounded-md bg-muted/20">
-                      <div className="flex-1 flex gap-2">
-                        <Input
-                          placeholder="Variable name"
-                          value={v.key}
-                          onChange={(e) => updateInputVar(i, "key", e.target.value)}
-                          className="h-8 text-xs font-mono"
-                        />
-                        <Input
-                          placeholder="Value"
-                          value={v.value}
-                          onChange={(e) => updateInputVar(i, "value", e.target.value)}
-                          className="h-8 text-xs font-mono"
-                        />
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeInputVar(i)}
-                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))
-                )}
-              </div>
+              ))}
             </div>
+          )}
+        </Section>
 
-            {/* Output Variables */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <Label className="text-sm font-semibold">Output Variables</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Variables extracted from HTTP response
-                  </p>
+        <div className="my-6 h-px bg-border" />
+
+        {/* Output Variables */}
+        <Section
+          icon={<ArrowUpFromLine className="h-3.5 w-3.5" />}
+          title="Output variables"
+          subtitle="Extracted from the response via JSONPath"
+          onAdd={addOutputVar}
+          accent
+        >
+          {outputVars.length === 0 ? (
+            <EmptyRow label="No output variables" />
+          ) : (
+            <div className="space-y-1.5">
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] gap-2 px-0.5">
+                <ColLabel>Name</ColLabel>
+                <ColLabel>JSON path</ColLabel>
+                <ColLabel>Description</ColLabel>
+                <span className="w-9" />
+              </div>
+              {outputVars.map((v, i) => (
+                <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] items-center gap-2">
+                  <Input
+                    placeholder="variableName"
+                    value={v.name}
+                    onChange={(e) => updateOutputVar(i, "name", e.target.value)}
+                    className="h-9 font-mono text-[13px]"
+                  />
+                  <Input
+                    placeholder="$.data.token"
+                    value={v.path}
+                    onChange={(e) => updateOutputVar(i, "path", e.target.value)}
+                    className="h-9 font-mono text-[13px]"
+                  />
+                  <Input
+                    placeholder="Optional note"
+                    value={v.description || ""}
+                    onChange={(e) => updateOutputVar(i, "description", e.target.value)}
+                    className="h-9 text-[13px]"
+                  />
+                  <DeleteButton onClick={() => removeOutputVar(i)} label="Remove output variable" />
                 </div>
-                <Button variant="outline" size="sm" onClick={addOutputVar}>
-                  <Plus className="h-3 w-3 mr-1" />
-                  Add Variable
-                </Button>
-              </div>
-              <div className="space-y-2">
-                {outputVars.length === 0 ? (
-                  <p className="text-xs text-muted-foreground italic">No output variables defined</p>
-                ) : (
-                  outputVars.map((v, i) => (
-                    <div key={i} className="flex gap-2 items-start p-3 border border-border rounded-md bg-muted/20">
-                      <div className="flex-1 space-y-2">
-                        <Input
-                          placeholder="Variable name (e.g., userId, authToken)"
-                          value={v.name}
-                          onChange={(e) => updateOutputVar(i, "name", e.target.value)}
-                          className="h-8 text-xs font-mono"
-                        />
-                        <Input
-                          placeholder="JSON path (e.g., response.data.token or response.user.id)"
-                          value={v.path}
-                          onChange={(e) => updateOutputVar(i, "path", e.target.value)}
-                          className="h-8 text-xs font-mono"
-                        />
-                        <Input
-                          placeholder="Description (optional)"
-                          value={v.description || ""}
-                          onChange={(e) => updateOutputVar(i, "description", e.target.value)}
-                          className="h-8 text-xs"
-                        />
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeOutputVar(i)}
-                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))
-                )}
-              </div>
+              ))}
             </div>
-          </div>
-        </ScrollArea>
+          )}
+          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+            Paths are JSONPath rooted at the response body — e.g.{" "}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono">$.data.token</code>.
+          </p>
+        </Section>
+      </div>
 
-        <div className="p-4 border-t border-border bg-muted/20 flex justify-end gap-2 shrink-0">
-          <Button variant="outline" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button size="sm" onClick={handleSave}>
-            Save Configuration
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+      {/* Footer */}
+      <div className="flex shrink-0 justify-end gap-2 border-t border-border bg-muted/30 px-5 py-3">
+        <Button variant="outline" size="sm" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={handleSave}>
+          Save configuration
+        </Button>
+      </div>
+    </div>
   );
 };
+
+/* ---------- small building blocks ---------- */
+
+function Section({
+  icon,
+  title,
+  subtitle,
+  onAdd,
+  accent,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  onAdd: () => void;
+  accent: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <section>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="flex items-start gap-2.5">
+          <span
+            className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
+              accent ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+            }`}
+          >
+            {icon}
+          </span>
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+            <p className="text-xs text-muted-foreground">{subtitle}</p>
+          </div>
+        </div>
+        <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5" onClick={onAdd}>
+          <Plus className="h-3.5 w-3.5" />
+          Add
+        </Button>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ColLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+function EmptyRow({ label }: { label: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+      {label}
+    </div>
+  );
+}
+
+function DeleteButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={onClick}
+      aria-label={label}
+      className="h-9 w-9 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+    >
+      <Trash2 className="h-4 w-4" />
+    </Button>
+  );
+}
