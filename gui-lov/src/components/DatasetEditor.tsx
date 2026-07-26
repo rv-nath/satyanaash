@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -8,6 +8,7 @@ import {
   addRow,
   duplicateRow,
   looksLikeInvalidJson,
+  oneLine,
   removeRow,
   rowLabel,
   isStatusShorthand,
@@ -19,15 +20,87 @@ import {
 interface DatasetEditorProps {
   dataset: Dataset;
   onChange: (dataset: Dataset) => void;
-  /** Used only to explain what a row with no expected status will fall back to. */
+  /** Used only to explain what a row with no check of its own falls back to. */
   sharedAssertion?: string;
 }
 
 // #, case, body, expect, duplicate, delete
-const GRID = "24px 150px minmax(200px,1fr) minmax(170px,0.7fr) 32px 32px";
+const GRID = "30px 160px minmax(200px,1fr) minmax(160px,0.6fr) 34px 34px";
+
+/** Borders belong to the table, not to the fields — a field with its own border
+ *  inside a bordered cell reads as a box in a box and wastes the width. */
+const CELL = "border-r border-border";
+const FIELD =
+  "rounded-none border-0 bg-transparent shadow-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0";
+
+interface CellProps {
+  value: string;
+  onChange: (value: string) => void;
+  editing: boolean;
+  onEdit: () => void;
+  onDone: () => void;
+  placeholder: string;
+  label: string;
+  /** Colour for the collapsed preview — used to flag a body that isn't JSON. */
+  tone?: string;
+  /** Shown under the field while editing only; it would break the row height otherwise. */
+  hint?: ReactNode;
+}
+
+/**
+ * One row tall until it's being edited, so a long matrix stays scannable.
+ * Collapsed it's a button showing a minified preview clipped with an ellipsis —
+ * a textarea can't do that, and a pretty-printed body would show as a lone "{".
+ */
+function EditableCell({
+  value,
+  onChange,
+  editing,
+  onEdit,
+  onDone,
+  placeholder,
+  label,
+  tone,
+  hint,
+}: CellProps) {
+  if (!editing) {
+    const preview = oneLine(value);
+    return (
+      <div className={`min-w-0 ${CELL}`}>
+        <button
+          type="button"
+          onClick={onEdit}
+          onFocus={onEdit}
+          aria-label={label}
+          title={preview || undefined}
+          className={`block h-9 w-full truncate px-2 text-left font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+            preview ? (tone ?? "text-foreground") : "text-muted-foreground/70"
+          }`}
+        >
+          {preview || placeholder}
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className={`min-w-0 ${CELL}`}>
+      <Textarea
+        // eslint-disable-next-line jsx-a11y/no-autofocus -- the click that opened
+        // this cell was aimed at the field it replaces.
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onDone}
+        placeholder={placeholder}
+        aria-label={label}
+        className={`h-[132px] min-h-0 w-full resize-none whitespace-pre px-2 py-1.5 font-mono text-xs ${FIELD}`}
+      />
+      {hint && <div className="px-2 pb-1.5">{hint}</div>}
+    </div>
+  );
+}
 
 export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEditorProps) {
-  // Which row's body is being edited — that one expands, the rest stay one line.
   const [editingBody, setEditingBody] = useState<string | null>(null);
   const [editingCheck, setEditingCheck] = useState<string | null>(null);
   const { rows } = dataset;
@@ -41,8 +114,8 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
             Run this test against several bodies
           </p>
           <p className="mt-0.5 max-w-2xl text-[13px] text-muted-foreground">
-            One row per case. Each row sends its own body and checks the status it should get
-            back — useful for negative and edge cases without building a flow.
+            One row per case. Each row sends its own body and says what should come back —
+            useful for negative and edge cases without building a flow.
           </p>
         </div>
         <Button variant="outline" size="sm" className="shrink-0 gap-1.5" onClick={() => onChange(addRow(dataset))}>
@@ -79,94 +152,79 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <div className="min-w-[640px] space-y-1.5">
-            {/* Header band: three columns — case, body, status. Tinted so it
-                reads as a header rather than another row of inputs. */}
+          <div className="min-w-[640px] overflow-hidden rounded-md border border-border">
+            {/* Header band, tinted so it reads as a header rather than another row
+                of inputs. Its cells carry the same dividers as the rows below. */}
             <div
-              className="grid items-center gap-2 rounded-t-md border-b-2 border-border bg-muted/50 px-1 py-1.5"
+              className="grid items-center border-b border-border bg-muted/40"
               style={{ gridTemplateColumns: GRID }}
             >
-              <span className="w-6" />
-              <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Case
-              </span>
-              <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Body
-              </span>
-              <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Expect
-              </span>
-              <span />
+              <span className={CELL} />
+              {["Case", "Body", "Expect"].map((h) => (
+                <span
+                  key={h}
+                  className={`px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground ${CELL}`}
+                >
+                  {h}
+                </span>
+              ))}
+              <span className={CELL} />
               <span />
             </div>
 
             {rows.map((row, i) => {
               const body = row.body ?? "";
-              const badJson = looksLikeInvalidJson(body);
-              const editing = editingBody === row.id;
               const check = row.check ?? "";
-              const editingThisCheck = editingCheck === row.id;
+              const badJson = looksLikeInvalidJson(body);
+              const label = rowLabel(i, row);
               return (
                 <div
                   key={row.id}
-                  className="grid items-start gap-2 rounded-md px-1 py-1 hover:bg-muted/30"
+                  className="grid items-stretch border-t border-border first:border-t-0 hover:bg-muted/20"
                   style={{ gridTemplateColumns: GRID }}
                 >
-                  <span className="w-6 pt-2 text-center text-xs text-muted-foreground">{i + 1}</span>
+                  <span className={`pt-2 text-center text-xs text-muted-foreground ${CELL}`}>
+                    {i + 1}
+                  </span>
 
-                  <Input
-                    value={row.name ?? ""}
-                    placeholder={rowLabel(i, row)}
-                    onChange={(e) => onChange(setRowName(dataset, row.id, e.target.value))}
-                    className="h-9 text-[13px]"
-                    aria-label={`Case name for row ${i + 1}`}
-                  />
-
-                  <div className="min-w-0">
-                    {/* One row tall until focused, so a long matrix stays scannable;
-                        grows for editing and collapses back on blur. */}
-                    <Textarea
-                      value={body}
-                      onChange={(e) => onChange(setRowBody(dataset, row.id, e.target.value))}
-                      onFocus={() => setEditingBody(row.id)}
-                      onBlur={() => setEditingBody((cur) => (cur === row.id ? null : cur))}
-                      placeholder={'{"email": "a@b.com"}   — blank uses the Request tab\u2019s body'}
-                      className={`resize-none font-mono text-xs transition-[height] duration-150 ${
-                        editing
-                          ? "h-[132px] min-h-0 whitespace-pre"
-                          : "h-9 min-h-0 overflow-hidden whitespace-nowrap py-2"
-                      } ${badJson ? "border-warning" : ""}`}
-                      aria-label={`Body for ${rowLabel(i, row)}`}
+                  <div className={`min-w-0 ${CELL}`}>
+                    <Input
+                      value={row.name ?? ""}
+                      placeholder={label}
+                      onChange={(e) => onChange(setRowName(dataset, row.id, e.target.value))}
+                      className={`h-9 px-2 text-[13px] ${FIELD}`}
+                      aria-label={`Case name for row ${i + 1}`}
                     />
-                    {/* Hints only while editing — otherwise they would defeat the
-                        single-row height. A bad body still shows a warning border. */}
-                    {editing && badJson && (
-                      <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-                        {badJson && (
-                          <span className="flex items-center gap-1 text-warning">
-                            <AlertTriangle className="h-3 w-3" /> Not valid JSON — sent as-is
-                          </span>
-                        )}
-                      </div>
-                    )}
                   </div>
 
-                  <div className="min-w-0">
-                    <Textarea
-                      value={check}
-                      onChange={(e) => onChange(setRowCheck(dataset, row.id, e.target.value))}
-                      onFocus={() => setEditingCheck(row.id)}
-                      onBlur={() => setEditingCheck((cur) => (cur === row.id ? null : cur))}
-                      placeholder="400   — or an expression"
-                      className={`resize-none font-mono text-xs transition-[height] duration-150 ${
-                        editingThisCheck
-                          ? "h-[132px] min-h-0 whitespace-pre"
-                          : "h-9 min-h-0 overflow-hidden whitespace-nowrap py-2"
-                      }`}
-                      aria-label={`Expected result for ${rowLabel(i, row)}`}
-                    />
-                    {editingThisCheck && (
-                      <p className="mt-1 text-[11px] text-muted-foreground">
+                  <EditableCell
+                    value={body}
+                    onChange={(v) => onChange(setRowBody(dataset, row.id, v))}
+                    editing={editingBody === row.id}
+                    onEdit={() => setEditingBody(row.id)}
+                    onDone={() => setEditingBody((cur) => (cur === row.id ? null : cur))}
+                    placeholder={"{\"email\": \"a@b.com\"}   — blank uses the Request tab’s body"}
+                    label={`Body for ${label}`}
+                    tone={badJson ? "text-warning" : undefined}
+                    hint={
+                      badJson ? (
+                        <span className="flex items-center gap-1 text-[11px] text-warning">
+                          <AlertTriangle className="h-3 w-3" /> Not valid JSON — sent as-is
+                        </span>
+                      ) : undefined
+                    }
+                  />
+
+                  <EditableCell
+                    value={check}
+                    onChange={(v) => onChange(setRowCheck(dataset, row.id, v))}
+                    editing={editingCheck === row.id}
+                    onEdit={() => setEditingCheck(row.id)}
+                    onDone={() => setEditingCheck((cur) => (cur === row.id ? null : cur))}
+                    placeholder="400   — or an expression"
+                    label={`Expected result for ${label}`}
+                    hint={
+                      <p className="text-[11px] text-muted-foreground">
                         {!check.trim()
                           ? hasShared
                             ? "Blank — this row passes on any 2xx (the Scripts tab is not used for rows)."
@@ -175,25 +233,27 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                             ? `Shorthand for response.status == ${check.trim()}`
                             : "Rhai expression — must end in something true or false."}
                       </p>
-                    )}
-                  </div>
+                    }
+                  />
 
+                  <div className={CELL}>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-9 w-full rounded-none text-muted-foreground hover:text-foreground"
+                      onClick={() => onChange(duplicateRow(dataset, row.id))}
+                      aria-label={`Duplicate ${label}`}
+                      title="Duplicate this case"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-9 w-8 text-muted-foreground hover:text-foreground"
-                    onClick={() => onChange(duplicateRow(dataset, row.id))}
-                    aria-label={`Duplicate ${rowLabel(i, row)}`}
-                    title="Duplicate this case"
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-9 w-8 text-muted-foreground hover:text-destructive"
+                    className="h-9 w-full rounded-none text-muted-foreground hover:text-destructive"
                     onClick={() => onChange(removeRow(dataset, row.id))}
-                    aria-label={`Remove ${rowLabel(i, row)}`}
+                    aria-label={`Remove ${label}`}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>

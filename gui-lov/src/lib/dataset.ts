@@ -46,6 +46,21 @@ export function isStatusShorthand(check: string): boolean {
   return /^\d+$/.test(check.trim());
 }
 
+/** A one-line form of a cell, for the collapsed row. A pretty-printed body would
+ *  otherwise show as a lone "{", so JSON is minified; anything else just loses
+ *  its line breaks. Display only — the stored text is never rewritten. */
+export function oneLine(text: string): string {
+  const t = text.trim();
+  if (t.startsWith("{") || t.startsWith("[")) {
+    try {
+      return JSON.stringify(JSON.parse(t));
+    } catch {
+      // Malformed JSON still deserves a preview — fall through.
+    }
+  }
+  return t.replace(/\s+/g, " ");
+}
+
 /** Duplicate a row — the usual way to build a matrix is tweak-and-repeat. */
 export function duplicateRow(d: Dataset, rowId: string): Dataset {
   const i = d.rows.findIndex((r) => r.id === rowId);

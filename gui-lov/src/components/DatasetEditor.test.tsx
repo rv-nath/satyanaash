@@ -33,38 +33,57 @@ describe("DatasetEditor", () => {
     const d = seed();
     render(<DatasetEditor dataset={d} onChange={onChange} />);
 
+    // A cell opens on click, then edits like any field.
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
     await userEvent.type(screen.getByLabelText(/^body for valid$/i), "!");
     expect(onChange.mock.calls.at(-1)![0].rows[0].body).toBe('{"email":"a@b.com"}!');
 
     onChange.mockClear();
+    await userEvent.click(screen.getByLabelText(/expected result for valid/i));
     await userEvent.clear(screen.getByLabelText(/expected result for valid/i));
     expect(onChange.mock.calls.at(-1)![0].rows[0].check).toBe("");
   });
 
   it("keeps the body one row tall until it is focused", async () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
-    const body = screen.getByLabelText(/^body for valid$/i);
 
-    // Collapsed: single-row height, no wrapping.
-    expect(body.className).toContain("h-9");
-    expect(body.className).toContain("whitespace-nowrap");
+    // Collapsed: a clipped one-line preview, not an editable field.
+    const collapsed = screen.getByLabelText(/^body for valid$/i);
+    expect(collapsed.tagName).toBe("BUTTON");
+    expect(collapsed.className).toContain("truncate");
 
-    await userEvent.click(body);
-    expect(body.className).toContain("h-[132px]");
-    expect(body.className).not.toContain("whitespace-nowrap");
+    await userEvent.click(collapsed);
+    const editor = screen.getByLabelText(/^body for valid$/i);
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor.className).toContain("h-[132px]");
+  });
+
+  it("shows a minified body so the preview isn't a lone brace", async () => {
+    let d = seed();
+    d = setRowBody(d, d.rows[0].id, '{\n  "email": "a@b.com",\n  "mobile": "918"\n}');
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    const collapsed = screen.getByLabelText(/^body for valid$/i);
+    expect(collapsed).toHaveTextContent('{"email":"a@b.com","mobile":"918"}');
+
+    // Editing shows the body exactly as it was authored — the preview never rewrites it.
+    await userEvent.click(collapsed);
+    expect(screen.getByLabelText(/^body for valid$/i)).toHaveValue(
+      '{\n  "email": "a@b.com",\n  "mobile": "918"\n}',
+    );
   });
 
   it("warns about broken JSON without blocking it", async () => {
     let d = seed();
     d = setRowBody(d, d.rows[0].id, '{"a":1');
     render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
-    const body = screen.getByLabelText(/^body for valid$/i);
+    const collapsed = screen.getByLabelText(/^body for valid$/i);
 
-    // Collapsed, the cue is the border — the text would defeat the single-row height.
-    expect(body.className).toContain("border-warning");
+    // Collapsed, the cue is the colour — a message would defeat the single-row height.
+    expect(collapsed.className).toContain("text-warning");
     expect(screen.queryByText(/not valid json/i)).not.toBeInTheDocument();
 
-    await userEvent.click(body);
+    await userEvent.click(collapsed);
     expect(screen.getByText(/not valid json/i)).toBeInTheDocument();
   });
 

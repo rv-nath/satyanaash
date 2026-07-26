@@ -5,6 +5,7 @@ import {
   emptyDataset,
   isEmptyDataset,
   looksLikeInvalidJson,
+  oneLine,
   removeRow,
   rowLabel,
   setRowBody,
@@ -79,6 +80,19 @@ describe("dataset reducers", () => {
     expect(isStatusShorthand("response.status == 201")).toBe(false);
     expect(isStatusShorthand("2xx")).toBe(false);
     expect(isStatusShorthand("")).toBe(false);
+  });
+
+  it("previews a cell on one line", () => {
+    // Minified, so a pretty-printed body isn't previewed as a lone brace.
+    expect(oneLine('{\n  "email": "a@b.com"\n}')).toBe('{"email":"a@b.com"}');
+    // Interpolation inside a string is still valid JSON.
+    expect(oneLine('{\n "s": "{{api_secret}}"\n}')).toBe('{"s":"{{api_secret}}"}');
+    // Not JSON, or broken JSON: keep the text, lose the line breaks.
+    expect(oneLine('{"a":1')).toBe('{"a":1');
+    expect(oneLine("response.status == 201\n  && response.json.id != ()")).toBe(
+      "response.status == 201 && response.json.id != ()",
+    );
+    expect(oneLine("   ")).toBe("");
   });
 
   it("labels rows like the server does", () => {
