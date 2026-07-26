@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tracing::info;
 
-use crate::db::models::{DataRow, ExportVariable, Flow, GraphNode, TestCase};
+use crate::db::models::{DataRow, ExportVariable, Flow, GraphNode, PayloadMode, TestCase};
 use crate::db::repositories::TestCaseRepository;
 use crate::error::AppError;
 
@@ -104,6 +105,20 @@ fn resolve_assertion<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> O
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
         })
+}
+
+/// Which body this run sends, before interpolation.
+///
+/// A row may keep the test case's payload (Shared), replace it (Custom), or send
+/// none at all (None) — the three are genuinely different intents, which is why
+/// this isn't a bare Option override.
+fn resolve_payload<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Option<&'a str> {
+    match row.map(|r| r.payload_mode) {
+        Some(PayloadMode::None) => None,
+        Some(PayloadMode::Custom) => row.and_then(|r| r.payload.as_deref()),
+        // Shared, or no row at all
+        _ => test_case.payload.as_deref(),
+    }
 }
 
 /// The only real differences between the flow-node path and the standalone path.
@@ -818,9 +833,9 @@ impl ExecutionEngine {
             }
         }
 
-        // Interpolate payload (body)
-        let body = match test_case.payload {
-            Some(ref payload_str) => match ctx.interpolate(payload_str) {
+        // Interpolate payload (body). A data row may override or suppress it.
+        let body = match resolve_payload(row, test_case) {
+            Some(payload_str) => match ctx.interpolate(payload_str) {
                 Ok(interpolated) => Some(interpolated),
                 Err(e) => bail!(format!("Payload interpolation failed: {}", e), None, None),
             },
@@ -864,6 +879,23 @@ impl ExecutionEngine {
         if self.debug_mode {
             logs.push(format!("Response status: {}", http_result.response.status));
         }
+
+        // One line per request at info level. Without this the server is silent
+        // during a run: tower-http's TraceLayer only logs at debug, and no handler
+        // logs anything.
+        let row_note = opts
+            .row_label
+            .as_deref()
+            .map(|l| format!(" [{}]", l))
+            .unwrap_or_default();
+        info!(
+            "{} {} -> {} ({}ms){}",
+            test_case.method,
+            url,
+            http_result.response.status,
+            start.elapsed().as_millis(),
+            row_note
+        );
 
         // Run assertions. On failure we record *why*, so the console shows a reason
         // instead of a bare "failed".
@@ -978,6 +1010,8 @@ impl ExecutionEngine {
         let mut aggregate_env: HashMap<String, Value> = HashMap::new();
         let mut iterations: Vec<NodeResult> = Vec::with_capacity(rows.len());
 
+        info!("Running \"{}\" over {} data row(s)", test_case.name, rows.len());
+
         for (index, row) in rows.iter().enumerate() {
             let label = crate::db::models::Dataset::label_for(index, row);
             let mut row_ctx = base_ctx.clone();
@@ -1021,6 +1055,13 @@ impl ExecutionEngine {
         let not_passed = failed + errored;
         let error_message = (not_passed > 0)
             .then(|| format!("{} of {} rows did not pass", not_passed, iterations.len()));
+        info!(
+            "\"{}\" finished: {} of {} rows passed ({}ms)",
+            test_case.name,
+            iterations.len() - not_passed,
+            iterations.len(),
+            start.elapsed().as_millis()
+        );
 
         // Prefix each row's logs so a flat log view still says which row spoke.
         let logs = iterations
@@ -1111,7 +1152,7 @@ mod tests {
                     values: [("email".to_string(), Value::String(email.into()))]
                         .into_iter()
                         .collect(),
-                    assertion: None,
+                    ..Default::default()
                 })
                 .collect(),
         }
@@ -1259,6 +1300,82 @@ mod tests {
 
         let scope = build_row_scope(&row, &ctx);
         assert_eq!(scope["url"], Value::String("http://api.test/signup".into()));
+    }
+
+    #[test]
+    fn test_resolve_payload_chain() {
+        let mut tc = make_test_case("t1", "T", "/x", "POST");
+        tc.payload = Some(r#"{"shared":true}"#.to_string());
+
+        // No row at all, or a row that keeps the shared body.
+        assert_eq!(resolve_payload(None, &tc), Some(r#"{"shared":true}"#));
+        let shared = DataRow::default(); // PayloadMode::Shared is the default
+        assert_eq!(resolve_payload(Some(&shared), &tc), Some(r#"{"shared":true}"#));
+
+        // Custom replaces it.
+        let custom = DataRow {
+            payload_mode: PayloadMode::Custom,
+            payload: Some("{}".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_payload(Some(&custom), &tc), Some("{}"));
+
+        // None suppresses the body entirely — distinct from "no override".
+        let none = DataRow { payload_mode: PayloadMode::None, ..Default::default() };
+        assert_eq!(resolve_payload(Some(&none), &tc), None);
+
+        // Custom with nothing typed sends no body rather than falling back,
+        // so the selector stays honest about what will be sent.
+        let empty_custom = DataRow { payload_mode: PayloadMode::Custom, ..Default::default() };
+        assert_eq!(resolve_payload(Some(&empty_custom), &tc), None);
+    }
+
+    #[tokio::test]
+    async fn test_row_payload_override_is_sent_and_interpolated() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u", "POST");
+        tc.payload = Some(r#"{"email":"{{email}}","mobile":"{{mobile}}"}"#.to_string());
+        tc.dataset = Some(crate::db::models::Dataset {
+            columns: vec!["email".to_string()],
+            rows: vec![
+                // Shared body, just a different value
+                DataRow {
+                    id: "r1".into(),
+                    name: Some("valid".into()),
+                    values: [("email".to_string(), Value::String("a@b.com".into()))]
+                        .into_iter().collect(),
+                    ..Default::default()
+                },
+                // Custom body that still uses a column variable
+                DataRow {
+                    id: "r2".into(),
+                    name: Some("email missing".into()),
+                    values: [("email".to_string(), Value::String("ignored".into()))]
+                        .into_iter().collect(),
+                    payload_mode: PayloadMode::Custom,
+                    payload: Some(r#"{"only":"{{email}}"}"#.to_string()),
+                    ..Default::default()
+                },
+                // No body at all
+                DataRow {
+                    id: "r3".into(),
+                    name: Some("no body".into()),
+                    payload_mode: PayloadMode::None,
+                    ..Default::default()
+                },
+            ],
+        });
+
+        let result = engine.execute_test_case_dataset(&tc, HashMap::new(), HashMap::new()).await;
+        let its = result.iterations.unwrap();
+
+        assert_eq!(its[0].request.as_ref().unwrap().body.as_deref(),
+                   Some(r#"{"email":"a@b.com","mobile":"{{mobile}}"}"#));
+        // The override replaced the shared body but was still interpolated.
+        assert_eq!(its[1].request.as_ref().unwrap().body.as_deref(),
+                   Some(r#"{"only":"ignored"}"#));
+        // None means no body was sent.
+        assert_eq!(its[2].request.as_ref().unwrap().body, None);
     }
 
     #[test]

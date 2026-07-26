@@ -12,6 +12,9 @@ import {
   setCell,
   setRowAssertion,
   setRowName,
+  setRowPayload,
+  setRowPayloadMode,
+  rowOverrides,
   suggestColumnName,
 } from "@/lib/dataset";
 import type { Dataset } from "@/lib/api/types";
@@ -116,6 +119,36 @@ describe("dataset reducers", () => {
     expect(isValidColumnName("2nd")).toBe(false);
     expect(isValidColumnName("a-b")).toBe(false);
     expect(isValidColumnName("")).toBe(false);
+  });
+
+  it("defaults new rows to the shared payload", () => {
+    const d = addRow(emptyDataset());
+    expect(d.rows[0].payload_mode).toBe("shared");
+  });
+
+  it("tracks payload mode and body per row", () => {
+    const d = seed();
+    const id = d.rows[0].id;
+    let next = setRowPayloadMode(d, id, "custom");
+    next = setRowPayload(next, id, "{}");
+
+    expect(next.rows[0].payload_mode).toBe("custom");
+    expect(next.rows[0].payload).toBe("{}");
+    expect(next.rows[1]).toEqual(d.rows[1]); // other rows untouched
+  });
+
+  it("reports what a row overrides", () => {
+    const d = seed();
+    const id = d.rows[0].id;
+    expect(rowOverrides(d.rows[0])).toEqual([]);
+
+    expect(rowOverrides(setRowPayloadMode(d, id, "none").rows[0])).toEqual(["payload"]);
+
+    const both = setRowAssertion(setRowPayloadMode(d, id, "custom"), id, "response.status == 400");
+    expect(rowOverrides(both.rows[0])).toEqual(["payload", "check"]);
+
+    // Whitespace-only assertion isn't an override.
+    expect(rowOverrides(setRowAssertion(d, id, "   ").rows[0])).toEqual([]);
   });
 
   it("labels rows like the server does", () => {

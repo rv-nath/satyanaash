@@ -5,7 +5,7 @@
  * — rekeying every row when a column is renamed, dropping orphaned cells when a
  * column goes — are unit-testable without rendering anything.
  */
-import type { DataRow, Dataset } from "@/lib/api/types";
+import type { DataRow, Dataset, PayloadMode } from "@/lib/api/types";
 
 export const emptyDataset = (): Dataset => ({ columns: [], rows: [] });
 
@@ -68,7 +68,14 @@ export function removeColumn(d: Dataset, name: string): Dataset {
 export function addRow(d: Dataset): Dataset {
   const values: Record<string, string> = {};
   for (const c of d.columns) values[c] = "";
-  const row: DataRow = { id: newRowId(), name: "", values, assertion: "" };
+  const row: DataRow = {
+    id: newRowId(),
+    name: "",
+    values,
+    assertion: "",
+    payload_mode: "shared",
+    payload: "",
+  };
   return { ...d, rows: [...d.rows, row] };
 }
 
@@ -93,6 +100,22 @@ export function setRowName(d: Dataset, rowId: string, name: string): Dataset {
 
 export function setRowAssertion(d: Dataset, rowId: string, assertion: string): Dataset {
   return patchRow(d, rowId, { assertion });
+}
+
+export function setRowPayloadMode(d: Dataset, rowId: string, mode: PayloadMode): Dataset {
+  return patchRow(d, rowId, { payload_mode: mode });
+}
+
+export function setRowPayload(d: Dataset, rowId: string, payload: string): Dataset {
+  return patchRow(d, rowId, { payload });
+}
+
+/** What a row overrides, for the collapsed-row indicator. */
+export function rowOverrides(row: DataRow): string[] {
+  const out: string[] = [];
+  if ((row.payload_mode ?? "shared") !== "shared") out.push("payload");
+  if ((row.assertion ?? "").trim()) out.push("check");
+  return out;
 }
 
 /** Label shown in the results matrix — mirrors the server's Dataset::label_for. */

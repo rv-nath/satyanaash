@@ -3,9 +3,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Plus, Trash2, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
-import type { Dataset } from "@/lib/api/types";
+import type { Dataset, PayloadMode } from "@/lib/api/types";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   addColumn,
+  rowOverrides,
+  setRowPayload,
+  setRowPayloadMode,
   addRow,
   isValidColumnName,
   removeColumn,
@@ -168,6 +172,8 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               rows.map((row, i) => {
                 const open = expanded.has(row.id);
                 const hasOwn = !!(row.assertion ?? "").trim();
+                const overrides = rowOverrides(row);
+                const mode: PayloadMode = row.payload_mode ?? "shared";
                 return (
                   <div key={row.id} className="space-y-1.5">
                     <div className="grid items-center gap-2" style={{ gridTemplateColumns: gridCols }}>
@@ -188,10 +194,14 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                       <Button
                         variant="ghost"
                         size="icon"
-                        className={`h-9 w-8 ${hasOwn ? "text-primary" : "text-muted-foreground"}`}
+                        className={`h-9 w-8 ${overrides.length ? "text-primary" : "text-muted-foreground"}`}
                         onClick={() => toggle(row.id)}
-                        aria-label={`${open ? "Hide" : "Show"} assertion for ${rowLabel(i, row)}`}
-                        title={hasOwn ? "This row has its own check" : "Add a check for this row"}
+                        aria-label={`${open ? "Hide" : "Show"} overrides for ${rowLabel(i, row)}`}
+                        title={
+                          overrides.length
+                            ? `Overrides: ${overrides.join(", ")}`
+                            : "Override the body or the check for this row"
+                        }
                       >
                         {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                       </Button>
@@ -207,20 +217,61 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     </div>
 
                     {open && (
-                      <div className="ml-[160px] rounded-md border border-border bg-muted/20 p-3">
-                        <Textarea
-                          value={row.assertion ?? ""}
-                          onChange={(e) => onChange(setRowAssertion(dataset, row.id, e.target.value))}
-                          placeholder="response.status == 201"
-                          className="min-h-[64px] font-mono text-xs"
-                        />
-                        <p className="mt-1.5 text-[11px] text-muted-foreground">
-                          {hasOwn
-                            ? "Used instead of the shared check for this row."
-                            : sharedAssertion?.trim()
-                              ? "Empty — this row uses the shared check from the Scripts tab."
-                              : "Empty — this row just checks for a 2xx status."}
-                        </p>
+                      <div className="ml-[160px] space-y-4 rounded-md border border-border bg-muted/20 p-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Payload
+                            </span>
+                            <Select
+                              value={mode}
+                              onValueChange={(v) => onChange(setRowPayloadMode(dataset, row.id, v as PayloadMode))}
+                            >
+                              <SelectTrigger className="h-7 w-[150px] text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="shared">Shared</SelectItem>
+                                <SelectItem value="custom">Custom</SelectItem>
+                                <SelectItem value="none">No body</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {mode === "custom" && (
+                            <Textarea
+                              value={row.payload ?? ""}
+                              onChange={(e) => onChange(setRowPayload(dataset, row.id, e.target.value))}
+                              placeholder={'{"email": "{{email}}"}'}
+                              className="mt-2 min-h-[72px] font-mono text-xs"
+                            />
+                          )}
+                          <p className="mt-1.5 text-[11px] text-muted-foreground">
+                            {mode === "shared"
+                              ? "Uses the body from the Request tab."
+                              : mode === "none"
+                                ? "Sends no body at all — for testing a missing request body."
+                                : "Replaces the Request tab's body for this row. Still interpolated, so {{variables}} work."}
+                          </p>
+                        </div>
+
+                        <div>
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Check
+                          </span>
+                          <Textarea
+                            value={row.assertion ?? ""}
+                            onChange={(e) => onChange(setRowAssertion(dataset, row.id, e.target.value))}
+                            placeholder="response.status == 201"
+                            className="mt-2 min-h-[64px] font-mono text-xs"
+                          />
+                          <p className="mt-1.5 text-[11px] text-muted-foreground">
+                            {hasOwn
+                              ? "Used instead of the shared check for this row."
+                              : sharedAssertion?.trim()
+                                ? "Empty — this row uses the shared check from the Scripts tab."
+                                : "Empty — this row just checks for a 2xx status."}
+                          </p>
+                        </div>
                       </div>
                     )}
                   </div>

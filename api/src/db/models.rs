@@ -218,6 +218,20 @@ pub struct Dataset {
     pub rows: Vec<DataRow>,
 }
 
+/// Where a row's request body comes from. "No override" and "an empty body" are
+/// different intents, so this is three-state rather than an Option<String>.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PayloadMode {
+    /// Use the test case's payload (the default).
+    #[default]
+    Shared,
+    /// Use this row's own `payload` instead.
+    Custom,
+    /// Send no body at all.
+    None,
+}
+
 /// One iteration's inputs, with an optional label and its own assertion override.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DataRow {
@@ -232,6 +246,13 @@ pub struct DataRow {
     /// Overrides the test case's assertion for this row only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assertion: Option<String>,
+    /// Where this row's body comes from.
+    #[serde(default)]
+    pub payload_mode: PayloadMode,
+    /// The body used when `payload_mode` is Custom. Still interpolated, so it may
+    /// contain {{variables}} and {{$Random...}} macros.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
 }
 
 impl Dataset {

@@ -328,6 +328,7 @@ mod tests {
                 name: Some("missing email".into()),
                 values: [("email".to_string(), serde_json::json!(""))].into_iter().collect(),
                 assertion: Some("response.status == 400".into()),
+                ..Default::default()
             }],
         });
 
