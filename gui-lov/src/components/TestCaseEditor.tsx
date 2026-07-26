@@ -1105,7 +1105,7 @@ export const TestCaseEditor = ({
 
 /** Renders one execution result — status bar plus Body / Headers / Request.
  *  Extracted so the data-driven drill-down reuses it instead of duplicating it. */
-function SingleResultView({
+export function SingleResultView({
   result,
   wordWrap,
   setWordWrap,
@@ -1152,7 +1152,7 @@ function SingleResultView({
             )}
           </div>
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => handleRunTest(!!executionResult?.iterations)} disabled={executeMutation.isPending}>
+            <Button variant="ghost" size="sm" className="gap-1.5" onClick={onRerun} disabled={running}>
               <Play className="w-3.5 h-3.5" />
               Run Again
             </Button>
@@ -1301,7 +1301,7 @@ function SingleResultView({
 
 /** Summary + per-row table for a "run all rows" result, with drill-down into
  *  the same renderer a single run uses. */
-function DatasetResultView({
+export function DatasetResultView({
   aggregate,
   selected,
   onSelect,

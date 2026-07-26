@@ -260,7 +260,7 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
 /** Handle individual execution events */
 function handleEvent(
   event: ExecutionEvent,
-  addLog: (message: string, type: ConsoleLog['type']) => void,
+  addLog: (message: string, type: ConsoleLog['type'], details?: ConsoleLogDetail[]) => void,
   debugMode: boolean,
   envWrites?: Record<string, unknown>
 ) {
