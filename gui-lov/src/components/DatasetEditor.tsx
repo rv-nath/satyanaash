@@ -93,7 +93,7 @@ function EditableCell({
         onBlur={onDone}
         placeholder={placeholder}
         aria-label={label}
-        className={`h-[132px] min-h-0 w-full resize-none whitespace-pre px-2 py-1.5 font-mono text-xs ${FIELD}`}
+        className={`scrollbar-hairline h-[132px] min-h-0 w-full resize-none whitespace-pre px-2 py-1.5 font-mono text-xs ${FIELD}`}
       />
       {hint && <div className="px-2 pb-1.5">{hint}</div>}
     </div>
@@ -151,7 +151,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
           </Button>
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="scrollbar-hairline overflow-x-auto">
           <div className="min-w-[640px] overflow-hidden rounded-md border border-border">
             {/* Header band, tinted so it reads as a header rather than another row
                 of inputs. Its cells carry the same dividers as the rows below. */}

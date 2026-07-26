@@ -191,4 +191,36 @@ All colors MUST be HSL.
     box-shadow: 0 0 0 2px hsl(var(--warning) / 0.3),
                 0 0 12px hsl(var(--warning) / 0.2) !important;
   }
+
+  /* A hairline scrollbar for scroll areas inside a field or cell, where the
+     platform's own bar — 16px wide with stepper arrows — is wider than the
+     content it sits beside. Firefox gets the same via scrollbar-width. */
+  .scrollbar-hairline {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  .scrollbar-hairline::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-hairline::-webkit-scrollbar-track,
+  .scrollbar-hairline::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .scrollbar-hairline::-webkit-scrollbar-thumb {
+    border-radius: 3px;
+    background: hsl(var(--border));
+  }
+
+  .scrollbar-hairline::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  /* Chrome draws stepper buttons on Windows unless they're removed. */
+  .scrollbar-hairline::-webkit-scrollbar-button {
+    display: none;
+  }
 }
