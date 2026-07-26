@@ -59,6 +59,17 @@ fn find_unresolved(
     names
 }
 
+/// The only real differences between the flow-node path and the standalone path.
+/// Everything else about running a test case is shared — see `run_once`.
+struct RunOptions<'a> {
+    /// "direct" for the editor path, the node id for the flow path.
+    node_id: &'a str,
+    /// Node-level `outputVars`; empty for the standalone path.
+    extra_exports: &'a [ExportVariable],
+    /// Warn when a `{{name}}` reaches the wire unresolved.
+    report_unresolved: bool,
+}
+
 /// Result status for a node execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -502,254 +513,39 @@ impl ExecutionEngine {
         // Accumulates SAT.env writes from pre-test + assertion scripts (persisted by the client)
         let mut env_writes: HashMap<String, Value> = HashMap::new();
 
-        // Execute pre-test script if present (sets variables before interpolation)
-        if let Some(ref script) = test_case.pre_test_script {
-            if !script.trim().is_empty() {
-                match self.pre_test.execute(script, &ctx.environment_snapshot()) {
-                    Ok(outcome) => {
-                        for (k, v) in outcome.vars {
-                            if self.debug_mode {
-                                logs.push(format!("Pre-test set: {} = {:?}", k, v));
-                            }
-                            ctx.set(&k, v);
-                        }
-                        for (k, v) in outcome.env {
-                            ctx.set_environment_var(&k, v.clone());
-                            env_writes.insert(k, v);
-                        }
-                    }
-                    Err(e) => {
-                        return NodeResult {
-                            node_id: node.id.clone(),
-                            test_case_id: Some(tc_id),
-                            test_case_name: Some(test_case.name.clone()),
-                            status: NodeStatus::Error,
-                            duration_ms: start.elapsed().as_millis() as u64,
-                            request: None,
-                            response: None,
-                            exports: None,
-                            env: None,
-                            error_message: Some(format!("Pre-test script failed: {}", e)),
-                            logs,
-                        };
-                    }
-                }
-            }
-        }
-
-        // Interpolate endpoint URL and prepend base URL if needed
-        let endpoint = match ctx.interpolate(&test_case.endpoint) {
-            Ok(u) => u,
-            Err(e) => {
-                return NodeResult {
-                    node_id: node.id.clone(),
-                    test_case_id: Some(tc_id),
-                    test_case_name: Some(test_case.name.clone()),
-                    status: NodeStatus::Error,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    request: None,
-                    response: None,
-                    exports: None,
-                    env: None,
-                    error_message: Some(format!("URL interpolation failed: {}", e)),
-                    logs,
-                };
-            }
-        };
-
-        // Build full URL (prepends base_url for relative paths)
-        let url = self.build_url(&endpoint);
-
-        if self.debug_mode {
-            logs.push(format!("URL: {} {}", test_case.method, url));
-        }
-
-        // Convert headers from JSON Value to HashMap
-        let mut headers = HashMap::new();
-        if let Some(obj) = test_case.headers.as_object() {
-            for (key, value) in obj {
-                if let Some(v) = value.as_str() {
-                    if let (Ok(k), Ok(val)) = (ctx.interpolate(key), ctx.interpolate(v)) {
-                        headers.insert(k, val);
-                    }
-                }
-            }
-        }
-
-        // Interpolate payload (body)
-        let body = if let Some(ref payload_str) = test_case.payload {
-            match ctx.interpolate(payload_str) {
-                Ok(interpolated) => Some(interpolated),
-                Err(e) => {
-                    return NodeResult {
-                        node_id: node.id.clone(),
-                        test_case_id: Some(tc_id),
-                        test_case_name: Some(test_case.name.clone()),
-                        status: NodeStatus::Error,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                        request: None,
-                        response: None,
-                        exports: None,
-                        env: None,
-                        error_message: Some(format!("Payload interpolation failed: {}", e)),
-                        logs,
-                    };
-                }
-            }
-        } else {
-            None
-        };
-
-        // Capture request info before executing (for debugging even on failure)
-        let request_log = RequestLog {
-            method: test_case.method.clone(),
-            url: url.clone(),
-            headers: headers.clone(),
-            body: body.clone(),
-        };
-
-        // Execute HTTP request
-        let http_result = match self.http.execute(
-            &test_case.method,
-            &url,
-            &headers,
-            body.as_deref(),
-        ).await {
-            Ok(r) => r,
-            Err(e) => {
-                return NodeResult {
-                    node_id: node.id.clone(),
-                    test_case_id: Some(tc_id),
-                    test_case_name: Some(test_case.name.clone()),
-                    status: NodeStatus::Error,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    request: Some(request_log), // Include request even on failure
-                    response: None,
-                    exports: None,
-                    env: None,
-                    error_message: Some(format!("HTTP request failed: {}", e)),
-                    logs,
-                };
-            }
-        };
-
-        if self.debug_mode {
-            logs.push(format!("Response status: {}", http_result.response.status));
-        }
-
-        // Run assertions. On failure we record *why*, so the console shows a reason
-        // instead of a bare "failed".
-        let mut assertion_failure: Option<String> = None;
-        let assertion_passed = if let Some(ref assertion_script) = test_case.assertion_script {
-            match self.assertions.evaluate(
-                assertion_script,
-                http_result.response.status,
-                &http_result.response.body,
-                &http_result.response.json,
-                &http_result.response.headers,
-                &ctx.environment_snapshot(),
-            ) {
-                Ok(outcome) => {
-                    if self.debug_mode {
-                        logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
-                    }
-                    if !outcome.passed {
-                        let reason = format!(
-                            "Assertion returned false: {}  (actual: HTTP {})",
-                            last_expression(assertion_script),
-                            http_result.response.status
-                        );
-                        logs.push(reason.clone());
-                        assertion_failure = Some(reason);
-                    }
-                    for (k, v) in outcome.vars {
-                        ctx.set(&k, v);
-                    }
-                    for (k, v) in outcome.env {
-                        ctx.set_environment_var(&k, v.clone());
-                        env_writes.insert(k, v);
-                    }
-                    outcome.passed
-                }
-                Err(e) => {
-                    return NodeResult {
-                        node_id: node.id.clone(),
-                        test_case_id: Some(tc_id),
-                        test_case_name: Some(test_case.name.clone()),
-                        status: NodeStatus::Error,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                        request: Some(http_result.request),
-                        response: Some(http_result.response),
-                        exports: None,
-                        env: None,
-                        error_message: Some(format!("Assertion error: {}", e)),
-                        logs,
-                    };
-                }
-            }
-        } else {
-            // Default assertion: 2xx status
-            let passed = AssertionEngine::default_assertion(http_result.response.status);
-            if self.debug_mode {
-                logs.push(format!("Default assertion (2xx): {}", if passed { "PASS" } else { "FAIL" }));
-            }
-            if !passed {
-                let reason = format!(
-                    "Assertion failed: expected a 2xx status, got HTTP {}",
-                    http_result.response.status
-                );
-                logs.push(reason.clone());
-                assertion_failure = Some(reason);
-            }
-            passed
-        };
-
-        // Process exports if assertion passed
-        // Merge test case exports with node-level outputVars (node overrides take precedence)
-        let exports = if assertion_passed {
-            let node_output_vars: Vec<ExportVariable> = node.data
-                .get("config")
-                .and_then(|c| c.get("outputVars"))
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|item| {
-                            let name = item.get("name")?.as_str()?;
-                            let path = item.get("path")?.as_str()?;
-                            if name.is_empty() || path.is_empty() { return None; }
-                            Some(ExportVariable {
-                                name: name.to_string(),
-                                json_path: path.to_string(),
-                            })
+        // Node-level outputVars merge with the test case's own exports.
+        let node_output_vars: Vec<ExportVariable> = node.data
+            .get("config")
+            .and_then(|c| c.get("outputVars"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let name = item.get("name")?.as_str()?;
+                        let path = item.get("path")?.as_str()?;
+                        if name.is_empty() || path.is_empty() { return None; }
+                        Some(ExportVariable {
+                            name: name.to_string(),
+                            json_path: path.to_string(),
                         })
-                        .collect()
-                })
-                .unwrap_or_default();
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-            self.process_exports(&test_case, &node_output_vars, &http_result.response.json, ctx, &mut logs)
-        } else {
-            None
-        };
-
-        let status = if assertion_passed {
-            NodeStatus::Passed
-        } else {
-            NodeStatus::Failed
-        };
-
-        NodeResult {
-            node_id: node.id.clone(),
-            test_case_id: Some(tc_id),
-            test_case_name: Some(test_case.name.clone()),
-            status,
-            duration_ms: start.elapsed().as_millis() as u64,
-            request: Some(http_result.request),
-            response: Some(http_result.response),
-            exports,
-            env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
-            error_message: assertion_failure,
+        self.run_once(
+            &test_case,
+            ctx,
+            RunOptions {
+                node_id: &node.id,
+                extra_exports: &node_output_vars,
+                report_unresolved: false,
+            },
             logs,
-        }
+            &mut env_writes,
+            start,
+        )
+        .await
     }
 
     /// Process exports from response using JSONPath
@@ -857,23 +653,40 @@ impl ExecutionEngine {
         edges.first().map(|e| e.target.clone())
     }
 
-    /// Execute a single test case directly (without flow context)
-    /// Used for testing individual test cases from the editor
-    pub async fn execute_test_case(
+    /// One pre-test → interpolate → HTTP → assert → export cycle.
+    ///
+    /// Shared by the standalone editor path (`execute_test_case`) and the flow-node
+    /// path (`execute_test_case_node`) so the two cannot drift. `ctx` is mutated
+    /// (pre-test vars, exports, SAT.env writes); `env_writes` accumulates the
+    /// environment writes the client is expected to persist. `start` is passed in so
+    /// the reported duration covers the caller's setup (e.g. fetching the test case).
+    async fn run_once(
         &self,
         test_case: &TestCase,
-        environment: HashMap<String, Value>,
-        variables: HashMap<String, Value>,
+        ctx: &mut ExecutionContext,
+        opts: RunOptions<'_>,
+        mut logs: Vec<String>,
+        env_writes: &mut HashMap<String, Value>,
+        start: std::time::Instant,
     ) -> NodeResult {
-        let start = std::time::Instant::now();
-        let mut logs = Vec::new();
-        let mut ctx = ExecutionContext::new(variables, environment, HashMap::new());
-
-        // Accumulates SAT.env writes from pre-test + assertion scripts (persisted by the client)
-        let mut env_writes: HashMap<String, Value> = HashMap::new();
-
-        if self.debug_mode {
-            logs.push(format!("Executing test case: {}", test_case.name));
+        // Every early exit reports the same identity; only the message and how far we
+        // got differ. Each expansion returns, so moving `logs` repeatedly is fine.
+        macro_rules! bail {
+            ($msg:expr, $req:expr, $resp:expr) => {
+                return NodeResult {
+                    node_id: opts.node_id.to_string(),
+                    test_case_id: Some(test_case.id.clone()),
+                    test_case_name: Some(test_case.name.clone()),
+                    status: NodeStatus::Error,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    request: $req,
+                    response: $resp,
+                    exports: None,
+                    env: None,
+                    error_message: Some($msg),
+                    logs,
+                }
+            };
         }
 
         // Execute pre-test script if present (sets variables before interpolation)
@@ -892,53 +705,23 @@ impl ExecutionEngine {
                             env_writes.insert(k, v);
                         }
                     }
-                    Err(e) => {
-                        return NodeResult {
-                            node_id: "direct".to_string(),
-                            test_case_id: Some(test_case.id.clone()),
-                            test_case_name: Some(test_case.name.clone()),
-                            status: NodeStatus::Error,
-                            duration_ms: start.elapsed().as_millis() as u64,
-                            request: None,
-                            response: None,
-                            exports: None,
-                            env: None,
-                            error_message: Some(format!("Pre-test script failed: {}", e)),
-                            logs,
-                        };
-                    }
+                    Err(e) => bail!(format!("Pre-test script failed: {}", e), None, None),
                 }
             }
         }
 
-        // Interpolate endpoint URL
+        // Interpolate endpoint URL and prepend base URL if needed
         let endpoint = match ctx.interpolate(&test_case.endpoint) {
             Ok(u) => u,
-            Err(e) => {
-                return NodeResult {
-                    node_id: "direct".to_string(),
-                    test_case_id: Some(test_case.id.clone()),
-                    test_case_name: Some(test_case.name.clone()),
-                    status: NodeStatus::Error,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    request: None,
-                    response: None,
-                    exports: None,
-                    env: None,
-                    error_message: Some(format!("URL interpolation failed: {}", e)),
-                    logs,
-                };
-            }
+            Err(e) => bail!(format!("URL interpolation failed: {}", e), None, None),
         };
-
-        // Build full URL
         let url = self.build_url(&endpoint);
 
         if self.debug_mode {
             logs.push(format!("URL: {} {}", test_case.method, url));
         }
 
-        // Convert headers
+        // Convert headers from JSON Value to HashMap
         let mut headers = HashMap::new();
         if let Some(obj) = test_case.headers.as_object() {
             for (key, value) in obj {
@@ -950,41 +733,28 @@ impl ExecutionEngine {
             }
         }
 
-        // Interpolate payload
-        let body = if let Some(ref payload_str) = test_case.payload {
-            match ctx.interpolate(payload_str) {
+        // Interpolate payload (body)
+        let body = match test_case.payload {
+            Some(ref payload_str) => match ctx.interpolate(payload_str) {
                 Ok(interpolated) => Some(interpolated),
-                Err(e) => {
-                    return NodeResult {
-                        node_id: "direct".to_string(),
-                        test_case_id: Some(test_case.id.clone()),
-                        test_case_name: Some(test_case.name.clone()),
-                        status: NodeStatus::Error,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                        request: None,
-                        response: None,
-                        exports: None,
-                        env: None,
-                        error_message: Some(format!("Payload interpolation failed: {}", e)),
-                        logs,
-                    };
-                }
-            }
-        } else {
-            None
+                Err(e) => bail!(format!("Payload interpolation failed: {}", e), None, None),
+            },
+            None => None,
         };
 
         // Variables that never resolved go out as literal "{{name}}" text — usually
         // the real cause of a puzzling 4xx. Say so instead of failing silently.
-        let unresolved = find_unresolved(&url, &headers, body.as_deref());
-        if !unresolved.is_empty() {
-            logs.push(format!(
-                "⚠ Unresolved variable(s) sent literally: {}",
-                unresolved.join(", ")
-            ));
+        if opts.report_unresolved {
+            let unresolved = find_unresolved(&url, &headers, body.as_deref());
+            if !unresolved.is_empty() {
+                logs.push(format!(
+                    "⚠ Unresolved variable(s) sent literally: {}",
+                    unresolved.join(", ")
+                ));
+            }
         }
 
-        // Capture request info
+        // Capture request info before executing (for debugging even on failure)
         let request_log = RequestLog {
             method: test_case.method.clone(),
             url: url.clone(),
@@ -993,28 +763,17 @@ impl ExecutionEngine {
         };
 
         // Execute HTTP request
-        let http_result = match self.http.execute(
-            &test_case.method,
-            &url,
-            &headers,
-            body.as_deref(),
-        ).await {
+        let http_result = match self
+            .http
+            .execute(&test_case.method, &url, &headers, body.as_deref())
+            .await
+        {
             Ok(r) => r,
-            Err(e) => {
-                return NodeResult {
-                    node_id: "direct".to_string(),
-                    test_case_id: Some(test_case.id.clone()),
-                    test_case_name: Some(test_case.name.clone()),
-                    status: NodeStatus::Error,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    request: Some(request_log),
-                    response: None,
-                    exports: None,
-                    env: None,
-                    error_message: Some(format!("HTTP request failed: {}", e)),
-                    logs,
-                };
-            }
+            Err(e) => bail!(
+                format!("HTTP request failed: {}", e),
+                Some(request_log),
+                None
+            ),
         };
 
         if self.debug_mode {
@@ -1055,21 +814,11 @@ impl ExecutionEngine {
                     }
                     outcome.passed
                 }
-                Err(e) => {
-                    return NodeResult {
-                        node_id: "direct".to_string(),
-                        test_case_id: Some(test_case.id.clone()),
-                        test_case_name: Some(test_case.name.clone()),
-                        status: NodeStatus::Error,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                        request: Some(http_result.request),
-                        response: Some(http_result.response),
-                        exports: None,
-                        env: None,
-                        error_message: Some(format!("Assertion error: {}", e)),
-                        logs,
-                    };
-                }
+                Err(e) => bail!(
+                    format!("Assertion error: {}", e),
+                    Some(http_result.request),
+                    Some(http_result.response)
+                ),
             }
         } else {
             // Default assertion: 2xx status
@@ -1088,24 +837,24 @@ impl ExecutionEngine {
             passed
         };
 
-        // Process exports if assertion passed
+        // Process exports only if the assertion passed
         let exports = if assertion_passed {
-            self.process_exports(test_case, &[], &http_result.response.json, &mut ctx, &mut logs)
+            self.process_exports(
+                test_case,
+                opts.extra_exports,
+                &http_result.response.json,
+                ctx,
+                &mut logs,
+            )
         } else {
             None
         };
 
-        let status = if assertion_passed {
-            NodeStatus::Passed
-        } else {
-            NodeStatus::Failed
-        };
-
         NodeResult {
-            node_id: "direct".to_string(),
+            node_id: opts.node_id.to_string(),
             test_case_id: Some(test_case.id.clone()),
             test_case_name: Some(test_case.name.clone()),
-            status,
+            status: if assertion_passed { NodeStatus::Passed } else { NodeStatus::Failed },
             duration_ms: start.elapsed().as_millis() as u64,
             request: Some(http_result.request),
             response: Some(http_result.response),
@@ -1114,6 +863,36 @@ impl ExecutionEngine {
             error_message: assertion_failure,
             logs,
         }
+    }
+
+    /// Execute a single test case directly (without flow context)
+    /// Used for testing individual test cases from the editor
+    pub async fn execute_test_case(
+        &self,
+        test_case: &TestCase,
+        environment: HashMap<String, Value>,
+        variables: HashMap<String, Value>,
+    ) -> NodeResult {
+        let start = std::time::Instant::now();
+        let mut logs = Vec::new();
+        let mut ctx = ExecutionContext::new(variables, environment, HashMap::new());
+
+        // Accumulates SAT.env writes from pre-test + assertion scripts (persisted by the client)
+        let mut env_writes: HashMap<String, Value> = HashMap::new();
+
+        if self.debug_mode {
+            logs.push(format!("Executing test case: {}", test_case.name));
+        }
+
+        self.run_once(
+            test_case,
+            &mut ctx,
+            RunOptions { node_id: "direct", extra_exports: &[], report_unresolved: true },
+            logs,
+            &mut env_writes,
+            start,
+        )
+        .await
     }
 }
 
@@ -1456,6 +1235,26 @@ mod tests {
         assert_eq!(result.stats.errors, 1);
         assert_eq!(result.results[0].status, NodeStatus::Error);
         assert!(result.results[0].error_message.as_ref().unwrap().contains("not found"));
+        // Guards the run_once extraction: node_id must stay the graph node's id,
+        // not the standalone path's "direct". Nothing else would catch a slip here.
+        assert_eq!(result.results[0].node_id, "tc1");
+    }
+
+    #[tokio::test]
+    async fn test_standalone_run_is_labelled_direct() {
+        // Companion guard to the flow-side node_id assertion above.
+        let engine = ExecutionEngine::new(false, None);
+        let tc = make_test_case("tc-x", "Standalone", "http://127.0.0.1:1/unreachable", "GET");
+
+        let result = engine
+            .execute_test_case(&tc, HashMap::new(), HashMap::new())
+            .await;
+
+        assert_eq!(result.node_id, "direct");
+        assert_eq!(result.test_case_id.as_deref(), Some("tc-x"));
+        // Connection refused, but the request log is still captured.
+        assert_eq!(result.status, NodeStatus::Error);
+        assert!(result.request.is_some());
     }
 
     #[tokio::test]

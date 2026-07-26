@@ -11,6 +11,7 @@ import { useAutoValidate, ValidationStatus } from "@/hooks/useAutoValidate";
 import { toast } from "sonner";
 import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
 import { generateUUID } from "@/lib/utils/uuid";
+import type { LayoutDirection, LayoutSpacing } from "@/lib/layoutUtils";
 import {
   readGlobals, readEnvironments, effectiveEnv, mergeEnvWrites,
   getActiveEnvId, setActiveEnvId as persistActiveEnvId,
@@ -127,6 +128,10 @@ interface TestProjectContextType {
   deleteNode: (nodeId: string) => void;
   updateNodeConfig: (nodeId: string, config: any) => void;
   alignNodes: (direction: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') => void;
+  // Auto-layout is performed by the canvas (it owns fitView), so the toolbar
+  // raises a request and TestCanvas applies it.
+  layoutRequest: { direction: LayoutDirection; spacing: LayoutSpacing; seq: number } | null;
+  requestAutoLayout: (direction: LayoutDirection, spacing?: LayoutSpacing) => void;
   flowVariables: Record<string, unknown>;
   setFlowVariables: (vars: Record<string, unknown>) => void;
   exportFlowJSON: (groupId: string) => any;
@@ -645,8 +650,14 @@ export const TestProjectProvider = ({
 
   const alignNodes = useCallback((direction: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') => {
     const selectedNodes = nodes.filter(n => n.selected);
-    if (selectedNodes.length < 2) {
-      toast.error('Select at least 2 nodes to align');
+    const distributing = direction === 'distribute-h' || direction === 'distribute-v';
+    // Distributing needs a middle to move; aligning only needs two nodes.
+    if (selectedNodes.length < (distributing ? 3 : 2)) {
+      toast.error(
+        distributing
+          ? 'Select at least 3 nodes to distribute'
+          : 'Select at least 2 nodes to align'
+      );
       return;
     }
 
@@ -690,29 +701,50 @@ export const TestProjectProvider = ({
         const idx = updatedNodes.findIndex(n => n.id === node.id);
         updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, y: avgY } };
       });
-    } else if (direction === 'distribute-h') {
-      const sorted = [...selectedNodes].sort((a, b) => a.position.x - b.position.x);
-      const minX = sorted[0].position.x;
-      const maxX = sorted[sorted.length - 1].position.x;
-      const gap = (maxX - minX) / (sorted.length - 1);
-      sorted.forEach((node, i) => {
+    } else if (direction === 'distribute-h' || direction === 'distribute-v') {
+      // Equalise the *gaps between nodes*, not the gaps between their origins —
+      // nodes differ in size, so evenly spacing origins looks uneven.
+      const horizontal = direction === 'distribute-h';
+      const sizeOf = (n: Node) =>
+        (horizontal ? n.measured?.width : n.measured?.height) ?? (horizontal ? 180 : 40);
+      const posOf = (n: Node) => (horizontal ? n.position.x : n.position.y);
+
+      const sorted = [...selectedNodes].sort((a, b) => posOf(a) - posOf(b));
+      const last = sorted[sorted.length - 1];
+      const spanStart = posOf(sorted[0]);
+      const spanEnd = posOf(last) + sizeOf(last);
+      const occupied = sorted.reduce((sum, n) => sum + sizeOf(n), 0);
+      const gap = (spanEnd - spanStart - occupied) / (sorted.length - 1);
+
+      // First and last stay put; everything between is re-spaced evenly.
+      let cursor = spanStart;
+      sorted.forEach((node) => {
         const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, x: minX + (gap * i) } };
-      });
-    } else if (direction === 'distribute-v') {
-      const sorted = [...selectedNodes].sort((a, b) => a.position.y - b.position.y);
-      const minY = sorted[0].position.y;
-      const maxY = sorted[sorted.length - 1].position.y;
-      const gap = (maxY - minY) / (sorted.length - 1);
-      sorted.forEach((node, i) => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, y: minY + (gap * i) } };
+        const coord = Math.round(cursor);
+        updatedNodes[idx] = {
+          ...updatedNodes[idx],
+          position: horizontal
+            ? { ...updatedNodes[idx].position, x: coord }
+            : { ...updatedNodes[idx].position, y: coord },
+        };
+        cursor += sizeOf(node) + gap;
       });
     }
     
     setNodes(updatedNodes);
     toast.success(`Aligned nodes: ${direction}`);
   }, [nodes, setNodes, testGroups, history]);
+
+  // Auto-layout: snapshot for undo here, then let the canvas do the arranging.
+  const [layoutRequest, setLayoutRequest] = useState<{ direction: LayoutDirection; spacing: LayoutSpacing; seq: number } | null>(null);
+  const requestAutoLayout = useCallback((direction: LayoutDirection, spacing: LayoutSpacing = 'comfortable') => {
+    if (nodes.length === 0) {
+      toast.error('Nothing to arrange');
+      return;
+    }
+    history.pushState(testGroups, `Auto layout: ${direction === 'TB' ? 'vertical' : 'horizontal'}`);
+    setLayoutRequest((prev) => ({ direction, spacing, seq: (prev?.seq ?? 0) + 1 }));
+  }, [nodes.length, testGroups, history]);
 
   const undo = useCallback(() => {
     const previousState = history.undo();
@@ -854,6 +886,8 @@ export const TestProjectProvider = ({
         deleteNode,
         updateNodeConfig,
         alignNodes,
+        layoutRequest,
+        requestAutoLayout,
         flowVariables,
         setFlowVariables,
         exportFlowJSON,

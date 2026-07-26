@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { FileCode } from "lucide-react";
+import { Info } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
 
@@ -38,31 +39,46 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
   const displayMethod = currentTestCase?.method || data.method;
   const displayEndpoint = currentTestCase?.endpoint || data.endpoint;
 
+  // Only the name sits on the node. Method and endpoint are one click away via the
+  // info button — on hover they'd steal attention while you're reading the graph.
   return (
-    <div className="px-4 py-3 rounded-lg border-2 bg-card shadow-lg min-w-[200px] hover:shadow-xl transition-shadow">
+    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border-2 bg-card shadow-md min-w-[140px] max-w-[260px] hover:shadow-lg transition-shadow">
       {/* Input handles - top and left only */}
       <Handle id="target-top" type="target" position={Position.Top} className="!bg-primary" />
       <Handle id="target-left" type="target" position={Position.Left} className="!bg-primary" />
-      
-      <div className="flex items-start gap-2 mb-2">
-        <FileCode className="w-4 h-4 text-node-test mt-0.5 flex-shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="text-xs font-mono text-foreground font-medium truncate">
-            {displayLabel}
-          </div>
-          {displayEndpoint && (
-            <div className="text-[10px] text-muted-foreground font-mono mt-1 truncate">
-              {displayEndpoint}
-            </div>
-          )}
-        </div>
-      </div>
 
-      <div className="flex items-center justify-between">
-        <span className={`text-[10px] px-2 py-0.5 rounded border font-mono font-medium ${getMethodColor(displayMethod)}`}>
-          {displayMethod}
-        </span>
-      </div>
+      <Popover>
+        <PopoverTrigger asChild>
+          {/* nodrag keeps React Flow from starting a drag on this button */}
+          <button
+            type="button"
+            aria-label="Request details"
+            onClick={(e) => e.stopPropagation()}
+            className="nodrag shrink-0 rounded p-0.5 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Info className="h-3.5 w-3.5" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="top" align="start" className="w-auto max-w-[380px] p-3">
+          <p className="text-[13px] font-medium leading-snug">{displayLabel}</p>
+          <div className="mt-2 flex items-baseline gap-2">
+            <span
+              className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold ${getMethodColor(displayMethod)}`}
+            >
+              {displayMethod}
+            </span>
+            {displayEndpoint && (
+              <span className="break-all font-mono text-[11px] text-muted-foreground">
+                {displayEndpoint}
+              </span>
+            )}
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <span className="truncate text-xs font-mono font-medium text-foreground">
+        {displayLabel}
+      </span>
 
       {/* Output handles - bottom and right only */}
       <Handle id="source-bottom" type="source" position={Position.Bottom} className="!bg-primary" />

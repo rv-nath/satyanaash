@@ -20,8 +20,9 @@ import { TestCaseNode, StartNode, EndNode, GroupNode } from "./CustomNodes";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { EdgeTypeDialog } from "./EdgeTypeDialog";
-import { getLayoutedElements } from "@/lib/layoutUtils";
+import { getLayoutedElements, type LayoutDirection, type LayoutSpacing } from "@/lib/layoutUtils";
 import { useReactFlow } from "@xyflow/react";
+import { toast } from "sonner";
 
 const nodeTypes = {
   testCase: TestCaseNode,
@@ -31,7 +32,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
   const [edges, setEdgesState, onEdgesChange] = useEdgesState(contextEdges);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
@@ -127,15 +128,26 @@ const TestCanvasContent = () => {
     // Use requestAnimationFrame for smooth sync without flickering
     requestAnimationFrame(() => {
       setNodesState((currentNodes) => {
-        // Apply snap to grid if enabled
-        const snappedNodes = snapToGrid 
-          ? currentNodes.map(node => ({
-              ...node,
-              position: {
-                x: Math.round(node.position.x / 20) * 20,
-                y: Math.round(node.position.y / 20) * 20,
-              }
-            }))
+        // Snap only the nodes that actually moved. Re-snapping every node on any
+        // change (even a selection) silently rewrote the precise positions set by
+        // align / distribute / auto-arrange, undoing even spacing.
+        const movedIds = new Set<string>(
+          (changes ?? [])
+            .filter((c: any) => c?.type === 'position' && c?.id)
+            .map((c: any) => c.id as string)
+        );
+        const snappedNodes = snapToGrid && movedIds.size > 0
+          ? currentNodes.map(node =>
+              movedIds.has(node.id)
+                ? {
+                    ...node,
+                    position: {
+                      x: Math.round(node.position.x / 20) * 20,
+                      y: Math.round(node.position.y / 20) * 20,
+                    },
+                  }
+                : node
+            )
           : currentNodes;
         setNodes(snappedNodes);
         return snappedNodes;
@@ -214,18 +226,28 @@ const TestCanvasContent = () => {
     setPendingConnection(null);
   }, []);
 
-  const handleAutoLayout = useCallback(() => {
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nodes, edges);
+  const handleAutoLayout = useCallback((direction: LayoutDirection = 'TB', spacing: LayoutSpacing = 'comfortable') => {
+    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(nodes, edges, direction, spacing);
     setNodesState(layoutedNodes);
     setNodes(layoutedNodes);
     setEdgesState(layoutedEdges);
     setEdges(layoutedEdges);
-    
+
     // Fit view after layout with a small delay to ensure layout is applied
     setTimeout(() => {
       fitView({ padding: 0.2, duration: 400 });
     }, 50);
   }, [nodes, edges, setNodesState, setNodes, setEdgesState, setEdges, fitView]);
+
+  // The toolbar lives outside ReactFlowProvider, so it raises a request and the
+  // canvas (which owns fitView) performs the arrangement.
+  const lastLayoutSeqRef = useRef(0);
+  useEffect(() => {
+    if (!layoutRequest || layoutRequest.seq === lastLayoutSeqRef.current) return;
+    lastLayoutSeqRef.current = layoutRequest.seq;
+    handleAutoLayout(layoutRequest.direction, layoutRequest.spacing);
+    toast.success(layoutRequest.direction === 'TB' ? 'Arranged top to bottom' : 'Arranged left to right');
+  }, [layoutRequest, handleAutoLayout]);
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();

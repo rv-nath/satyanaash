@@ -5,7 +5,8 @@ import {
   ArrowLeft, Play, Settings, CheckCircle2, Download, Bug, Loader2, AlertCircle,
   Undo2, Redo2, Cloud, CloudOff, Save, ChevronDown, Spline, Minus, ArrowRightToLine,
   AlignStartHorizontal, AlignStartVertical, AlignEndVertical, AlignEndHorizontal,
-  AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil
+  AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil, Network, MoveVertical, MoveHorizontal,
+  AlignHorizontalSpaceAround, AlignVerticalSpaceAround
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkspaceWelcome } from "@/components/WorkspaceWelcome";
@@ -42,6 +43,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
 import type { TestCaseExecutionResult } from "@/lib/api/types";
+import type { LayoutSpacing } from "@/lib/layoutUtils";
 import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useTestCases } from "@/hooks/useApi";
 import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
 import { SettingsPanel } from "@/components/SettingsPanel";
@@ -100,7 +102,12 @@ const ProjectDetailContent = () => {
     selectEnv,
     effectiveEnvironment,
     applyEnvWrites,
+    requestAutoLayout,
   } = useTestProject();
+
+  // Arrange density — remembered for the session and used by both the toolbar
+  // button and the menu items.
+  const [layoutSpacing, setLayoutSpacing] = useState<LayoutSpacing>('comfortable');
 
   // Derive active flow for header
   const activeFlow = testGroups.find(g => g.id === activeFlowId);
@@ -594,6 +601,46 @@ const ProjectDetailContent = () => {
 
               <div className="h-5 w-px bg-border mx-2" />
 
+              {/* Auto arrange — click arranges vertically, caret picks the axis */}
+              <div className="flex items-stretch">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => requestAutoLayout('TB', layoutSpacing)}
+                  title={`Auto arrange (top to bottom, ${layoutSpacing})`}
+                >
+                  <Network className="w-4 h-4" />
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="w-5" title="Arrange options">
+                      <ChevronDown className="w-3 h-3" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => requestAutoLayout('TB', layoutSpacing)}>
+                      <MoveVertical className="w-4 h-4 mr-2" /> Arrange top to bottom
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => requestAutoLayout('LR', layoutSpacing)}>
+                      <MoveHorizontal className="w-4 h-4 mr-2" /> Arrange left to right
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
+                      Spacing
+                    </DropdownMenuLabel>
+                    <DropdownMenuRadioGroup
+                      value={layoutSpacing}
+                      onValueChange={(v) => setLayoutSpacing(v as LayoutSpacing)}
+                    >
+                      <DropdownMenuRadioItem value="comfortable">Comfortable</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value="compact">Compact</DropdownMenuRadioItem>
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+
+              <div className="h-5 w-px bg-border mx-2" />
+
               {/* Validate/Export group */}
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -701,10 +748,20 @@ const ProjectDetailContent = () => {
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => alignNodes('center-h')}>
-                        <AlignVerticalJustifyCenter className="h-4 w-4 mr-2" /> Center Horizontally
+                        <AlignVerticalJustifyCenter className="h-4 w-4 mr-2" /> Align Horizontal Centers
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => alignNodes('center-v')}>
-                        <AlignHorizontalJustifyCenter className="h-4 w-4 mr-2" /> Center Vertically
+                        <AlignHorizontalJustifyCenter className="h-4 w-4 mr-2" /> Align Vertical Centers
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel className="text-[10px] font-normal text-muted-foreground">
+                        Even spacing (3+ nodes)
+                      </DropdownMenuLabel>
+                      <DropdownMenuItem onClick={() => alignNodes('distribute-h')}>
+                        <AlignHorizontalSpaceAround className="h-4 w-4 mr-2" /> Distribute Horizontally
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => alignNodes('distribute-v')}>
+                        <AlignVerticalSpaceAround className="h-4 w-4 mr-2" /> Distribute Vertically
                       </DropdownMenuItem>
                     </DropdownMenuSubContent>
                   </DropdownMenuSub>

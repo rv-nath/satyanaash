@@ -29,7 +29,10 @@ export const GroupNode = memo(({ data }: GroupNodeProps) => {
         className="px-4 py-3 rounded-lg border-2 border-node-group bg-card shadow-lg min-w-[220px] hover:shadow-xl transition-shadow"
         onDoubleClick={handleDoubleClick}
       >
-        <Handle type="target" position={Position.Top} className="w-3 h-3 !bg-node-group" />
+        {/* Ids match the other node types so edges can be re-routed to the
+            left/right ports when the graph is arranged horizontally. */}
+        <Handle id="target-top" type="target" position={Position.Top} className="w-3 h-3 !bg-node-group" />
+        <Handle id="target-left" type="target" position={Position.Left} className="w-3 h-3 !bg-node-group" />
         
         <div 
           className="flex items-start gap-2 cursor-pointer"
@@ -82,7 +85,8 @@ export const GroupNode = memo(({ data }: GroupNodeProps) => {
           </div>
         )}
 
-        <Handle type="source" position={Position.Bottom} className="w-3 h-3 !bg-node-group" />
+        <Handle id="source-bottom" type="source" position={Position.Bottom} className="w-3 h-3 !bg-node-group" />
+        <Handle id="source-right" type="source" position={Position.Right} className="w-3 h-3 !bg-node-group" />
       </div>
 
       <GroupEditorDialog
