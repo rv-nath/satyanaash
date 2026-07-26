@@ -236,7 +236,13 @@ pub struct DataRow {
     /// shorthand for `response.status == 400`) or a Rhai expression
     /// (`response.status == 201 && response.json.token != ()`). Blank means
     /// "any 2xx". Kept as a string so a blank field is simply "not specified".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// The alias reads rows stored before this was widened from a status code to a
+    /// full check. It is read-only — serializing always writes `check` — so a row
+    /// migrates itself the next time it is saved. Without it those rows load with
+    /// no check and quietly pass on any 2xx, which for a negative case is the
+    /// worst possible failure mode: a green row that tests nothing.
+    #[serde(default, alias = "expected_status", skip_serializing_if = "Option::is_none")]
     pub check: Option<String>,
 }
 
@@ -414,6 +420,22 @@ mod tests {
         assert_eq!(Dataset::label_for(0, &named), "missing email");
         assert_eq!(Dataset::label_for(1, &blank), "Row 2");
         assert_eq!(Dataset::label_for(2, &none), "Row 3");
+    }
+
+    #[test]
+    fn rows_saved_before_the_rename_still_carry_their_status() {
+        // Exactly what is on disk for rows authored against the older shape.
+        let stored = r#"{"rows":[
+            {"id":"r1","name":"Empty Payload {}","body":"{}","expected_status":"400"}
+        ]}"#;
+        let ds: Dataset = serde_json::from_str(stored).expect("old shape still reads");
+        assert_eq!(ds.rows[0].check.as_deref(), Some("400"));
+        assert_eq!(ds.rows[0].expected_status_code(), Some(400));
+
+        // Writing back uses the current name only, so the row migrates on save.
+        let out = serde_json::to_string(&ds).unwrap();
+        assert!(out.contains(r#""check":"400""#), "{}", out);
+        assert!(!out.contains("expected_status"), "{}", out);
     }
 
     #[test]
