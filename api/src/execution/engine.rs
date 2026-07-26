@@ -69,6 +69,18 @@ fn resolve_body<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Option
 }
 
 /// The shared post-test script, if there is a non-empty one.
+/// An AppError's own prefix reads as noise once the caller has said which script
+/// failed: "This row's check could not run: Assertion error: …" says it twice.
+fn plain(e: &AppError) -> String {
+    let msg = e.to_string();
+    for prefix in ["Assertion error: ", "Internal error: "] {
+        if let Some(rest) = msg.strip_prefix(prefix) {
+            return rest.to_string();
+        }
+    }
+    msg
+}
+
 fn shared_script(test_case: &TestCase) -> Option<&str> {
     test_case
         .assertion_script
@@ -742,6 +754,7 @@ impl ExecutionEngine {
             if !script.trim().is_empty() {
                 match self.pre_test.execute(script, &ctx.environment_snapshot()) {
                     Ok(outcome) => {
+                        logs.extend(outcome.output);
                         for (k, v) in outcome.vars {
                             if self.debug_mode {
                                 logs.push(format!("Pre-test set: {} = {:?}", k, v));
@@ -753,7 +766,7 @@ impl ExecutionEngine {
                             env_writes.insert(k, v);
                         }
                     }
-                    Err(e) => bail!(format!("Pre-test script failed: {}", e), None, None),
+                    Err(e) => bail!(format!("Pre-test script failed: {}", plain(&e)), None, None),
                 }
             }
         }
@@ -882,6 +895,7 @@ impl ExecutionEngine {
                         env: &ctx.environment_snapshot(),
                     }) {
                         Ok(outcome) => {
+                            logs.extend(outcome.output);
                             // A row's own script may capture values too.
                             for (k, v) in outcome.vars {
                                 ctx.set(&k, v);
@@ -911,7 +925,7 @@ impl ExecutionEngine {
                             }
                         }
                         Err(e) => bail!(
-                            format!("This row's check could not run: {}", e),
+                            format!("This row's check could not run: {}", plain(&e)),
                             Some(http_result.request),
                             Some(http_result.response)
                         ),
@@ -948,6 +962,7 @@ impl ExecutionEngine {
                     }) {
                         Ok(outcome) => {
                             script_verdict = outcome.passed;
+                            logs.extend(outcome.output);
                             for (k, v) in outcome.vars {
                                 ctx.set(&k, v);
                             }
@@ -960,7 +975,7 @@ impl ExecutionEngine {
                         // a failed check. Don't persist whatever it wrote before
                         // throwing: half-captured values poison later runs.
                         Err(e) => bail!(
-                            format!("Post-test script could not run: {}", e),
+                            format!("Post-test script could not run: {}", plain(&e)),
                             Some(http_result.request),
                             Some(http_result.response)
                         ),

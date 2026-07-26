@@ -24,6 +24,8 @@ pub struct AssertionOutcome {
     pub passed: Option<bool>,
     pub vars: HashMap<String, Value>,
     pub env: HashMap<String, Value>,
+    /// Whatever the script printed, in order — surfaced in the run's log.
+    pub output: Vec<String>,
 }
 
 /// Everything an assertion script can read. A struct rather than positional
@@ -59,6 +61,9 @@ impl AssertionEngine {
 
         // Expose randomEmail(), randomPhone(), randomInt(min,max), etc.
         super::generators::register(&mut engine);
+
+        // Send print()/debug() to the run's log instead of the server's stdout.
+        super::script_log::capture(&mut engine);
 
         Self { engine }
     }
@@ -108,11 +113,26 @@ impl AssertionEngine {
         // Evaluated as a Dynamic rather than a bool: a script may exist purely for
         // its side effects (capturing values into SAT.env), in which case its last
         // expression isn't a verdict. The caller decides whether it needed one.
+        super::script_log::start();
         let value = match self.engine.eval_with_scope::<Dynamic>(&mut scope, &rewritten) {
             Ok(v) => v,
-            Err(e) => // Bare Rhai message; the caller says which script and what it means.
-                return Err(AppError::AssertionError(e.to_string())),
+            Err(e) => {
+                // Bare Rhai message; the caller says which script and what it means.
+                // Anything printed before the throw is kept — that's the debugging
+                // aid the author reached for — as is advice for a JS habit.
+                let mut message = e.to_string();
+                if let Some(hint) = super::script_log::hint_for(&message) {
+                    message.push_str("  ");
+                    message.push_str(hint);
+                }
+                let printed = super::script_log::take();
+                if !printed.is_empty() {
+                    message.push_str(&format!("  [printed: {}]", printed.join(" | ")));
+                }
+                return Err(AppError::AssertionError(message));
+            }
         };
+        let output = super::script_log::take();
         let passed = value.try_cast::<bool>();
 
         // Read back writes (applied even if `passed` is false)
@@ -132,7 +152,7 @@ impl AssertionEngine {
             }
         }
 
-        Ok(AssertionOutcome { passed, vars, env })
+        Ok(AssertionOutcome { passed, vars, env, output })
     }
 
     /// Default assertion: pass if status is 2xx

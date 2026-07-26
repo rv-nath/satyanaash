@@ -58,6 +58,10 @@ npm run dev        # Starts on http://localhost:8080
 - **Generators** (`execution/generators.rs`) are registered on *both* script engines —
   `randomPhone()`, `uuid()`, `base64Encode(s)`, … — and mirror the `{{$Macros}}`.
   The GUI's pre-test snippets are pinned by a test there; they are Rhai, not JS
+- **Script output** — `print()` / `debug()` are captured per run
+  (`execution/script_log.rs`, a thread-local sink) into `NodeResult.logs`, not the
+  server's stdout. It also maps JS habits (`console`, `typeof`, `null`, `JSON`) to
+  advice appended to the Rhai error
 - **Datasets** run one test case against many bodies — see below
 - **Project variables** stored in `project.settings.variables`, injected as environment into execution
 - **Variable interpolation:** `{{variableName}}` in URLs, headers, payloads — resolved from execution context
@@ -115,8 +119,10 @@ exactly what the author already knows how to write.
 
 ### Gotchas
 
-- `DataRow` has no serde alias for the old `expected_status`, by choice — rows
-  saved before the rename read as a blank check and fall back to 2xx.
+- `check` carries `alias = "expected_status"` to read rows saved before it was
+  widened from a status code. Read-only: serializing writes `check` alone, so a row
+  migrates itself on next save. Don't drop it — without it those rows load blank and
+  pass on any 2xx, which is silent.
 - `update()` in `test_cases.rs` is `input.x.or(existing.x)`, so the client must
   **always** send `dataset` or it can never be cleared.
 - `row_to_test_case` must read `dataset` as `Option<String>` — the column is NULL

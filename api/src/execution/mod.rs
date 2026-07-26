@@ -12,6 +12,7 @@ mod http;
 mod engine;
 mod pre_test_script;
 mod generators;
+mod script_log;
 
 pub use variables::ExecutionContext;
 pub use assertions::AssertionEngine;

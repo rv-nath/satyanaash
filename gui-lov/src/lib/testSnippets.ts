@@ -193,6 +193,15 @@ export const postTestSnippets: CodeSnippet[] = [
     description: "Error status with message field",
     code: `response.status >= 400 && response.json.message != ()`,
   },
+  // Debugging
+  {
+    category: "Debugging",
+    label: "Print while checking",
+    description: "Rhai has no console — print() and debug() land in the run's log",
+    code: `print("status was " + response.status);
+debug(response.json);        // dump the whole parsed body
+response.status == 200`,
+  },
   // Numeric Checks
   {
     category: "Numeric Validation",

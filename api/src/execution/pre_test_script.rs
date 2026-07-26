@@ -16,6 +16,8 @@ use crate::error::AppError;
 pub struct PreTestOutcome {
     pub vars: HashMap<String, Value>,
     pub env: HashMap<String, Value>,
+    /// Whatever the script printed, in order — surfaced in the run's log.
+    pub output: Vec<String>,
 }
 
 /// Pre-test script engine using Rhai for variable setup
@@ -38,6 +40,9 @@ impl PreTestScriptEngine {
 
         // Expose randomEmail(), randomPhone(), randomInt(min,max), etc.
         super::generators::register(&mut engine);
+
+        // Send print()/debug() to the run's log instead of the server's stdout.
+        super::script_log::capture(&mut engine);
 
         Self { engine }
     }
@@ -70,14 +75,26 @@ impl PreTestScriptEngine {
             .replace("SAT.env.", "env.")
             .replace("SAT.vars.", "vars.");
 
-        // Run the script (we only care about side effects on `vars` / `env`)
-        self.engine.run_with_scope(&mut scope, &rewritten)
-            .map_err(|e| AppError::Internal(format!("Pre-test script error: {}", e)))?;
+        // Run the script for its side effects on `vars` / `env`, plus whatever it printed.
+        super::script_log::start();
+        if let Err(e) = self.engine.run_with_scope(&mut scope, &rewritten) {
+            let mut message = format!("Pre-test script error: {}", e);
+            if let Some(hint) = super::script_log::hint_for(&e.to_string()) {
+                message.push_str("  ");
+                message.push_str(hint);
+            }
+            let printed = super::script_log::take();
+            if !printed.is_empty() {
+                message.push_str(&format!("  [printed: {}]", printed.join(" | ")));
+            }
+            return Err(AppError::Internal(message));
+        }
+        let output = super::script_log::take();
 
         let vars_map: Map = scope.get_value("vars").unwrap_or_default();
         let env_out: Map = scope.get_value("env").unwrap_or_default();
 
-        let mut outcome = PreTestOutcome::default();
+        let mut outcome = PreTestOutcome { output, ..Default::default() };
         for (k, v) in vars_map {
             outcome.vars.insert(k.to_string(), rhai_to_json(&v));
         }

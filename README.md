@@ -265,6 +265,23 @@ response.status == 200 && response.json.ok == true   // combined
 > Side-effects (like `SAT.env.x = …`) apply **even if the assertion returns
 > `false`** — matching Postman. A *script error* (bad syntax) applies nothing.
 
+### Printing from a script
+
+Scripts are **Rhai, not JavaScript** — there is no `console`. Use `print(…)`, or
+`debug(x)` to dump a whole value; both appear in that run's **log**, alongside the
+engine's own messages. Output written before a script fails is kept, so a `print`
+is a usable way to see what a check was looking at.
+
+```rhai
+print("status was " + response.status);
+debug(response.json);                      // the parsed body, structure and all
+response.status == 201
+```
+
+Other JavaScript habits and their Rhai spelling: `typeof x` → `type_of(x)`,
+`null` / `undefined` → `()`, `JSON.parse` → nothing needed (`response.json` is
+already parsed). The engine names these in the error when it recognises one.
+
 ---
 
 ## Data-driven testing
