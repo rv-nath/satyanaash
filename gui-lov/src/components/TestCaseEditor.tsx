@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList, CheckCircle2, XCircle, AlertCircle, Loader2, WrapText, Pencil, Check, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList, CheckCircle2, XCircle, AlertCircle, Loader2, WrapText, Pencil, Check, Trash2, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +17,9 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { getUpstreamVariables } from "@/lib/variableUtils";
 import { preTestSnippets, postTestSnippets, getSnippetsByCategory } from "@/lib/testSnippets";
 import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/components/HeadersEditor";
-import type { TestCaseExecutionResult } from "@/lib/api/types";
+import type { Dataset, TestCaseExecutionResult } from "@/lib/api/types";
+import { DatasetEditor } from "@/components/DatasetEditor";
+import { emptyDataset } from "@/lib/dataset";
 
 interface TestCaseEditorProps {
   testCaseId?: string; // Optional - undefined means create mode
@@ -62,6 +64,7 @@ function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: stri
 const EDITOR_TABS = [
   { value: "overview", label: "Overview", Icon: ClipboardList },
   { value: "request", label: "Request", Icon: FileCode },
+  { value: "data", label: "Data", Icon: Table2 },
   { value: "scripts", label: "Scripts", Icon: Code2 },
   { value: "response", label: "Response", Icon: Eye },
 ] as const;
@@ -146,6 +149,7 @@ export const TestCaseEditor = ({
   const [payload, setPayload] = useState("");
   const [preTestScript, setPreTestScript] = useState("");
   const [postTestScript, setPostTestScript] = useState("");
+  const [dataset, setDataset] = useState<Dataset>(emptyDataset);
   const [activeTab, setActiveTab] = useState(() => initialSubTab || "overview");
   // Report sub-tab changes upward so they survive close/reopen of the tab.
   useEffect(() => {
@@ -182,6 +186,7 @@ export const TestCaseEditor = ({
       setPayload("");
       setPreTestScript("");
       setPostTestScript("");
+      setDataset(emptyDataset());
       setIsDirty(true); // Mark as dirty so user knows to save
     } else if (testCase) {
       // Edit mode - load existing data
@@ -195,6 +200,7 @@ export const TestCaseEditor = ({
       setPayload(testCase.payload || "");
       setPreTestScript(testCase.pre_test_script || "");
       setPostTestScript(testCase.assertion_script || "");
+      setDataset(testCase.dataset ?? emptyDataset());
       setIsDirty(false);
     }
   }, [testCase, isCreateMode]);
@@ -322,6 +328,9 @@ export const TestCaseEditor = ({
       payload: hasPayload && payload.trim() ? payload : undefined,
       assertion_script: postTestScript || undefined,
       pre_test_script: preTestScript || undefined,
+      // Always sent, even when empty. The backend PATCH keeps the stored dataset
+      // when the field is absent, so omitting it would make clearing impossible.
+      dataset,
     };
 
     try {
@@ -370,7 +379,7 @@ export const TestCaseEditor = ({
     }
   };
 
-  const handleRunTest = async () => {
+  const handleRunTest = async (allRows = false) => {
     if (!testCaseId) {
       toast.error("Save the test case before running");
       return;
@@ -395,6 +404,10 @@ export const TestCaseEditor = ({
           assertion_script: postTestScript || undefined,
           pre_test_script: preTestScript || undefined,
           environment: effectiveEnvironment(),
+          // Send the current (possibly unsaved) rows so "Run all rows" reflects
+          // what's on screen.
+          dataset,
+          all_rows: allRows,
         },
       });
       setExecutionResult(result);
@@ -405,7 +418,12 @@ export const TestCaseEditor = ({
         applyEnvWrites(result.env as Record<string, unknown>);
       }
 
-      if (result.status === 'passed') {
+      if (result.iterations) {
+        const total = result.iterations.length;
+        const passed = result.iterations.filter((r) => r.status === 'passed').length;
+        if (passed === total) toast.success(`All ${total} rows passed in ${result.duration_ms}ms`);
+        else toast.error(`${total - passed} of ${total} rows did not pass`);
+      } else if (result.status === 'passed') {
         toast.success(`Test passed in ${result.duration_ms}ms`);
       } else if (result.status === 'failed') {
         toast.error(`Test failed: ${result.error_message || 'Assertion failed'}`);
@@ -539,8 +557,9 @@ export const TestCaseEditor = ({
               variant="outline"
               size="sm"
               className="gap-2"
-              onClick={handleRunTest}
+              onClick={() => handleRunTest(false)}
               disabled={executeMutation.isPending}
+              title="Runs the test as authored — data rows are ignored"
             >
               {executeMutation.isPending ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -548,6 +567,19 @@ export const TestCaseEditor = ({
                 <Play className="w-4 h-4" />
               )}
               {executeMutation.isPending ? "Running..." : "Run Test"}
+            </Button>
+          )}
+          {!isCreateMode && dataset.rows.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => handleRunTest(true)}
+              disabled={executeMutation.isPending}
+              title="Runs the request once per data row"
+            >
+              <Table2 className="w-4 h-4" />
+              Run all rows ({dataset.rows.length})
             </Button>
           )}
           <Button
@@ -816,6 +848,18 @@ export const TestCaseEditor = ({
           </TabsContent>
 
           {/* Scripts Tab */}
+          <TabsContent value="data" className="flex-1 mt-0 overflow-hidden">
+            <ScrollArea className="h-full">
+              <div className="p-6 max-w-6xl mx-auto">
+                <DatasetEditor
+                  dataset={dataset}
+                  onChange={(d) => { setDataset(d); setIsDirty(true); }}
+                  sharedAssertion={postTestScript}
+                />
+              </div>
+            </ScrollArea>
+          </TabsContent>
+
           <TabsContent value="scripts" className="flex-1 mt-0 overflow-hidden">
             <ScrollArea className="h-full">
               <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -1008,7 +1052,7 @@ export const TestCaseEditor = ({
                     )}
                   </div>
                   <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="sm" className="gap-1.5" onClick={handleRunTest} disabled={executeMutation.isPending}>
+                    <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => handleRunTest(!!executionResult?.iterations)} disabled={executeMutation.isPending}>
                       <Play className="w-3.5 h-3.5" />
                       Run Again
                     </Button>
@@ -1162,7 +1206,7 @@ export const TestCaseEditor = ({
                 <Button
                   variant="outline"
                   className="gap-2"
-                  onClick={handleRunTest}
+                  onClick={() => handleRunTest(false)}
                   disabled={isCreateMode || executeMutation.isPending}
                 >
                   <Play className="w-4 h-4" />
