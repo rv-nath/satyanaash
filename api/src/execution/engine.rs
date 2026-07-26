@@ -852,84 +852,103 @@ impl ExecutionEngine {
         let mut assertion_failure: Option<String> = None;
         let status_code = http_result.response.status;
 
-        // The post-test script always runs when present — it may exist purely to
-        // capture values into SAT.vars / SAT.env. Its verdict is only *used* when
-        // the row didn't state an expected status.
-        let mut script_verdict: Option<bool> = None;
-        let script = shared_script(test_case);
-        if let Some(script) = script {
-            match self.assertions.evaluate(AssertionInput {
-                script,
-                status: status_code,
-                body: &http_result.response.body,
-                json: &http_result.response.json,
-                headers: &http_result.response.headers,
-                env: &ctx.environment_snapshot(),
-            }) {
-                Ok(outcome) => {
-                    script_verdict = outcome.passed;
-                    for (k, v) in outcome.vars {
-                        ctx.set(&k, v);
+        // Two self-contained worlds, decided by whether this is a dataset row:
+        //
+        //  * A dataset row defines its own check — its expected status, else any 2xx.
+        //    The shared post-test script is NOT run: the Data tab stands alone, so a
+        //    script written for the single-request case can neither decide nor break
+        //    a row's verdict.
+        //  * A normal run uses the post-test script, which both captures values and
+        //    (optionally) decides the verdict.
+        let assertion_passed = match row {
+            Some(data_row) => {
+                let passed = match data_row.expected_status_code() {
+                    Some(expected) => {
+                        let ok = status_code == expected;
+                        if !ok {
+                            assertion_failure =
+                                Some(format!("Expected HTTP {}, got {}", expected, status_code));
+                        }
+                        ok
                     }
-                    for (k, v) in outcome.env {
-                        ctx.set_environment_var(&k, v.clone());
-                        env_writes.insert(k, v);
+                    None => {
+                        let ok = AssertionEngine::default_assertion(status_code);
+                        if !ok {
+                            assertion_failure = Some(format!(
+                                "No expected status given, so a 2xx was required — got HTTP {}",
+                                status_code
+                            ));
+                        }
+                        ok
+                    }
+                };
+                if let Some(ref reason) = assertion_failure {
+                    logs.push(reason.clone());
+                }
+                passed
+            }
+            None => {
+                // Post-test script: runs for its side effects (SAT.vars / SAT.env)
+                // and decides the verdict when it ends in a boolean.
+                let mut script_verdict: Option<bool> = None;
+                let script = shared_script(test_case);
+                if let Some(script) = script {
+                    match self.assertions.evaluate(AssertionInput {
+                        script,
+                        status: status_code,
+                        body: &http_result.response.body,
+                        json: &http_result.response.json,
+                        headers: &http_result.response.headers,
+                        env: &ctx.environment_snapshot(),
+                    }) {
+                        Ok(outcome) => {
+                            script_verdict = outcome.passed;
+                            for (k, v) in outcome.vars {
+                                ctx.set(&k, v);
+                            }
+                            for (k, v) in outcome.env {
+                                ctx.set_environment_var(&k, v.clone());
+                                env_writes.insert(k, v);
+                            }
+                        }
+                        // The script couldn't run at all — a defect in the test, not
+                        // a failed check. Don't persist whatever it wrote before
+                        // throwing: half-captured values poison later runs.
+                        Err(e) => bail!(
+                            format!("Post-test script could not run: {}", e),
+                            Some(http_result.request),
+                            Some(http_result.response)
+                        ),
                     }
                 }
-                // The script couldn't run at all — a defect in the test, not a
-                // failed check. Say so, and don't persist whatever it managed to
-                // write before throwing: half-captured values poison later runs.
-                Err(e) => bail!(
-                    format!("Post-test script could not run: {}", e),
-                    Some(http_result.request),
-                    Some(http_result.response)
-                ),
-            }
-        }
 
-        let expected = row.and_then(|r| r.expected_status_code());
-        let assertion_passed = match (expected, script_verdict) {
-            // A row's expected status is the verdict — the script above still ran.
-            (Some(code), _) => {
-                let passed = status_code == code;
-                if !passed {
-                    let reason = format!("Expected HTTP {}, got {}", code, status_code);
-                    logs.push(reason.clone());
-                    assertion_failure = Some(reason);
+                match script_verdict {
+                    Some(verdict) => {
+                        if !verdict {
+                            let reason = format!(
+                                "Assertion returned false: {}  (actual: HTTP {})",
+                                last_expression(script.unwrap_or("")), status_code
+                            );
+                            logs.push(reason.clone());
+                            assertion_failure = Some(reason);
+                        }
+                        verdict
+                    }
+                    // No boolean to judge by — a capture-only script is legitimate —
+                    // so fall back to the same rule a dataset row uses.
+                    None => {
+                        let ok = AssertionEngine::default_assertion(status_code);
+                        if !ok {
+                            let reason = format!(
+                                "Assertion failed: expected a 2xx status, got HTTP {}",
+                                status_code
+                            );
+                            logs.push(reason.clone());
+                            assertion_failure = Some(reason);
+                        }
+                        ok
+                    }
                 }
-                passed
-            }
-            // Otherwise the script decides.
-            (None, Some(verdict)) => {
-                if !verdict {
-                    let reason = format!(
-                        "Assertion returned false: {}  (actual: HTTP {})",
-                        last_expression(script.unwrap_or("")), status_code
-                    );
-                    logs.push(reason.clone());
-                    assertion_failure = Some(reason);
-                }
-                verdict
-            }
-            // A script that returned no boolean and no expected status to fall back
-            // on: say so plainly rather than reporting a Rhai type error.
-            (None, None) if script.is_some() => bail!(
-                "This test has no expected status, so its script must end in a \
-                 true/false expression (e.g. `response.status == 201`)."
-                    .to_string(),
-                Some(http_result.request),
-                Some(http_result.response)
-            ),
-            // Nothing specified anywhere: any 2xx passes.
-            (None, None) => {
-                let passed = AssertionEngine::default_assertion(status_code);
-                if !passed {
-                    let reason =
-                        format!("Assertion failed: expected a 2xx status, got HTTP {}", status_code);
-                    logs.push(reason.clone());
-                    assertion_failure = Some(reason);
-                }
-                passed
             }
         };
 
@@ -1193,6 +1212,32 @@ mod tests {
         assert_eq!(its[1].row_label.as_deref(), Some("empty body"));
         // The aggregate has no single request/response; the UI uses `iterations`.
         assert!(result.request.is_none() && result.response.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dataset_rows_ignore_the_shared_post_test_script() {
+        // The Data tab stands alone: a post-test script written for the
+        // single-request case must not run during a dataset run, so it can neither
+        // decide nor break a row's verdict. Proven with a script that cannot even
+        // parse — if it ran, the row would come back as an error.
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u", "POST");
+        tc.assertion_script = Some("this is not valid rhai at all".to_string());
+        tc.dataset = Some(dataset_of(vec![("row", Some("{}"), Some("400"))]));
+
+        let result = engine
+            .execute_test_case_dataset(&tc, HashMap::new(), HashMap::new())
+            .await;
+        let it = &result.iterations.as_ref().unwrap()[0];
+
+        // The request can't connect here, so the verdict isn't reachable — what
+        // matters is that we failed on the connection, not on the script.
+        let msg = it.error_message.clone().unwrap_or_default();
+        assert!(msg.contains("HTTP request failed"), "unexpected failure: {msg}");
+        assert!(
+            !msg.contains("script"),
+            "the shared script must not be involved in a dataset run: {msg}"
+        );
     }
 
     #[tokio::test]
