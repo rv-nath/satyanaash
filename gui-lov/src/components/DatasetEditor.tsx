@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,6 +26,8 @@ interface DatasetEditorProps {
 const GRID = "24px 180px minmax(240px,1fr) 88px 32px 32px";
 
 export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEditorProps) {
+  // Which row's body is being edited — that one expands, the rest stay one line.
+  const [editingBody, setEditingBody] = useState<string | null>(null);
   const { rows } = dataset;
   const hasShared = !!sharedAssertion?.trim();
 
@@ -99,6 +102,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               const body = row.body ?? "";
               const badJson = looksLikeInvalidJson(body);
               const noStatus = !(row.expected_status ?? "").trim();
+              const editing = editingBody === row.id;
               return (
                 <div
                   key={row.id}
@@ -116,14 +120,24 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                   />
 
                   <div className="min-w-0">
+                    {/* One row tall until focused, so a long matrix stays scannable;
+                        grows for editing and collapses back on blur. */}
                     <Textarea
                       value={body}
                       onChange={(e) => onChange(setRowBody(dataset, row.id, e.target.value))}
+                      onFocus={() => setEditingBody(row.id)}
+                      onBlur={() => setEditingBody((cur) => (cur === row.id ? null : cur))}
                       placeholder={'{"email": "a@b.com"}   — blank uses the Request tab\u2019s body'}
-                      className="min-h-[68px] font-mono text-xs"
+                      className={`resize-none font-mono text-xs transition-[height] duration-150 ${
+                        editing
+                          ? "h-[132px] min-h-0 whitespace-pre"
+                          : "h-9 min-h-0 overflow-hidden whitespace-nowrap py-2"
+                      } ${badJson ? "border-warning" : ""}`}
                       aria-label={`Body for ${rowLabel(i, row)}`}
                     />
-                    {(badJson || noStatus) && (
+                    {/* Hints only while editing — otherwise they would defeat the
+                        single-row height. A bad body still shows a warning border. */}
+                    {editing && (badJson || noStatus) && (
                       <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
                         {badJson && (
                           <span className="flex items-center gap-1 text-warning">

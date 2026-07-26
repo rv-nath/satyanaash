@@ -41,20 +41,43 @@ describe("DatasetEditor", () => {
     expect(onChange.mock.calls.at(-1)![0].rows[0].expected_status).toBe("");
   });
 
-  it("warns about broken JSON without blocking it", () => {
+  it("keeps the body one row tall until it is focused", async () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    const body = screen.getByLabelText(/^body for valid$/i);
+
+    // Collapsed: single-row height, no wrapping.
+    expect(body.className).toContain("h-9");
+    expect(body.className).toContain("whitespace-nowrap");
+
+    await userEvent.click(body);
+    expect(body.className).toContain("h-[132px]");
+    expect(body.className).not.toContain("whitespace-nowrap");
+  });
+
+  it("warns about broken JSON without blocking it", async () => {
     let d = seed();
     d = setRowBody(d, d.rows[0].id, '{"a":1');
     render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+    const body = screen.getByLabelText(/^body for valid$/i);
+
+    // Collapsed, the cue is the border — the text would defeat the single-row height.
+    expect(body.className).toContain("border-warning");
+    expect(screen.queryByText(/not valid json/i)).not.toBeInTheDocument();
+
+    await userEvent.click(body);
     expect(screen.getByText(/not valid json/i)).toBeInTheDocument();
   });
 
-  it("explains the fallback when no status is given", () => {
+  it("explains the fallback when no status is given", async () => {
     let d = seed();
     d = setRowExpectedStatus(d, d.rows[0].id, "");
     const { rerender } = render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
     expect(screen.getByText(/passes on any 2xx/i)).toBeInTheDocument();
 
     rerender(<DatasetEditor dataset={d} onChange={vi.fn()} sharedAssertion="response.status == 200" />);
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
     expect(screen.getByText(/check from the scripts tab/i)).toBeInTheDocument();
   });
 
