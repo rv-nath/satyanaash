@@ -249,6 +249,12 @@ export interface TestCaseExecutionResult {
   env?: Record<string, unknown>;
   error_message?: string;
   logs: string[];
+  /** Index of the data row this result came from (iteration results only) */
+  row_index?: number;
+  /** Label for that row — its name, else "Row N" */
+  row_label?: string;
+  /** Per-row results; present only on the aggregate of a "run all rows" run */
+  iterations?: TestCaseExecutionResult[];
 }
 
 export interface ExecuteTestCaseRequest {
@@ -267,6 +273,10 @@ export interface ExecuteTestCaseRequest {
   assertion_script?: string;
   /** Override: Pre-test script */
   pre_test_script?: string;
+  /** Override: data rows, so the editor can run unsaved rows */
+  dataset?: Dataset;
+  /** Run every data row instead of the test case as authored */
+  all_rows?: boolean;
 }
 
 // ============ Pagination ============

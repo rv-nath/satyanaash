@@ -285,6 +285,11 @@ pub struct ExecuteTestCaseRequest {
     pub assertion_script: Option<String>,
     /// Override: Pre-test script
     pub pre_test_script: Option<String>,
+    /// Override: data rows (lets the editor run unsaved rows)
+    pub dataset: Option<crate::db::models::Dataset>,
+    /// Run every data row instead of the test case as authored.
+    #[serde(default)]
+    pub all_rows: bool,
 }
 
 /// POST /api/v1/test-cases/:id/execute - Execute a single test case
@@ -310,7 +315,7 @@ pub async fn execute_test_case(
         .map(|s| s.to_string());
 
     // Apply overrides from request body (for running unsaved changes)
-    let (variables, env_override) = if let Some(Json(req)) = body {
+    let (variables, env_override, all_rows) = if let Some(Json(req)) = body {
         if let Some(method) = req.method {
             test_case.method = method;
         }
@@ -329,9 +334,12 @@ pub async fn execute_test_case(
         if let Some(pre_test_script) = req.pre_test_script {
             test_case.pre_test_script = Some(pre_test_script);
         }
-        (req.variables, req.environment)
+        if let Some(dataset) = req.dataset {
+            test_case.dataset = Some(dataset);
+        }
+        (req.variables, req.environment, req.all_rows)
     } else {
-        (HashMap::new(), None)
+        (HashMap::new(), None, false)
     };
 
     // Effective environment: client-supplied (Globals + active env) if present,
@@ -341,7 +349,14 @@ pub async fn execute_test_case(
     // Create execution engine
     let engine = ExecutionEngine::new(false, base_url);
 
-    let result = engine.execute_test_case(&test_case, environment, variables).await;
+    // "Run all rows" with an empty dataset degrades to a normal single run, so the
+    // client never gets an empty matrix.
+    let has_rows = test_case.dataset.as_ref().is_some_and(|d| !d.is_empty());
+    let result = if all_rows && has_rows {
+        engine.execute_test_case_dataset(&test_case, environment, variables).await
+    } else {
+        engine.execute_test_case(&test_case, environment, variables).await
+    };
 
     Ok(Json(result))
 }

@@ -115,6 +115,9 @@ struct RunOptions<'a> {
     extra_exports: &'a [ExportVariable],
     /// Warn when a `{{name}}` reaches the wire unresolved.
     report_unresolved: bool,
+    /// Set on iteration results so the UI can label them.
+    row_index: Option<usize>,
+    row_label: Option<String>,
 }
 
 /// Result status for a node execution
@@ -158,6 +161,16 @@ pub struct NodeResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub logs: Vec<String>,
+    /// Index of the data row this result came from (iteration results only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_index: Option<usize>,
+    /// Label for that row — its name, else "Row N".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_label: Option<String>,
+    /// Per-row results. Present only on the aggregate of a "run all rows" run;
+    /// every other producer leaves it None so the wire format is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<Vec<NodeResult>>,
 }
 
 /// Events emitted during execution (for WebSocket streaming)
@@ -473,6 +486,9 @@ impl ExecutionEngine {
                     env: None,
                     error_message: Some("Node missing testCaseId".to_string()),
                     logs,
+                    row_index: None,
+                    row_label: None,
+                    iterations: None,
                 };
             }
         };
@@ -499,6 +515,9 @@ impl ExecutionEngine {
                         env: None,
                         error_message: Some("Test case not found".to_string()),
                         logs,
+                        row_index: None,
+                        row_label: None,
+                        iterations: None,
                     };
                 }
                 Err(e) => {
@@ -514,6 +533,9 @@ impl ExecutionEngine {
                         env: None,
                         error_message: Some(format!("Failed to fetch test case: {}", e)),
                         logs,
+                        row_index: None,
+                        row_label: None,
+                        iterations: None,
                     };
                 }
             }
@@ -588,6 +610,8 @@ impl ExecutionEngine {
                 node_id: &node.id,
                 extra_exports: &node_output_vars,
                 report_unresolved: false,
+                row_index: None,
+                row_label: None,
             },
             logs,
             &mut env_writes,
@@ -735,6 +759,9 @@ impl ExecutionEngine {
                     env: None,
                     error_message: Some($msg),
                     logs,
+                    row_index: opts.row_index,
+                    row_label: opts.row_label.clone(),
+                    iterations: None,
                 }
             };
         }
@@ -921,6 +948,106 @@ impl ExecutionEngine {
             env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
             error_message: assertion_failure,
             logs,
+            row_index: opts.row_index,
+            row_label: opts.row_label,
+            iterations: None,
+        }
+    }
+
+    /// Run a test case once per data row and return one aggregate result whose
+    /// `iterations` holds the per-row results.
+    ///
+    /// Each row gets a *clone* of the base context so exports and pre-test vars
+    /// can't leak between rows — but `SAT.env` writes are folded forward, so a
+    /// later row does see what an earlier one persisted. Rows run sequentially and
+    /// a failing row never stops the rest.
+    pub async fn execute_test_case_dataset(
+        &self,
+        test_case: &TestCase,
+        environment: HashMap<String, Value>,
+        variables: HashMap<String, Value>,
+    ) -> NodeResult {
+        let start = std::time::Instant::now();
+        let rows: Vec<DataRow> = test_case
+            .dataset
+            .as_ref()
+            .map(|d| d.rows.clone())
+            .unwrap_or_default();
+
+        let mut base_ctx = ExecutionContext::new(variables, environment, HashMap::new());
+        let mut aggregate_env: HashMap<String, Value> = HashMap::new();
+        let mut iterations: Vec<NodeResult> = Vec::with_capacity(rows.len());
+
+        for (index, row) in rows.iter().enumerate() {
+            let label = crate::db::models::Dataset::label_for(index, row);
+            let mut row_ctx = base_ctx.clone();
+            let mut row_env: HashMap<String, Value> = HashMap::new();
+
+            let result = self
+                .run_once(
+                    test_case,
+                    Some(row),
+                    &mut row_ctx,
+                    RunOptions {
+                        node_id: "direct",
+                        extra_exports: &[],
+                        report_unresolved: true,
+                        row_index: Some(index),
+                        row_label: Some(label.clone()),
+                    },
+                    Vec::new(),
+                    &mut row_env,
+                    std::time::Instant::now(),
+                )
+                .await;
+
+            // Carry SAT.env writes forward to later rows and into the aggregate.
+            for (k, v) in row_env {
+                base_ctx.set_environment_var(&k, v.clone());
+                aggregate_env.insert(k, v);
+            }
+            iterations.push(result);
+        }
+
+        let failed = iterations.iter().filter(|r| r.status == NodeStatus::Failed).count();
+        let errored = iterations.iter().filter(|r| r.status == NodeStatus::Error).count();
+        let status = if errored > 0 {
+            NodeStatus::Error
+        } else if failed > 0 {
+            NodeStatus::Failed
+        } else {
+            NodeStatus::Passed
+        };
+        let not_passed = failed + errored;
+        let error_message = (not_passed > 0)
+            .then(|| format!("{} of {} rows did not pass", not_passed, iterations.len()));
+
+        // Prefix each row's logs so a flat log view still says which row spoke.
+        let logs = iterations
+            .iter()
+            .flat_map(|r| {
+                let label = r.row_label.clone().unwrap_or_default();
+                r.logs.iter().map(move |l| format!("[{}] {}", label, l))
+            })
+            .collect();
+
+        NodeResult {
+            node_id: "direct".to_string(),
+            test_case_id: Some(test_case.id.clone()),
+            test_case_name: Some(test_case.name.clone()),
+            status,
+            duration_ms: start.elapsed().as_millis() as u64,
+            // Deliberately None: an aggregate has no single request/response, and
+            // the UI branches on `iterations` to render the per-row matrix.
+            request: None,
+            response: None,
+            exports: None,
+            env: if aggregate_env.is_empty() { None } else { Some(aggregate_env) },
+            error_message,
+            logs,
+            row_index: None,
+            row_label: None,
+            iterations: Some(iterations),
         }
     }
 
@@ -947,7 +1074,13 @@ impl ExecutionEngine {
             test_case,
             None,
             &mut ctx,
-            RunOptions { node_id: "direct", extra_exports: &[], report_unresolved: true },
+            RunOptions {
+                node_id: "direct",
+                extra_exports: &[],
+                report_unresolved: true,
+                row_index: None,
+                row_label: None,
+            },
             logs,
             &mut env_writes,
             start,
@@ -965,6 +1098,124 @@ impl Default for ExecutionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dataset_of(rows: Vec<(&str, &str)>) -> crate::db::models::Dataset {
+        crate::db::models::Dataset {
+            columns: vec!["email".to_string()],
+            rows: rows
+                .into_iter()
+                .enumerate()
+                .map(|(i, (name, email))| DataRow {
+                    id: format!("r{}", i),
+                    name: Some(name.to_string()),
+                    values: [("email".to_string(), Value::String(email.into()))]
+                        .into_iter()
+                        .collect(),
+                    assertion: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_new_fields_do_not_change_the_wire_format() {
+        // The whole "additive" claim rests on this: a normal run must serialize
+        // byte-identically to before, so flow results and the SSE stream are
+        // untouched by data-driven testing.
+        let result = NodeResult {
+            node_id: "direct".to_string(),
+            test_case_id: Some("tc1".to_string()),
+            test_case_name: Some("T".to_string()),
+            status: NodeStatus::Passed,
+            duration_ms: 5,
+            request: None,
+            response: None,
+            exports: None,
+            env: None,
+            error_message: None,
+            logs: vec![],
+            row_index: None,
+            row_label: None,
+            iterations: None,
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        // serde_json::Value sorts keys, so compare sorted.
+        let keys: Vec<&str> = json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["duration_ms", "logs", "node_id", "status", "test_case_id", "test_case_name"],
+            "no data-driven keys may leak into a normal result"
+        );
+        for absent in ["row_index", "row_label", "iterations"] {
+            assert!(!keys.contains(&absent), "{} must be omitted when None", absent);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dataset_runs_once_per_row() {
+        // Port 1 refuses instantly, but RequestLog is still captured — the same
+        // trick test_execute_flow_with_variables uses to assert interpolation
+        // without standing up a server.
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u/{{email}}", "GET");
+        tc.dataset = Some(dataset_of(vec![
+            ("missing email", ""),
+            ("duplicate", "dup@x.com"),
+            ("valid", "ok@x.com"),
+        ]));
+
+        let result = engine
+            .execute_test_case_dataset(&tc, HashMap::new(), HashMap::new())
+            .await;
+
+        let iterations = result.iterations.as_ref().expect("aggregate carries iterations");
+        assert_eq!(iterations.len(), 3);
+
+        // Each row interpolated its own cell into the URL.
+        assert!(iterations[0].request.as_ref().unwrap().url.ends_with("/u/"));
+        assert!(iterations[1].request.as_ref().unwrap().url.ends_with("/u/dup@x.com"));
+        assert!(iterations[2].request.as_ref().unwrap().url.ends_with("/u/ok@x.com"));
+
+        // Rows are labelled and indexed for the results matrix.
+        assert_eq!(iterations[0].row_index, Some(0));
+        assert_eq!(iterations[1].row_label.as_deref(), Some("duplicate"));
+
+        // The aggregate has no single request/response; the UI uses `iterations`.
+        assert!(result.request.is_none());
+        assert!(result.response.is_none());
+        assert_eq!(result.status, NodeStatus::Error); // all three failed to connect
+        assert!(result.error_message.unwrap().contains("3 of 3"));
+    }
+
+    #[tokio::test]
+    async fn test_flow_ignores_the_dataset() {
+        // Decision 6: a flow runs the test case as authored — exactly once, with
+        // no row applied — so adding a dataset never changes flow behaviour.
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u/{{email}}", "GET");
+        tc.dataset = Some(dataset_of(vec![("a", "a@x.com"), ("b", "b@x.com")]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("n1", "testCase", serde_json::json!({"testCaseId": "tc1"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "n1", None),
+            make_edge("e2", "n1", "end", Some("success")),
+        ]);
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.results.len(), 1, "one node result, not one per row");
+        assert!(result.results[0].iterations.is_none());
+        // {{email}} stays literal because no row was applied.
+        assert!(result.results[0].request.as_ref().unwrap().url.contains("{{email}}"));
+    }
 
     #[test]
     fn test_build_row_scope_coerces_cells() {
