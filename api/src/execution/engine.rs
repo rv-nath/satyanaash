@@ -68,31 +68,13 @@ fn resolve_body<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Option
         .or_else(|| test_case.payload.as_deref())
 }
 
-/// Which assertion applies: a row's expected status is checked directly, so a
-/// data-driven row needs no scripting. Falling back to the shared script, then to
-/// the built-in 2xx check.
-enum Check<'a> {
-    /// `response.status == code`
-    Status(u16),
-    /// Run this Rhai script; its last expression is the verdict.
-    Script(&'a str),
-    /// Any 2xx passes.
-    TwoXX,
-}
-
-fn resolve_check<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Check<'a> {
-    if let Some(code) = row.and_then(|r| r.expected_status_code()) {
-        return Check::Status(code);
-    }
-    match test_case
+/// The shared post-test script, if there is a non-empty one.
+fn shared_script(test_case: &TestCase) -> Option<&str> {
+    test_case
         .assertion_script
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-    {
-        Some(script) => Check::Script(script),
-        None => Check::TwoXX,
-    }
 }
 
 /// The only real differences between the flow-node path and the standalone path.
@@ -869,17 +851,14 @@ impl ExecutionEngine {
         // instead of a bare "failed".
         let mut assertion_failure: Option<String> = None;
         let status_code = http_result.response.status;
-        let assertion_passed = match resolve_check(row, test_case) {
-            Check::Status(expected) => {
-                let passed = status_code == expected;
-                if !passed {
-                    let reason = format!("Expected HTTP {}, got {}", expected, status_code);
-                    logs.push(reason.clone());
-                    assertion_failure = Some(reason);
-                }
-                passed
-            }
-            Check::Script(script) => match self.assertions.evaluate(AssertionInput {
+
+        // The post-test script always runs when present — it may exist purely to
+        // capture values into SAT.vars / SAT.env. Its verdict is only *used* when
+        // the row didn't state an expected status.
+        let mut script_verdict: Option<bool> = None;
+        let script = shared_script(test_case);
+        if let Some(script) = script {
+            match self.assertions.evaluate(AssertionInput {
                 script,
                 status: status_code,
                 body: &http_result.response.body,
@@ -888,14 +867,7 @@ impl ExecutionEngine {
                 env: &ctx.environment_snapshot(),
             }) {
                 Ok(outcome) => {
-                    if !outcome.passed {
-                        let reason = format!(
-                            "Assertion returned false: {}  (actual: HTTP {})",
-                            last_expression(script), status_code
-                        );
-                        logs.push(reason.clone());
-                        assertion_failure = Some(reason);
-                    }
+                    script_verdict = outcome.passed;
                     for (k, v) in outcome.vars {
                         ctx.set(&k, v);
                     }
@@ -903,15 +875,50 @@ impl ExecutionEngine {
                         ctx.set_environment_var(&k, v.clone());
                         env_writes.insert(k, v);
                     }
-                    outcome.passed
                 }
                 Err(e) => bail!(
                     format!("Assertion error: {}", e),
                     Some(http_result.request),
                     Some(http_result.response)
                 ),
-            },
-            Check::TwoXX => {
+            }
+        }
+
+        let expected = row.and_then(|r| r.expected_status_code());
+        let assertion_passed = match (expected, script_verdict) {
+            // A row's expected status is the verdict — the script above still ran.
+            (Some(code), _) => {
+                let passed = status_code == code;
+                if !passed {
+                    let reason = format!("Expected HTTP {}, got {}", code, status_code);
+                    logs.push(reason.clone());
+                    assertion_failure = Some(reason);
+                }
+                passed
+            }
+            // Otherwise the script decides.
+            (None, Some(verdict)) => {
+                if !verdict {
+                    let reason = format!(
+                        "Assertion returned false: {}  (actual: HTTP {})",
+                        last_expression(script.unwrap_or("")), status_code
+                    );
+                    logs.push(reason.clone());
+                    assertion_failure = Some(reason);
+                }
+                verdict
+            }
+            // A script that returned no boolean and no expected status to fall back
+            // on: say so plainly rather than reporting a Rhai type error.
+            (None, None) if script.is_some() => bail!(
+                "This test has no expected status, so its script must end in a \
+                 true/false expression (e.g. `response.status == 201`)."
+                    .to_string(),
+                Some(http_result.request),
+                Some(http_result.response)
+            ),
+            // Nothing specified anywhere: any 2xx passes.
+            (None, None) => {
                 let passed = AssertionEngine::default_assertion(status_code);
                 if !passed {
                     let reason =
@@ -1141,29 +1148,15 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_check_precedence() {
+    fn test_shared_script_ignores_blanks() {
         let mut tc = make_test_case("t1", "T", "/x", "POST");
+        assert_eq!(shared_script(&tc), None);
 
-        // Nothing specified anywhere: the built-in 2xx check.
-        assert!(matches!(resolve_check(None, &tc), Check::TwoXX));
+        tc.assertion_script = Some("   ".to_string());
+        assert_eq!(shared_script(&tc), None, "whitespace-only is not a script");
 
-        // A shared script is used when a row expects nothing in particular.
-        tc.assertion_script = Some("response.status == 200".to_string());
-        assert!(matches!(resolve_check(None, &tc), Check::Script(_)));
-        let bare = DataRow::default();
-        assert!(matches!(resolve_check(Some(&bare), &tc), Check::Script(_)));
-
-        // A row's expected status wins over the shared script — no scripting needed.
-        let row = DataRow { expected_status: Some("409".into()), ..Default::default() };
-        assert!(matches!(resolve_check(Some(&row), &tc), Check::Status(409)));
-
-        // An unparseable status is treated as "not specified".
-        let junk = DataRow { expected_status: Some("nope".into()), ..Default::default() };
-        assert!(matches!(resolve_check(Some(&junk), &tc), Check::Script(_)));
-
-        // A whitespace-only shared script isn't evaluated.
-        tc.assertion_script = Some("  ".to_string());
-        assert!(matches!(resolve_check(None, &tc), Check::TwoXX));
+        tc.assertion_script = Some(" response.status == 200 ".to_string());
+        assert_eq!(shared_script(&tc), Some("response.status == 200"));
     }
 
     #[tokio::test]

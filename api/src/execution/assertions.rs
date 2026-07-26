@@ -13,12 +13,15 @@ use std::collections::HashMap;
 
 use crate::error::AppError;
 
-/// Result of a post-test/assertion script: the pass/fail boolean plus any
-/// SAT.vars (transient) and SAT.env (persisted) writes the script performed
-/// (side-effects, applied even when the assertion returns false).
+/// Result of a post-test/assertion script: its verdict plus any SAT.vars
+/// (transient) and SAT.env (persisted) writes it performed — side effects apply
+/// even when the verdict is false, or when there is no verdict at all.
 #[derive(Debug)]
 pub struct AssertionOutcome {
-    pub passed: bool,
+    /// The script's last expression, when it was a boolean. `None` when the script
+    /// ends in something else (e.g. an assignment) — legitimate for a script whose
+    /// job is only to capture values, with the verdict coming from elsewhere.
+    pub passed: Option<bool>,
     pub vars: HashMap<String, Value>,
     pub env: HashMap<String, Value>,
 }
@@ -102,11 +105,14 @@ impl AssertionEngine {
             .replace("SAT.env.", "env.")
             .replace("SAT.vars.", "vars.");
 
-        // Evaluate: last expression is the pass/fail boolean; var/env writes are side-effects
-        let passed = match self.engine.eval_with_scope::<bool>(&mut scope, &rewritten) {
-            Ok(result) => result,
+        // Evaluated as a Dynamic rather than a bool: a script may exist purely for
+        // its side effects (capturing values into SAT.env), in which case its last
+        // expression isn't a verdict. The caller decides whether it needed one.
+        let value = match self.engine.eval_with_scope::<Dynamic>(&mut scope, &rewritten) {
+            Ok(v) => v,
             Err(e) => return Err(AppError::AssertionError(format!("Assertion script error: {}", e))),
         };
+        let passed = value.try_cast::<bool>();
 
         // Read back writes (applied even if `passed` is false)
         let vars_out: Map = scope.get_value("vars").unwrap_or_default();
@@ -214,7 +220,7 @@ mod tests {
             json: &None,
             headers: &headers,
             env: &HashMap::new(),
-        }).unwrap().passed;
+        }).unwrap().passed.unwrap();
         assert!(result);
 
         let result = engine.evaluate(AssertionInput {
@@ -224,7 +230,7 @@ mod tests {
             json: &None,
             headers: &headers,
             env: &HashMap::new(),
-        }).unwrap().passed;
+        }).unwrap().passed.unwrap();
         assert!(!result);
     }
 
@@ -241,7 +247,7 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-        }).unwrap().passed;
+        }).unwrap().passed.unwrap();
         assert!(result);
 
         let result = engine.evaluate(AssertionInput {
@@ -251,7 +257,7 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-        }).unwrap().passed;
+        }).unwrap().passed.unwrap();
         assert!(result);
     }
 
@@ -268,7 +274,7 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-        }).unwrap().passed;
+        }).unwrap().passed.unwrap();
         assert!(result);
     }
 
@@ -285,7 +291,7 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-        }).unwrap().passed;
+        }).unwrap().passed.unwrap();
         assert!(result);
     }
 
@@ -302,8 +308,48 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-        }).unwrap().passed;
+        }).unwrap().passed.unwrap();
         assert!(result);
+    }
+
+    #[test]
+    fn test_script_without_a_verdict_still_reports_its_writes() {
+        // A post-test script often exists only to capture values, ending in an
+        // assignment rather than a boolean. That must not be an error, and the
+        // writes must survive — the verdict can come from the row's status instead.
+        let engine = AssertionEngine::new();
+        let outcome = engine
+            .evaluate(AssertionInput {
+                script: r#"SAT.env.token = "abc"; SAT.vars.uid = 7;"#,
+                status: 201,
+                body: "",
+                json: &None,
+                headers: &HashMap::new(),
+                env: &HashMap::new(),
+            })
+            .unwrap();
+
+        assert_eq!(outcome.passed, None, "an assignment is not a verdict");
+        assert_eq!(outcome.env.get("token"), Some(&Value::String("abc".into())));
+        assert_eq!(outcome.vars.get("uid"), Some(&Value::Number(7.into())));
+    }
+
+    #[test]
+    fn test_script_ending_in_a_boolean_yields_a_verdict() {
+        let engine = AssertionEngine::new();
+        let outcome = engine
+            .evaluate(AssertionInput {
+                script: r#"SAT.env.token = "abc"; response.status == 201"#,
+                status: 201,
+                body: "",
+                json: &None,
+                headers: &HashMap::new(),
+                env: &HashMap::new(),
+            })
+            .unwrap();
+
+        assert_eq!(outcome.passed, Some(true));
+        assert_eq!(outcome.env.get("token"), Some(&Value::String("abc".into())));
     }
 
     #[test]
