@@ -53,8 +53,12 @@ npm run dev        # Starts on http://localhost:8080
 - **Flows** contain a graph (nodes + edges) representing test execution order
 - **Test Cases** define HTTP requests with BDD fields, headers, payload, exports, assertions
 - **Exports** extract values from responses via JSONPath for chaining between test cases
-- **Pre-test scripts** use Rhai with `SAT.vars.x = "value"` syntax (rewritten to `vars.x` internally)
+- **Pre-test scripts** use Rhai with `SAT.vars.x = "value"` syntax (rewritten to `vars.x` internally); `SAT.env.x` persists into the active environment
 - **Assertions** use Rhai scripts evaluated against response data
+- **Generators** (`execution/generators.rs`) are registered on *both* script engines —
+  `randomPhone()`, `uuid()`, `base64Encode(s)`, … — and mirror the `{{$Macros}}`.
+  The GUI's pre-test snippets are pinned by a test there; they are Rhai, not JS
+- **Datasets** run one test case against many bodies — see below
 - **Project variables** stored in `project.settings.variables`, injected as environment into execution
 - **Variable interpolation:** `{{variableName}}` in URLs, headers, payloads — resolved from execution context
 
@@ -63,33 +67,62 @@ npm run dev        # Starts on http://localhost:8080
 Defined by `ExecutionContext::resolve` in `api/src/execution/variables.rs`.
 **Lowest number wins** — the first tier that has the name is used.
 
-1. `row_vars` — the current data-driven row's cells (empty for a normal run)
-2. `execution_vars` — one-off values passed in the execute request
-3. `context` — exports from earlier test cases **and** `SAT.vars` set by scripts
-4. `node_input_vars` — per-node overrides set on the flow canvas
-5. `flow_vars` — variables scoped to a flow
-6. `environment` — Globals + the active Environment merged client-side (env wins);
+1. `execution_vars` — one-off values passed in the execute request
+2. `context` — exports from earlier test cases **and** `SAT.vars` set by scripts
+3. `node_input_vars` — per-node overrides set on the flow canvas
+4. `flow_vars` — variables scoped to a flow
+5. `environment` — Globals + the active Environment merged client-side (env wins);
    `SAT.env` writes land here
-7. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
+6. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
    `generate_builtin`)
+
+There is deliberately **no data-row tier** — a dataset row overrides the body
+wholesale rather than supplying variables (see below).
 
 ## Data-Driven Testing
 
-A test case may carry a `dataset` (`{columns, rows}`, stored as JSON on
-`test_cases.dataset`). Each row supplies values for the columns and runs the
-request once.
+A test case may carry a `dataset` — `{rows: [{id, name?, body?, check?}]}`, stored
+as JSON on `test_cases.dataset`. Each row runs the request once.
 
-- A **column** is a variable name → usable as `{{column}}`; names must match
-  `[A-Za-z_]\w*` or interpolation silently won't resolve them.
-- Cells are interpolated, then JSON-coerced (`"400"` → number), so a shared
-  assertion can compare `response.status == data.expected_status`.
-- Scripts read the row as `data.<column>` (`SAT.data.` is rewritten to `data.`).
-- Assertion per row: the row's own `assertion` → else the test case's
-  `assertion_script` → else the built-in 2xx check.
-- **Flows and a plain "Run Test" ignore the dataset entirely** — the test case as
+There are **no named columns and no `data.*` namespace**: an earlier design had
+both and it lost on usability — the author had to learn a template-variable model
+before writing a single case. A row now overrides the *whole body*, which is
+exactly what the author already knows how to write.
+
+- **`body`** — replaces `test_case.payload` for that row (`resolve_body`); blank
+  falls back to the payload. Interpolated either way, so `{{...}}` works in it.
+- **`check`** — one column, two forms, told apart by `expected_status_code()`
+  (all digits → shorthand):
+  - all digits → status equality
+  - anything else → a Rhai expression via `AssertionInput`, so it can also
+    capture (`outcome.vars` / `outcome.env` are collected); a non-boolean result
+    is reported as "must be a status code or an expression that is true or false"
+    rather than a type error
+  - blank → the built-in 2xx check
+- **The shared `assertion_script` is never run for a row.** The two worlds are
+  self-contained (see the comment at the `match row` in `run_once`): a script
+  written for the single-request case can neither decide nor break a row's
+  verdict. The pre-test script *does* run per row, and exports still run for a
+  row that passed.
+- **Flows and "Run request" ignore the dataset entirely** — the test case as
   authored is the primary test. Only `all_rows: true` iterates
-  (`execute_test_case_dataset`), returning one aggregate `NodeResult` whose
-  `iterations` holds the per-row results.
+  (`execute_test_case_dataset`), which clones the base context per row (so
+  exports can't leak between rows), folds `SAT.env` writes forward, never aborts
+  on a failure, and returns one aggregate `NodeResult` whose `iterations` holds
+  the per-row results.
+- UI vocabulary, matching the buttons: **Run request** vs **Run dataset (N)**;
+  columns are **Case | Body | Expect**.
+
+### Gotchas
+
+- `DataRow` has no serde alias for the old `expected_status`, by choice — rows
+  saved before the rename read as a blank check and fall back to 2xx.
+- `update()` in `test_cases.rs` is `input.x.or(existing.x)`, so the client must
+  **always** send `dataset` or it can never be cleared.
+- `row_to_test_case` must read `dataset` as `Option<String>` — the column is NULL
+  for pre-migration rows.
+- Interpolation is `\{\{(\$?[\w]+)…\}\}` — **no dots**, so `{{data.x}}` could
+  never have worked.
 
 ## Conventions
 - Commit messages: `feat:`, `fix:`, `chore:` prefixes

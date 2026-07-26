@@ -5,45 +5,81 @@ export interface CodeSnippet {
   code: string;
 }
 
+/**
+ * Pre-test scripts are Rhai, not JavaScript. Every snippet here is valid Rhai and
+ * uses only what the engine registers (see api/src/execution/generators.rs) —
+ * a snippet the user pastes and that then fails is worse than no snippet.
+ */
 export const preTestSnippets: CodeSnippet[] = [
   {
     category: "Authentication",
-    label: "Set Auth Token",
-    description: "Add authorization header from variable",
-    code: `// Set authorization header
-SAT.vars.authHeader = \`Bearer \${SAT.vars.authToken}\`;`,
+    label: "Bearer header from a variable",
+    description: "Build an Authorization header out of a token already in the environment",
+    code: `// SAT.env holds values saved by earlier runs; SAT.vars is this run only.
+SAT.vars.authHeader = "Bearer " + SAT.env.authToken;`,
   },
   {
     category: "Authentication",
-    label: "Set Basic Auth",
-    description: "Encode username/password for basic auth",
-    code: `// Set basic authentication
-const credentials = btoa(\`\${SAT.vars.username}:\${SAT.vars.password}\`);
-SAT.vars.authHeader = \`Basic \${credentials}\`;`,
+    label: "Basic auth header",
+    description: "Encode username and password for basic auth",
+    code: `SAT.vars.authHeader = "Basic " + base64Encode(SAT.env.username + ":" + SAT.env.password);`,
   },
   {
     category: "Data Setup",
-    label: "Generate UUID",
-    description: "Create a unique identifier",
-    code: `// Generate unique ID
-SAT.vars.uniqueId = crypto.randomUUID();`,
+    label: "Unique ID",
+    description: "Generate a UUID v4 for this run",
+    code: `SAT.vars.uniqueId = uuid();`,
   },
   {
     category: "Data Setup",
-    label: "Current Timestamp",
-    description: "Get current timestamp in ISO format",
-    code: `// Generate timestamp
-SAT.vars.timestamp = new Date().toISOString();`,
+    label: "Timestamp",
+    description: "Current time as RFC 3339, seconds, or milliseconds",
+    code: `SAT.vars.createdAt = isoDate();     // 2026-07-26T09:15:00+00:00
+SAT.vars.epoch     = timestamp();   // seconds
+SAT.vars.epochMs   = timestampMs(); // milliseconds`,
   },
   {
     category: "Data Setup",
-    label: "Random Email",
-    description: "Generate random test email",
-    code: `// Generate random test email
-SAT.vars.testEmail = \`test_\${Date.now()}@example.com\`;`,
+    label: "Random email",
+    description: "Generate an email once so every step can reuse the same one",
+    code: `// Generate ONCE here, then use {{testEmail}} in the payload and downstream.
+// Writing {{$RandomEmail}} twice would give you two different addresses.
+SAT.vars.testEmail = randomEmail();`,
+  },
+  {
+    category: "Data Setup",
+    label: "Signup identity",
+    description: "A full set of matching signup values, reusable by name",
+    code: `SAT.vars.myName     = randomName();
+SAT.vars.myEmail    = randomEmail();
+SAT.vars.myPhone    = randomPhone();
+SAT.vars.myCompany  = randomCompany();
+SAT.vars.myPassword = randomPassword(16);
+
+// Now the payload can say {{myEmail}}, {{myPhone}}, …`,
+  },
+  {
+    category: "Data Setup",
+    label: "Random string & number",
+    description: "Sized string and a bounded integer",
+    code: `SAT.vars.suffix = randomString(8);          // 8 characters
+SAT.vars.amount = randomInt(100, 9999);    // inclusive range`,
+  },
+  {
+    category: "Persisting values",
+    label: "Save for future runs",
+    description: "Write into the active environment so later runs can read it",
+    code: `// SAT.env survives the run and is saved to the active Environment
+// (or Globals when no environment is selected).
+SAT.env.deviceId = uuid();`,
   },
 ];
 
+/**
+ * Post-test assertions — Rhai expressions whose last value is the pass/fail
+ * boolean. The same expressions are valid in a dataset row's Expect column,
+ * which is evaluated by the same engine.
+ */
 export const postTestSnippets: CodeSnippet[] = [
   // Status Validation
   {

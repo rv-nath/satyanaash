@@ -8,6 +8,7 @@ description = "REST API backend for Satyanaash - Graph-based HTTP API Testing Fr
 # Web Framework - Axum 0.8.4 (latest as of Nov 2025)
 axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
+base64 = "0.22"   # base64Encode() for scripts building a Basic auth header
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Async Runtime - Tokio 1.48.0 (latest)

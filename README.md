@@ -150,7 +150,8 @@ Exports:
   accountId  ->  $.id
 ```
 
-Run it standalone from the editor's **Run Test**, or drop it into a flow.
+Run it standalone from the editor's **Run request**, or drop it into a flow.
+To run it against many bodies at once, see [Data-driven testing](#data-driven-testing).
 
 ---
 
@@ -266,6 +267,86 @@ response.status == 200 && response.json.ok == true   // combined
 
 ---
 
+## Data-driven testing
+
+One request, many bodies. Covering an API's negative and edge cases doesn't need a
+flow of near-identical nodes — give the test case a **dataset** in its **Data** tab
+and the engine runs the request once per row.
+
+| Column | Meaning |
+|--------|---------|
+| **Case** | Label for the row, shown in the results. Optional — blank rows read as *Row 1*, *Row 2*, … |
+| **Body** | The body this row sends. Blank falls back to the Request tab's body. |
+| **Expect** | What must be true for the row to pass. |
+
+### Expect takes three forms
+
+| You write | It means |
+|-----------|----------|
+| `400` | shorthand for `response.status == 400` |
+| `response.json.error == "MISSING_FIELD"` | a Rhai expression, evaluated like an assertion |
+| *(blank)* | any 2xx passes |
+
+A check that is **nothing but digits** is the shorthand; anything else is a Rhai
+expression against the same `response` object assertions use — so a row can check
+fields and combinations, not just the status:
+
+```rhai
+response.status == 400 && response.json.errors.len() == 2
+response.json.message.contains("company")
+```
+
+A row's check may capture on the way through, exactly like an assertion — the last
+expression still decides pass/fail:
+
+```rhai
+SAT.env.token = response.json.access_token;
+response.status == 201
+```
+
+### Example — SignUp negative cases
+
+| Case | Body | Expect |
+|------|------|--------|
+| Empty payload | `{}` | `400` |
+| Missing company | `{"email":"{{$RandomEmail}}","mobile":"{{$RandomPhone}}"}` | `400` |
+| Blank company | `{"company":"","email":"{{$RandomEmail}}","mobile":"{{$RandomPhone}}"}` | `400` |
+| Duplicate mobile | `{"company":"Acme","email":"{{$RandomEmail}}","mobile":"9180500001"}` | `409` |
+| Valid | `{"company":"Acme","email":"{{$RandomEmail}}","mobile":"{{$RandomPhone}}"}` | `response.status == 201 && response.json.userId != ()` |
+
+### Two ways to run
+
+- **Run request** — runs the test case exactly as authored and **ignores the dataset
+  entirely**. This is the primary test; nothing about it changes when you add rows.
+- **Run dataset (N)** — runs once per row and returns a matrix: a line per row with
+  its status, clickable to drill into that row's request and response.
+
+Every row runs, pass or fail — the run doesn't stop at the first failure. The
+overall verdict is the worst of the rows.
+
+### What a row does and doesn't touch
+
+- **The pre-test script runs for every row**, so `SAT.vars.mobile = randomPhone()`
+  yields a fresh value per row.
+- **Bodies are interpolated.** `{{baseUrl}}`, `{{$RandomEmail}}`, and anything a
+  pre-test script or environment provides all work inside a row's body.
+- **The post-test script is never run for a row.** A row's **Expect** stands alone,
+  so an assertion written for the single-request case can neither decide nor break a
+  row's verdict. (This is why an `{{...}}`-style capture in your assertion won't
+  interfere with rows — it simply doesn't run.)
+- **Exports still run** for a row that passed.
+- **Rows are independent.** Each starts from the same context, so one row's exports
+  can't leak into the next. `SAT.env` writes *do* carry forward — persisting is what
+  they're for.
+- **Flows ignore datasets.** A dataset-bearing test case inside a flow runs **once**,
+  as authored — identical to how it behaved before datasets existed.
+
+> A blank **Expect** means *any 2xx*, which is the right default for a happy-path row
+> and the wrong one for a negative case: a row meant to check a rejection will
+> **pass** on a 200. Give negative rows an explicit status.
+
+---
+
 ## Exports — chaining values
 
 Exports declaratively pull values from a response using **JSONPath** and store them
@@ -334,6 +415,13 @@ Available (arguments are optional — sensible defaults apply):
 `randomUsername()`, `randomAddress()`, `randomInt([min, max])`,
 `randomString([len])`, `randomPassword([len])`, `uuid()`, `timestamp()`,
 `timestampMs()`, `isoDate()`.
+
+Also available, and script-only (there's no `{{$…}}` macro for it):
+`base64Encode(text)` — for building a Basic auth header.
+
+```rhai
+SAT.vars.authHeader = "Basic " + base64Encode(SAT.env.username + ":" + SAT.env.password);
+```
 
 ### Example — generate once, reuse everywhere (a flow)
 
