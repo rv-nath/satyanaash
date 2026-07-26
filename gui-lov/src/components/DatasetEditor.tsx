@@ -21,6 +21,9 @@ interface DatasetEditorProps {
   sharedAssertion?: string;
 }
 
+// #, case, body, status, duplicate, delete
+const GRID = "24px 180px minmax(240px,1fr) 88px 32px 32px";
+
 export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEditorProps) {
   const { rows } = dataset;
   const hasShared = !!sharedAssertion?.trim();
@@ -70,33 +73,85 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
           </Button>
         </div>
       ) : (
-        <div className="space-y-3">
-          {rows.map((row, i) => {
-            const body = row.body ?? "";
-            const badJson = looksLikeInvalidJson(body);
-            return (
-              <div key={row.id} className="rounded-lg border border-border bg-card p-3">
-                <div className="flex items-center gap-2">
-                  <span className="w-6 shrink-0 text-center text-xs text-muted-foreground">{i + 1}</span>
+        <div className="overflow-x-auto">
+          <div className="min-w-[640px] space-y-1.5">
+            {/* Header band: three columns — case, body, status. Tinted so it
+                reads as a header rather than another row of inputs. */}
+            <div
+              className="grid items-center gap-2 rounded-t-md border-b-2 border-border bg-muted/50 px-1 py-1.5"
+              style={{ gridTemplateColumns: GRID }}
+            >
+              <span className="w-6" />
+              <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Case
+              </span>
+              <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Body
+              </span>
+              <span className="pl-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Status
+              </span>
+              <span />
+              <span />
+            </div>
+
+            {rows.map((row, i) => {
+              const body = row.body ?? "";
+              const badJson = looksLikeInvalidJson(body);
+              const noStatus = !(row.expected_status ?? "").trim();
+              return (
+                <div
+                  key={row.id}
+                  className="grid items-start gap-2 rounded-md px-1 py-1 hover:bg-muted/30"
+                  style={{ gridTemplateColumns: GRID }}
+                >
+                  <span className="w-6 pt-2 text-center text-xs text-muted-foreground">{i + 1}</span>
+
                   <Input
                     value={row.name ?? ""}
                     placeholder={rowLabel(i, row)}
                     onChange={(e) => onChange(setRowName(dataset, row.id, e.target.value))}
-                    className="h-8 flex-1 text-[13px]"
+                    className="h-9 text-[13px]"
                     aria-label={`Case name for row ${i + 1}`}
                   />
-                  <span className="shrink-0 text-[11px] text-muted-foreground">expect</span>
+
+                  <div className="min-w-0">
+                    <Textarea
+                      value={body}
+                      onChange={(e) => onChange(setRowBody(dataset, row.id, e.target.value))}
+                      placeholder={'{"email": "a@b.com"}   — blank uses the Request tab\u2019s body'}
+                      className="min-h-[68px] font-mono text-xs"
+                      aria-label={`Body for ${rowLabel(i, row)}`}
+                    />
+                    {(badJson || noStatus) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+                        {badJson && (
+                          <span className="flex items-center gap-1 text-warning">
+                            <AlertTriangle className="h-3 w-3" /> Not valid JSON — sent as-is
+                          </span>
+                        )}
+                        {noStatus && (
+                          <span>
+                            No expected status —{" "}
+                            {hasShared ? "uses the check from the Scripts tab." : "passes on any 2xx."}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <Input
                     value={row.expected_status ?? ""}
                     placeholder="200"
                     onChange={(e) => onChange(setRowExpectedStatus(dataset, row.id, e.target.value))}
-                    className="h-8 w-[72px] shrink-0 font-mono text-[13px]"
+                    className="h-9 font-mono text-[13px]"
                     aria-label={`Expected status for ${rowLabel(i, row)}`}
                   />
+
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                    className="h-9 w-8 text-muted-foreground hover:text-foreground"
                     onClick={() => onChange(duplicateRow(dataset, row.id))}
                     aria-label={`Duplicate ${rowLabel(i, row)}`}
                     title="Duplicate this case"
@@ -106,38 +161,16 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                    className="h-9 w-8 text-muted-foreground hover:text-destructive"
                     onClick={() => onChange(removeRow(dataset, row.id))}
                     aria-label={`Remove ${rowLabel(i, row)}`}
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
-
-                <Textarea
-                  value={body}
-                  onChange={(e) => onChange(setRowBody(dataset, row.id, e.target.value))}
-                  placeholder='{"email": "a@b.com"}     — blank uses the Request tab’s body'
-                  className="mt-2 min-h-[72px] font-mono text-xs"
-                  aria-label={`Body for ${rowLabel(i, row)}`}
-                />
-
-                <div className="mt-1.5 flex items-center gap-3 text-[11px] text-muted-foreground">
-                  {badJson && (
-                    <span className="flex items-center gap-1 text-warning">
-                      <AlertTriangle className="h-3 w-3" /> Not valid JSON — sent as-is
-                    </span>
-                  )}
-                  {!(row.expected_status ?? "").trim() && (
-                    <span>
-                      No expected status —{" "}
-                      {hasShared ? "uses the check from the Scripts tab." : "passes on any 2xx."}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
 
