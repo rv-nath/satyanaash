@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList, CheckCircle2, XCircle, AlertCircle, Loader2, WrapText, Pencil, Check, Trash2, Table2 } from "lucide-react";
+import { ArrowLeft, Save, Play, X, FileCode, Code2, BookOpen, Plus, Eye, ClipboardList, CheckCircle2, XCircle, AlertCircle, Loader2, WrapText, Pencil, Check, Trash2, Table2, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +19,7 @@ import { preTestSnippets, postTestSnippets, getSnippetsByCategory } from "@/lib/
 import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/components/HeadersEditor";
 import type { Dataset, TestCaseExecutionResult } from "@/lib/api/types";
 import { DatasetEditor } from "@/components/DatasetEditor";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { emptyDataset } from "@/lib/dataset";
 
 interface TestCaseEditorProps {
@@ -36,6 +37,18 @@ interface TestCaseEditorProps {
 }
 
 type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+
+const getMethodColor = (m: string) => {
+  const colors: Record<string, string> = {
+    GET: "bg-success/20 text-success",
+    POST: "bg-primary/20 text-primary",
+    PUT: "bg-warning/20 text-warning",
+    DELETE: "bg-destructive/20 text-destructive",
+    PATCH: "bg-accent/20 text-accent",
+  };
+  return colors[m] || "bg-muted";
+};
+
 
 // Humanized section header (Section 8): plain-English lead + one-line helper.
 function SectionLead({ title, helper }: { title: string; helper: string }) {
@@ -137,6 +150,12 @@ export const TestCaseEditor = ({
     reportRef.current.onResultChange?.(executionResult);
   }, [executionResult]);
   const [wordWrap, setWordWrap] = useState(true);
+  // Which data row is drilled into; cleared whenever a new result arrives so a
+  // re-run with fewer rows can't leave the index out of bounds.
+  const [selectedRow, setSelectedRow] = useState<number | null>(null);
+  useEffect(() => {
+    setSelectedRow(null);
+  }, [executionResult]);
 
   // Form state
   const [name, setName] = useState("");
@@ -482,17 +501,6 @@ export const TestCaseEditor = ({
   }
 
   const isSaving = createMutation.isPending || updateMutation.isPending;
-
-  const getMethodColor = (m: string) => {
-    const colors: Record<string, string> = {
-      GET: "bg-success/20 text-success",
-      POST: "bg-primary/20 text-primary",
-      PUT: "bg-warning/20 text-warning",
-      DELETE: "bg-destructive/20 text-destructive",
-      PATCH: "bg-accent/20 text-accent",
-    };
-    return colors[m] || "bg-muted";
-  };
 
   return (
     <div className="h-full flex flex-col bg-background">
@@ -1021,181 +1029,27 @@ export const TestCaseEditor = ({
                 <p className="text-muted-foreground">Executing HTTP request and running assertions</p>
               </div>
             ) : executionResult ? (
-              <div className="h-full flex flex-col">
-                {/* Status Bar */}
-                <div className={`px-6 py-3 border-b flex items-center justify-between ${
-                  executionResult.status === 'passed'
-                    ? 'bg-success/10 border-success/30'
-                    : executionResult.status === 'failed'
-                    ? 'bg-destructive/10 border-destructive/30'
-                    : 'bg-warning/10 border-warning/30'
-                }`}>
-                  <div className="flex items-center gap-3">
-                    {executionResult.status === 'passed' ? (
-                      <CheckCircle2 className="w-5 h-5 text-success" />
-                    ) : executionResult.status === 'failed' ? (
-                      <XCircle className="w-5 h-5 text-destructive" />
-                    ) : (
-                      <AlertCircle className="w-5 h-5 text-warning" />
-                    )}
-                    <span className="font-semibold capitalize">{executionResult.status}</span>
-                    {executionResult.response && (
-                      <Badge variant={executionResult.response.status >= 200 && executionResult.response.status < 300 ? "default" : "destructive"}>
-                        {executionResult.response.status}
-                      </Badge>
-                    )}
-                    <span className="text-sm text-muted-foreground">
-                      {executionResult.duration_ms}ms
-                    </span>
-                    {executionResult.error_message && (
-                      <span className="text-sm text-destructive">• {executionResult.error_message}</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => handleRunTest(!!executionResult?.iterations)} disabled={executeMutation.isPending}>
-                      <Play className="w-3.5 h-3.5" />
-                      Run Again
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                      onClick={() => setExecutionResult(null)}
-                      title="Clear response"
-                    >
-                      <X className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Sub-tabs for Response details */}
-                <Tabs defaultValue="body" className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                  <div className="border-b px-6">
-                    <TabsList className="h-10 bg-transparent p-0 gap-4">
-                      <TabsTrigger value="body" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
-                        Body
-                      </TabsTrigger>
-                      <TabsTrigger value="headers" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
-                        Headers
-                        {executionResult.response && (
-                          <span className="ml-1.5 text-xs text-muted-foreground">
-                            ({Object.keys(executionResult.response.headers).length})
-                          </span>
-                        )}
-                      </TabsTrigger>
-                      <TabsTrigger value="request" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
-                        Request
-                      </TabsTrigger>
-                    </TabsList>
-                  </div>
-
-                  {/* Body Sub-tab */}
-                  <TabsContent value="body" className="flex-1 min-h-0 mt-0 overflow-hidden">
-                    <div className="h-full flex flex-col">
-                      {executionResult.response?.body ? (
-                        <>
-                          <div className="flex justify-end px-4 py-1.5 border-b bg-muted/20">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className={`h-7 gap-1.5 text-xs ${wordWrap ? 'bg-muted' : ''}`}
-                              onClick={() => setWordWrap(!wordWrap)}
-                            >
-                              <WrapText className="w-3.5 h-3.5" />
-                              Wrap
-                            </Button>
-                          </div>
-                          <pre className={`flex-1 overflow-auto p-4 text-sm font-mono bg-muted/30 ${wordWrap ? 'whitespace-pre-wrap break-all' : ''}`}>
-                            {(() => {
-                              try {
-                                return JSON.stringify(JSON.parse(executionResult.response.body), null, 2);
-                              } catch {
-                                return executionResult.response.body;
-                              }
-                            })()}
-                          </pre>
-                        </>
-                      ) : (
-                        <div className="h-full flex items-center justify-center text-muted-foreground">
-                          No response body
-                        </div>
-                      )}
-                    </div>
-                  </TabsContent>
-
-                  {/* Headers Sub-tab */}
-                  <TabsContent value="headers" className="flex-1 min-h-0 mt-0 overflow-hidden">
-                    {executionResult.response && Object.keys(executionResult.response.headers).length > 0 ? (
-                      <div className="h-full overflow-auto">
-                        <table className="w-full text-sm">
-                          <tbody>
-                            {Object.entries(executionResult.response.headers).map(([k, v]) => (
-                              <tr key={k} className="border-b border-border/50 hover:bg-muted/30">
-                                <td className="py-2 px-4 font-mono text-muted-foreground whitespace-nowrap">{k}</td>
-                                <td className="py-2 px-4 font-mono break-all">{v}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : (
-                      <div className="h-full flex items-center justify-center text-muted-foreground">
-                        No headers
-                      </div>
-                    )}
-                  </TabsContent>
-
-                  {/* Request Sub-tab */}
-                  <TabsContent value="request" className="flex-1 min-h-0 mt-0 overflow-hidden">
-                    <div className="h-full overflow-auto p-4 space-y-4">
-                      {executionResult.request && (
-                        <>
-                          {/* Request line */}
-                          <div className="flex items-center gap-2">
-                            <Badge className={getMethodColor(executionResult.request.method)}>
-                              {executionResult.request.method}
-                            </Badge>
-                            <code className="text-sm font-mono break-all">{executionResult.request.url}</code>
-                          </div>
-
-                          {/* Request Headers */}
-                          {Object.keys(executionResult.request.headers).length > 0 && (
-                            <div>
-                              <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST HEADERS</h4>
-                              <table className="w-full text-sm">
-                                <tbody>
-                                  {Object.entries(executionResult.request.headers).map(([k, v]) => (
-                                    <tr key={k} className="border-b border-border/50">
-                                      <td className="py-1.5 pr-4 font-mono text-muted-foreground whitespace-nowrap">{k}</td>
-                                      <td className="py-1.5 font-mono break-all">{v}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-
-                          {/* Request Body */}
-                          {executionResult.request.body && (
-                            <div>
-                              <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST BODY</h4>
-                              <pre className="text-sm font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
-                                {(() => {
-                                  try {
-                                    return JSON.stringify(JSON.parse(executionResult.request.body), null, 2);
-                                  } catch {
-                                    return executionResult.request.body;
-                                  }
-                                })()}
-                              </pre>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </div>
+              executionResult.iterations ? (
+                <DatasetResultView
+                  aggregate={executionResult}
+                  selected={selectedRow}
+                  onSelect={setSelectedRow}
+                  wordWrap={wordWrap}
+                  setWordWrap={setWordWrap}
+                  onRerun={() => handleRunTest(true)}
+                  onClear={() => setExecutionResult(null)}
+                  running={executeMutation.isPending}
+                />
+              ) : (
+                <SingleResultView
+                  result={executionResult}
+                  wordWrap={wordWrap}
+                  setWordWrap={setWordWrap}
+                  onRerun={() => handleRunTest(false)}
+                  onClear={() => setExecutionResult(null)}
+                  running={executeMutation.isPending}
+                />
+              )
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-6 text-center">
                 <Eye className="w-16 h-16 text-muted-foreground/30 mb-4" />
@@ -1248,3 +1102,374 @@ export const TestCaseEditor = ({
     </div>
   );
 };
+
+/** Renders one execution result — status bar plus Body / Headers / Request.
+ *  Extracted so the data-driven drill-down reuses it instead of duplicating it. */
+function SingleResultView({
+  result,
+  wordWrap,
+  setWordWrap,
+  onRerun,
+  onClear,
+  running,
+}: {
+  result: TestCaseExecutionResult;
+  wordWrap: boolean;
+  setWordWrap: (v: boolean) => void;
+  onRerun: () => void;
+  onClear: () => void;
+  running: boolean;
+}) {
+  return (
+      <div className="h-full flex flex-col">
+        {/* Status Bar */}
+        <div className={`px-6 py-3 border-b flex items-center justify-between ${
+          result.status === 'passed'
+            ? 'bg-success/10 border-success/30'
+            : result.status === 'failed'
+            ? 'bg-destructive/10 border-destructive/30'
+            : 'bg-warning/10 border-warning/30'
+        }`}>
+          <div className="flex items-center gap-3">
+            {result.status === 'passed' ? (
+              <CheckCircle2 className="w-5 h-5 text-success" />
+            ) : result.status === 'failed' ? (
+              <XCircle className="w-5 h-5 text-destructive" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-warning" />
+            )}
+            <span className="font-semibold capitalize">{result.status}</span>
+            {result.response && (
+              <Badge variant={result.response.status >= 200 && result.response.status < 300 ? "default" : "destructive"}>
+                {result.response.status}
+              </Badge>
+            )}
+            <span className="text-sm text-muted-foreground">
+              {result.duration_ms}ms
+            </span>
+            {result.error_message && (
+              <span className="text-sm text-destructive">• {result.error_message}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => handleRunTest(!!executionResult?.iterations)} disabled={executeMutation.isPending}>
+              <Play className="w-3.5 h-3.5" />
+              Run Again
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+              onClick={onClear}
+              title="Clear response"
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Sub-tabs for Response details */}
+        <Tabs defaultValue="body" className="flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className="border-b px-6">
+            <TabsList className="h-10 bg-transparent p-0 gap-4">
+              <TabsTrigger value="body" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
+                Body
+              </TabsTrigger>
+              <TabsTrigger value="headers" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
+                Headers
+                {result.response && (
+                  <span className="ml-1.5 text-xs text-muted-foreground">
+                    ({Object.keys(result.response.headers).length})
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="request" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
+                Request
+              </TabsTrigger>
+            </TabsList>
+          </div>
+
+          {/* Body Sub-tab */}
+          <TabsContent value="body" className="flex-1 min-h-0 mt-0 overflow-hidden">
+            <div className="h-full flex flex-col">
+              {result.response?.body ? (
+                <>
+                  <div className="flex justify-end px-4 py-1.5 border-b bg-muted/20">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={`h-7 gap-1.5 text-xs ${wordWrap ? 'bg-muted' : ''}`}
+                      onClick={() => setWordWrap(!wordWrap)}
+                    >
+                      <WrapText className="w-3.5 h-3.5" />
+                      Wrap
+                    </Button>
+                  </div>
+                  <pre className={`flex-1 overflow-auto p-4 text-sm font-mono bg-muted/30 ${wordWrap ? 'whitespace-pre-wrap break-all' : ''}`}>
+                    {(() => {
+                      try {
+                        return JSON.stringify(JSON.parse(result.response.body), null, 2);
+                      } catch {
+                        return result.response.body;
+                      }
+                    })()}
+                  </pre>
+                </>
+              ) : (
+                <div className="h-full flex items-center justify-center text-muted-foreground">
+                  No response body
+                </div>
+              )}
+            </div>
+          </TabsContent>
+
+          {/* Headers Sub-tab */}
+          <TabsContent value="headers" className="flex-1 min-h-0 mt-0 overflow-hidden">
+            {result.response && Object.keys(result.response.headers).length > 0 ? (
+              <div className="h-full overflow-auto">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {Object.entries(result.response.headers).map(([k, v]) => (
+                      <tr key={k} className="border-b border-border/50 hover:bg-muted/30">
+                        <td className="py-2 px-4 font-mono text-muted-foreground whitespace-nowrap">{k}</td>
+                        <td className="py-2 px-4 font-mono break-all">{v}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="h-full flex items-center justify-center text-muted-foreground">
+                No headers
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Request Sub-tab */}
+          <TabsContent value="request" className="flex-1 min-h-0 mt-0 overflow-hidden">
+            <div className="h-full overflow-auto p-4 space-y-4">
+              {result.request && (
+                <>
+                  {/* Request line */}
+                  <div className="flex items-center gap-2">
+                    <Badge className={getMethodColor(result.request.method)}>
+                      {result.request.method}
+                    </Badge>
+                    <code className="text-sm font-mono break-all">{result.request.url}</code>
+                  </div>
+
+                  {/* Request Headers */}
+                  {Object.keys(result.request.headers).length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST HEADERS</h4>
+                      <table className="w-full text-sm">
+                        <tbody>
+                          {Object.entries(result.request.headers).map(([k, v]) => (
+                            <tr key={k} className="border-b border-border/50">
+                              <td className="py-1.5 pr-4 font-mono text-muted-foreground whitespace-nowrap">{k}</td>
+                              <td className="py-1.5 font-mono break-all">{v}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Request Body */}
+                  {result.request.body && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST BODY</h4>
+                      <pre className="text-sm font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
+                        {(() => {
+                          try {
+                            return JSON.stringify(JSON.parse(result.request.body), null, 2);
+                          } catch {
+                            return result.request.body;
+                          }
+                        })()}
+                      </pre>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+  );
+}
+
+/** Summary + per-row table for a "run all rows" result, with drill-down into
+ *  the same renderer a single run uses. */
+function DatasetResultView({
+  aggregate,
+  selected,
+  onSelect,
+  wordWrap,
+  setWordWrap,
+  onRerun,
+  onClear,
+  running,
+}: {
+  aggregate: TestCaseExecutionResult;
+  selected: number | null;
+  onSelect: (i: number | null) => void;
+  wordWrap: boolean;
+  setWordWrap: (v: boolean) => void;
+  onRerun: () => void;
+  onClear: () => void;
+  running: boolean;
+}) {
+  const rows = aggregate.iterations ?? [];
+  const passed = rows.filter((r) => r.status === "passed").length;
+  const allPassed = passed === rows.length;
+
+  // Drilled into one row: breadcrumb + the standard single-result view.
+  if (selected !== null && rows[selected]) {
+    const row = rows[selected];
+    return (
+      <div className="h-full flex flex-col">
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+          <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => onSelect(null)}>
+            <ArrowLeft className="h-3.5 w-3.5" /> All rows
+          </Button>
+          <span className="text-muted-foreground/50">/</span>
+          <span className="text-[13px] font-medium">{row.row_label ?? `Row ${selected + 1}`}</span>
+          <div className="flex-1" />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            disabled={selected === 0}
+            onClick={() => onSelect(selected - 1)}
+            aria-label="Previous row"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            {selected + 1} / {rows.length}
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            disabled={selected === rows.length - 1}
+            onClick={() => onSelect(selected + 1)}
+            aria-label="Next row"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="min-h-0 flex-1">
+          <SingleResultView
+            result={row}
+            wordWrap={wordWrap}
+            setWordWrap={setWordWrap}
+            onRerun={onRerun}
+            onClear={onClear}
+            running={running}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <div
+        className={`flex items-center justify-between border-b px-6 py-3 ${
+          allPassed ? "bg-success/10 border-success/30" : "bg-destructive/10 border-destructive/30"
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          {allPassed ? (
+            <CheckCircle2 className="h-5 w-5 text-success" />
+          ) : (
+            <XCircle className="h-5 w-5 text-destructive" />
+          )}
+          <span className="font-semibold">
+            {rows.length} {rows.length === 1 ? "row" : "rows"}
+          </span>
+          <span className="text-sm text-muted-foreground">
+            {passed} passed{passed < rows.length ? ` · ${rows.length - passed} not passed` : ""}
+          </span>
+          <span className="text-sm text-muted-foreground">{aggregate.duration_ms}ms</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" className="gap-1.5" onClick={onRerun} disabled={running}>
+            <Play className="h-3.5 w-3.5" /> Run all rows again
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+            onClick={onClear}
+            title="Clear response"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-10 py-2">#</TableHead>
+              <TableHead className="py-2">Row</TableHead>
+              <TableHead className="w-24 py-2">Result</TableHead>
+              <TableHead className="w-20 py-2">HTTP</TableHead>
+              <TableHead className="w-20 py-2">Time</TableHead>
+              <TableHead className="py-2">Message</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row, i) => (
+              <TableRow
+                key={i}
+                className="cursor-pointer"
+                onClick={() => onSelect(i)}
+                title="Show this row's request and response"
+              >
+                <TableCell className="py-2 text-xs text-muted-foreground">{i + 1}</TableCell>
+                <TableCell className="py-2 text-[13px] font-medium">
+                  {row.row_label ?? `Row ${i + 1}`}
+                </TableCell>
+                <TableCell className="py-2">
+                  <span
+                    className={`text-xs font-medium ${
+                      row.status === "passed" ? "text-success" : "text-destructive"
+                    }`}
+                  >
+                    {row.status}
+                  </span>
+                </TableCell>
+                <TableCell className="py-2">
+                  {row.response ? (
+                    <Badge
+                      variant={
+                        row.response.status >= 200 && row.response.status < 300
+                          ? "default"
+                          : "destructive"
+                      }
+                    >
+                      {row.response.status}
+                    </Badge>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+                <TableCell className="py-2 text-xs text-muted-foreground">
+                  {row.duration_ms}ms
+                </TableCell>
+                <TableCell className="max-w-0 truncate py-2 text-xs text-muted-foreground">
+                  {row.error_message ?? ""}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
