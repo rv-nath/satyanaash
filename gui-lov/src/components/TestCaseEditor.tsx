@@ -423,7 +423,7 @@ export const TestCaseEditor = ({
           assertion_script: postTestScript || undefined,
           pre_test_script: preTestScript || undefined,
           environment: effectiveEnvironment(),
-          // Send the current (possibly unsaved) rows so "Run all rows" reflects
+          // Send the current (possibly unsaved) rows so "Run dataset" reflects
           // what's on screen.
           dataset,
           all_rows: allRows,
@@ -567,14 +567,14 @@ export const TestCaseEditor = ({
               className="gap-2"
               onClick={() => handleRunTest(false)}
               disabled={executeMutation.isPending}
-              title="Runs the test as authored — data rows are ignored"
+              title="Runs the request as authored, with its pre/post-test scripts. The dataset is ignored."
             >
               {executeMutation.isPending ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <Play className="w-4 h-4" />
               )}
-              {executeMutation.isPending ? "Running..." : "Run Test"}
+              {executeMutation.isPending ? "Running..." : "Run request"}
             </Button>
           )}
           {!isCreateMode && dataset.rows.length > 0 && (
@@ -584,10 +584,10 @@ export const TestCaseEditor = ({
               className="gap-2"
               onClick={() => handleRunTest(true)}
               disabled={executeMutation.isPending}
-              title="Runs the request once per data row"
+              title="Runs the request once per row in the Data tab"
             >
               <Table2 className="w-4 h-4" />
-              Run all rows ({dataset.rows.length})
+              Run dataset ({dataset.rows.length})
             </Button>
           )}
           <Button
@@ -1064,7 +1064,7 @@ export const TestCaseEditor = ({
                   disabled={isCreateMode || executeMutation.isPending}
                 >
                   <Play className="w-4 h-4" />
-                  Run Test
+                  Run request
                 </Button>
                 {isCreateMode && (
                   <p className="text-xs text-muted-foreground mt-2">Save the test case first to run it</p>
@@ -1397,7 +1397,7 @@ export function DatasetResultView({
         </div>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" className="gap-1.5" onClick={onRerun} disabled={running}>
-            <Play className="h-3.5 w-3.5" /> Run all rows again
+            <Play className="h-3.5 w-3.5" /> Run dataset again
           </Button>
           <Button
             variant="ghost"

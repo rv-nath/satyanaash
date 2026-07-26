@@ -876,8 +876,11 @@ impl ExecutionEngine {
                         env_writes.insert(k, v);
                     }
                 }
+                // The script couldn't run at all — a defect in the test, not a
+                // failed check. Say so, and don't persist whatever it managed to
+                // write before throwing: half-captured values poison later runs.
                 Err(e) => bail!(
-                    format!("Assertion error: {}", e),
+                    format!("Post-test script could not run: {}", e),
                     Some(http_result.request),
                     Some(http_result.response)
                 ),

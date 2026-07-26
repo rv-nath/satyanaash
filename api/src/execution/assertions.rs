@@ -110,7 +110,8 @@ impl AssertionEngine {
         // expression isn't a verdict. The caller decides whether it needed one.
         let value = match self.engine.eval_with_scope::<Dynamic>(&mut scope, &rewritten) {
             Ok(v) => v,
-            Err(e) => return Err(AppError::AssertionError(format!("Assertion script error: {}", e))),
+            Err(e) => // Bare Rhai message; the caller says which script and what it means.
+                return Err(AppError::AssertionError(e.to_string())),
         };
         let passed = value.try_cast::<bool>();
 

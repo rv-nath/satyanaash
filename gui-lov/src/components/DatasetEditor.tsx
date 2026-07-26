@@ -193,8 +193,8 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
           A blank body falls back to the Request tab's body. Bodies are interpolated, so{" "}
           <code className="rounded bg-muted px-1 font-mono">{"{{baseUrl}}"}</code> and{" "}
           <code className="rounded bg-muted px-1 font-mono">{"{{$RandomEmail}}"}</code> work inside
-          them. <strong className="font-medium">Run Test</strong> ignores these cases and runs the
-          test as authored — use <strong className="font-medium">Run all rows</strong> to iterate.
+          them. <strong className="font-medium">Run request</strong> ignores these cases and runs the
+          request as authored — use <strong className="font-medium">Run dataset</strong> to iterate.
         </p>
       )}
     </div>
