@@ -32,21 +32,22 @@ export interface ExportVariable {
   json_path: string;
 }
 
-/** One iteration's inputs for data-driven testing. */
+/** One data-driven case: what to send, and what should come back. */
 export interface DataRow {
   id: string;
+  /** Human label for this case, shown in the results table. */
   name?: string | null;
-  /** Cell values keyed by column name. Always strings from the grid — the server
-   *  coerces e.g. "400" to a number before exposing it to scripts as data.*  */
-  values: Record<string, string>;
-  /** Overrides the test case's assertion for this row only. */
-  assertion?: string | null;
+  /** Body to send instead of the test case's payload. Still interpolated, so
+   *  {{variables}} work. Blank means "use the test case's payload". */
+  body?: string | null;
+  /** Status this row should return. A string so a blank field is simply
+   *  "not specified" rather than a parse error. */
+  expected_status?: string | null;
 }
 
-/** A table of input rows. Only "run all rows" iterates these; a plain run and
- *  any flow run ignore them. */
+/** A table of cases. Only "run all rows" iterates these; a plain run and any
+ *  flow run ignore them. */
 export interface Dataset {
-  columns: string[];
   rows: DataRow[];
 }
 

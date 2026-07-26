@@ -208,30 +208,34 @@ pub struct ExportVariable {
 }
 
 /// A table of input rows for data-driven testing: the same request run once per
-/// row. `columns` carries display order; each row's `values` is keyed by column
-/// name.
+/// row, each row supplying the body to send and the status it should return.
+///
+/// Deliberately not a spreadsheet of named columns — the author pastes exactly
+/// what goes on the wire, so there is no template-variable model to learn.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Dataset {
-    #[serde(default)]
-    pub columns: Vec<String>,
     #[serde(default)]
     pub rows: Vec<DataRow>,
 }
 
-/// One iteration's inputs, with an optional label and its own assertion override.
+/// One case: a label, the body to send, and the status expected back.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct DataRow {
     /// Stable client-side id (React keys). The server never interprets it.
     #[serde(default)]
     pub id: String,
+    /// Human label for this case, shown in the results table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Cell values keyed by column name.
-    #[serde(default)]
-    pub values: HashMap<String, serde_json::Value>,
-    /// Overrides the test case's assertion for this row only.
+    /// Body to send instead of the test case's payload. Still interpolated, so
+    /// {{variables}} and {{$Random...}} macros work inside it. Absent (or blank)
+    /// means "use the test case's payload".
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assertion: Option<String>,
+    pub body: Option<String>,
+    /// Status this row should return. Kept as a string so a blank field is simply
+    /// "not specified" rather than a parse error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_status: Option<String>,
 }
 
 impl Dataset {
@@ -247,6 +251,18 @@ impl Dataset {
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("Row {}", index + 1))
+    }
+}
+
+impl DataRow {
+    /// The body this row sends, or None to fall back to the test case's payload.
+    pub fn body_override(&self) -> Option<&str> {
+        self.body.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// The status this row expects, if a valid one was given.
+    pub fn expected_status_code(&self) -> Option<u16> {
+        self.expected_status.as_deref()?.trim().parse::<u16>().ok()
     }
 }
 
@@ -394,19 +410,24 @@ mod tests {
 
     #[test]
     fn test_dataset_json_roundtrip_tolerates_missing_fields() {
-        // The client may omit name/assertion entirely.
-        let json = r#"{"columns":["email"],"rows":[{"id":"r1","values":{"email":"a@b.c"}}]}"#;
+        // The client may omit body/expected_status entirely.
+        let json = r#"{"rows":[{"id":"r1","name":"empty body","body":"{}","expected_status":"400"}]}"#;
         let ds: Dataset = serde_json::from_str(json).unwrap();
-
-        assert_eq!(ds.columns, vec!["email"]);
         assert_eq!(ds.rows.len(), 1);
-        assert_eq!(ds.rows[0].name, None);
-        assert_eq!(ds.rows[0].assertion, None);
-        assert_eq!(ds.rows[0].values["email"], serde_json::json!("a@b.c"));
-        assert!(!ds.is_empty());
+        assert_eq!(ds.rows[0].body_override(), Some("{}"));
+        assert_eq!(ds.rows[0].expected_status_code(), Some(400));
 
-        // And an empty dataset round-trips as empty (how the UI clears one).
-        let empty: Dataset = serde_json::from_str(r#"{"columns":[],"rows":[]}"#).unwrap();
-        assert!(empty.is_empty());
+        let bare: Dataset = serde_json::from_str(r#"{"rows":[{"id":"r2"}]}"#).unwrap();
+        assert_eq!(bare.rows[0].body_override(), None);
+        assert_eq!(bare.rows[0].expected_status_code(), None);
+
+        // Blank or non-numeric entries read as "not specified" rather than failing.
+        let blank: Dataset =
+            serde_json::from_str(r#"{"rows":[{"id":"r3","body":"  ","expected_status":"abc"}]}"#)
+                .unwrap();
+        assert_eq!(blank.rows[0].body_override(), None);
+        assert_eq!(blank.rows[0].expected_status_code(), None);
+
+        assert!(serde_json::from_str::<Dataset>(r#"{"rows":[]}"#).unwrap().is_empty());
     }
 }

@@ -322,21 +322,20 @@ mod tests {
 
         let mut input = new_input("SignUp");
         input.dataset = Some(Dataset {
-            columns: vec!["email".into()],
             rows: vec![DataRow {
                 id: "r1".into(),
                 name: Some("missing email".into()),
-                values: [("email".to_string(), serde_json::json!(""))].into_iter().collect(),
-                assertion: Some("response.status == 400".into()),
+                body: Some(r#"{"mobile":"9876500001"}"#.into()),
+                expected_status: Some("400".into()),
             }],
         });
 
         let created = repo.create("p1", input).await.unwrap();
         let fetched = repo.get_by_id(&created.id).await.unwrap().unwrap();
         let ds = fetched.dataset.expect("dataset round-trips through the DB");
-        assert_eq!(ds.columns, vec!["email"]);
         assert_eq!(ds.rows[0].name.as_deref(), Some("missing email"));
-        assert_eq!(ds.rows[0].assertion.as_deref(), Some("response.status == 400"));
+        assert_eq!(ds.rows[0].body_override(), Some(r#"{"mobile":"9876500001"}"#));
+        assert_eq!(ds.rows[0].expected_status_code(), Some(400));
 
         // The UI clears a dataset by sending an empty one — it must not be
         // resurrected by the PATCH-style `.or(existing)` merge.

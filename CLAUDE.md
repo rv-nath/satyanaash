@@ -59,10 +59,37 @@ npm run dev        # Starts on http://localhost:8080
 - **Variable interpolation:** `{{variableName}}` in URLs, headers, payloads — resolved from execution context
 
 ## Variable Resolution Order (in execution)
-1. `execution_vars` (set by pre-test scripts)
-2. `environment` (project variables + request overrides)
-3. `context` (exports from previous test cases in flow)
-4. Built-ins (`__timestamp`, `__uuid`, `__random_*`)
+
+Defined by `ExecutionContext::resolve` in `api/src/execution/variables.rs`.
+**Lowest number wins** — the first tier that has the name is used.
+
+1. `row_vars` — the current data-driven row's cells (empty for a normal run)
+2. `execution_vars` — one-off values passed in the execute request
+3. `context` — exports from earlier test cases **and** `SAT.vars` set by scripts
+4. `node_input_vars` — per-node overrides set on the flow canvas
+5. `flow_vars` — variables scoped to a flow
+6. `environment` — Globals + the active Environment merged client-side (env wins);
+   `SAT.env` writes land here
+7. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
+   `generate_builtin`)
+
+## Data-Driven Testing
+
+A test case may carry a `dataset` (`{columns, rows}`, stored as JSON on
+`test_cases.dataset`). Each row supplies values for the columns and runs the
+request once.
+
+- A **column** is a variable name → usable as `{{column}}`; names must match
+  `[A-Za-z_]\w*` or interpolation silently won't resolve them.
+- Cells are interpolated, then JSON-coerced (`"400"` → number), so a shared
+  assertion can compare `response.status == data.expected_status`.
+- Scripts read the row as `data.<column>` (`SAT.data.` is rewritten to `data.`).
+- Assertion per row: the row's own `assertion` → else the test case's
+  `assertion_script` → else the built-in 2xx check.
+- **Flows and a plain "Run Test" ignore the dataset entirely** — the test case as
+  authored is the primary test. Only `all_rows: true` iterates
+  (`execute_test_case_dataset`), returning one aggregate `NodeResult` whose
+  `iterations` holds the per-row results.
 
 ## Conventions
 - Commit messages: `feat:`, `fix:`, `chore:` prefixes

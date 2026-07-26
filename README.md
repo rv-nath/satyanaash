@@ -25,6 +25,7 @@ exports for chaining, and Rhai scripting throughout.
 - [Variables & interpolation](#variables--interpolation)
 - [Pre-test scripts](#pre-test-scripts)
 - [Assertions (post-test)](#assertions-post-test)
+- [Data-driven testing](#data-driven-testing)
 - [Exports — chaining values](#exports--chaining-values)
 - [Script variables](#script-variables)
 - [Building a flow](#building-a-flow)
@@ -96,6 +97,8 @@ Open the app, create a **Project**, and start adding test cases and flows.
   later test cases in a flow.
 - **Script variables** — pre/post-test scripts set `SAT.vars.x` (temporary, this
   run) or `SAT.env.x` (persisted to the active environment). (See below.)
+- **Dataset** — a table of input rows on a test case, run once per row, for
+  covering many inputs (negative and edge cases) without building a flow.
 
 ---
 
@@ -158,12 +161,13 @@ value. Resolution walks these tiers **top-to-bottom and stops at the first match
 
 | Priority | Tier | Where it comes from |
 |:--:|------|---------------------|
-| 1 | **Execution vars** | one-off values passed into a run |
-| 2 | **Context** | exports from earlier test cases + `SAT.vars` from scripts (this run) |
-| 3 | Node input vars | per-node overrides set on the flow canvas |
-| 4 | Flow vars | variables scoped to a flow |
-| 5 | **Environment** | active Environment layered over Globals (env wins); `SAT.env` writes land here |
-| 6 | **Built-ins** | generated values (below) |
+| 1 | **Data row** | the current row's cells in a data-driven run (see below) |
+| 2 | **Execution vars** | one-off values passed into a run |
+| 3 | **Context** | exports from earlier test cases + `SAT.vars` from scripts (this run) |
+| 4 | Node input vars | per-node overrides set on the flow canvas |
+| 5 | Flow vars | variables scoped to a flow |
+| 6 | **Environment** | active Environment layered over Globals (env wins); `SAT.env` writes land here |
+| 7 | **Built-ins** | generated values (below) |
 
 ### Built-in variables
 

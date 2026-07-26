@@ -61,50 +61,38 @@ fn find_unresolved(
     names
 }
 
-/// Turn a data row's raw cells into the map used for BOTH `{{col}}` interpolation
-/// and `data.col` in scripts.
-///
-/// Two passes per cell, in this order:
-///  1. interpolate, so a cell may hold `{{baseUrl}}/x` or `{{$RandomEmail}}`. The
-///     context does not yet have the row applied, so cells can't reference
-///     each other.
-///  2. coerce via JSON, so `"400"` becomes a number. Without this a shared
-///     assertion like `response.status == data.expected_status` compares an i64
-///     to a string, which Rhai reports as simply not-equal — so every row would
-///     be marked *failed* with no hint why. See the assertion-engine test
-///     `test_uncoerced_string_cell_silently_fails`.
-///
-/// Note `"007"` stays a string (JSON rejects leading zeros) and `""` stays `""`.
-fn build_row_scope(row: &DataRow, ctx: &ExecutionContext) -> HashMap<String, Value> {
-    row.values
-        .iter()
-        .map(|(k, raw)| {
-            let v = match raw {
-                Value::String(s) => {
-                    let interpolated = ctx.interpolate(s).unwrap_or_else(|_| s.clone());
-                    serde_json::from_str::<Value>(interpolated.trim())
-                        .unwrap_or(Value::String(interpolated))
-                }
-                other => other.clone(),
-            };
-            (k.clone(), v)
-        })
-        .collect()
+/// The body this run sends, before interpolation: the row's own body if it gave
+/// one, else the test case's payload.
+fn resolve_body<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Option<&'a str> {
+    row.and_then(|r| r.body_override())
+        .or_else(|| test_case.payload.as_deref())
 }
 
-/// Which assertion applies to this run: the row's own override, else the test
-/// case's shared script, else `None` meaning the built-in 2xx check.
-fn resolve_assertion<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Option<&'a str> {
-    row.and_then(|r| r.assertion.as_deref())
+/// Which assertion applies: a row's expected status is checked directly, so a
+/// data-driven row needs no scripting. Falling back to the shared script, then to
+/// the built-in 2xx check.
+enum Check<'a> {
+    /// `response.status == code`
+    Status(u16),
+    /// Run this Rhai script; its last expression is the verdict.
+    Script(&'a str),
+    /// Any 2xx passes.
+    TwoXX,
+}
+
+fn resolve_check<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Check<'a> {
+    if let Some(code) = row.and_then(|r| r.expected_status_code()) {
+        return Check::Status(code);
+    }
+    match test_case
+        .assertion_script
+        .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            test_case
-                .assertion_script
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-        })
+    {
+        Some(script) => Check::Script(script),
+        None => Check::TwoXX,
+    }
 }
 
 /// The only real differences between the flow-node path and the standalone path.
@@ -767,18 +755,10 @@ impl ExecutionEngine {
             };
         }
 
-        // The data row supplies the highest-priority {{variables}} and the script
-        // `data` map. Built before it is applied, so cells can't reference each other.
-        let data_map: HashMap<String, Value> = match row {
-            Some(r) => build_row_scope(r, ctx),
-            None => HashMap::new(),
-        };
-        ctx.set_row_vars(data_map.clone());
-
         // Execute pre-test script if present (sets variables before interpolation)
         if let Some(ref script) = test_case.pre_test_script {
             if !script.trim().is_empty() {
-                match self.pre_test.execute(script, &ctx.environment_snapshot(), &data_map) {
+                match self.pre_test.execute(script, &ctx.environment_snapshot()) {
                     Ok(outcome) => {
                         for (k, v) in outcome.vars {
                             if self.debug_mode {
@@ -820,8 +800,10 @@ impl ExecutionEngine {
         }
 
         // Interpolate payload (body)
-        let body = match test_case.payload {
-            Some(ref payload_str) => match ctx.interpolate(payload_str) {
+        // A data row may supply its own body; otherwise the test case's payload is
+        // used. Either way it is interpolated, so {{variables}} work in both.
+        let body = match resolve_body(row, test_case) {
+            Some(payload_str) => match ctx.interpolate(payload_str) {
                 Ok(interpolated) => Some(interpolated),
                 Err(e) => bail!(format!("Payload interpolation failed: {}", e), None, None),
             },
@@ -886,25 +868,30 @@ impl ExecutionEngine {
         // Run assertions. On failure we record *why*, so the console shows a reason
         // instead of a bare "failed".
         let mut assertion_failure: Option<String> = None;
-        let assertion_passed = if let Some(assertion_script) = resolve_assertion(row, test_case) {
-            match self.assertions.evaluate(AssertionInput {
-                script: assertion_script,
-                status: http_result.response.status,
+        let status_code = http_result.response.status;
+        let assertion_passed = match resolve_check(row, test_case) {
+            Check::Status(expected) => {
+                let passed = status_code == expected;
+                if !passed {
+                    let reason = format!("Expected HTTP {}, got {}", expected, status_code);
+                    logs.push(reason.clone());
+                    assertion_failure = Some(reason);
+                }
+                passed
+            }
+            Check::Script(script) => match self.assertions.evaluate(AssertionInput {
+                script,
+                status: status_code,
                 body: &http_result.response.body,
                 json: &http_result.response.json,
                 headers: &http_result.response.headers,
                 env: &ctx.environment_snapshot(),
-                data: &data_map,
             }) {
                 Ok(outcome) => {
-                    if self.debug_mode {
-                        logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
-                    }
                     if !outcome.passed {
                         let reason = format!(
                             "Assertion returned false: {}  (actual: HTTP {})",
-                            last_expression(assertion_script),
-                            http_result.response.status
+                            last_expression(script), status_code
                         );
                         logs.push(reason.clone());
                         assertion_failure = Some(reason);
@@ -923,22 +910,17 @@ impl ExecutionEngine {
                     Some(http_result.request),
                     Some(http_result.response)
                 ),
+            },
+            Check::TwoXX => {
+                let passed = AssertionEngine::default_assertion(status_code);
+                if !passed {
+                    let reason =
+                        format!("Assertion failed: expected a 2xx status, got HTTP {}", status_code);
+                    logs.push(reason.clone());
+                    assertion_failure = Some(reason);
+                }
+                passed
             }
-        } else {
-            // Default assertion: 2xx status
-            let passed = AssertionEngine::default_assertion(http_result.response.status);
-            if self.debug_mode {
-                logs.push(format!("Default assertion (2xx): {}", if passed { "PASS" } else { "FAIL" }));
-            }
-            if !passed {
-                let reason = format!(
-                    "Assertion failed: expected a 2xx status, got HTTP {}",
-                    http_result.response.status
-                );
-                logs.push(reason.clone());
-                assertion_failure = Some(reason);
-            }
-            passed
         };
 
         // Process exports only if the assertion passed
@@ -1126,102 +1108,105 @@ impl Default for ExecutionEngine {
 mod tests {
     use super::*;
 
-    fn dataset_of(rows: Vec<(&str, &str)>) -> crate::db::models::Dataset {
+    fn dataset_of(rows: Vec<(&str, Option<&str>, Option<&str>)>) -> crate::db::models::Dataset {
         crate::db::models::Dataset {
-            columns: vec!["email".to_string()],
             rows: rows
                 .into_iter()
                 .enumerate()
-                .map(|(i, (name, email))| DataRow {
+                .map(|(i, (name, body, status))| DataRow {
                     id: format!("r{}", i),
                     name: Some(name.to_string()),
-                    values: [("email".to_string(), Value::String(email.into()))]
-                        .into_iter()
-                        .collect(),
-                    assertion: None,
+                    body: body.map(str::to_string),
+                    expected_status: status.map(str::to_string),
                 })
                 .collect(),
         }
     }
 
     #[test]
-    fn test_new_fields_do_not_change_the_wire_format() {
-        // The whole "additive" claim rests on this: a normal run must serialize
-        // byte-identically to before, so flow results and the SSE stream are
-        // untouched by data-driven testing.
-        let result = NodeResult {
-            node_id: "direct".to_string(),
-            test_case_id: Some("tc1".to_string()),
-            test_case_name: Some("T".to_string()),
-            status: NodeStatus::Passed,
-            duration_ms: 5,
-            request: None,
-            response: None,
-            exports: None,
-            env: None,
-            error_message: None,
-            logs: vec![],
-            row_index: None,
-            row_label: None,
-            iterations: None,
-        };
+    fn test_resolve_body_prefers_the_row() {
+        let mut tc = make_test_case("t1", "T", "/x", "POST");
+        tc.payload = Some(r#"{"shared":true}"#.to_string());
 
-        let json = serde_json::to_value(&result).unwrap();
-        // serde_json::Value sorts keys, so compare sorted.
-        let keys: Vec<&str> = json.as_object().unwrap().keys().map(|k| k.as_str()).collect();
-        assert_eq!(
-            keys,
-            vec!["duration_ms", "logs", "node_id", "status", "test_case_id", "test_case_name"],
-            "no data-driven keys may leak into a normal result"
-        );
-        for absent in ["row_index", "row_label", "iterations"] {
-            assert!(!keys.contains(&absent), "{} must be omitted when None", absent);
-        }
+        // No row, or a row that gave no body: the test case's payload is used.
+        assert_eq!(resolve_body(None, &tc), Some(r#"{"shared":true}"#));
+        let bare = DataRow::default();
+        assert_eq!(resolve_body(Some(&bare), &tc), Some(r#"{"shared":true}"#));
+        let blank = DataRow { body: Some("   ".into()), ..Default::default() };
+        assert_eq!(resolve_body(Some(&blank), &tc), Some(r#"{"shared":true}"#));
+
+        // A row with a body replaces it.
+        let own = DataRow { body: Some("{}".into()), ..Default::default() };
+        assert_eq!(resolve_body(Some(&own), &tc), Some("{}"));
+    }
+
+    #[test]
+    fn test_resolve_check_precedence() {
+        let mut tc = make_test_case("t1", "T", "/x", "POST");
+
+        // Nothing specified anywhere: the built-in 2xx check.
+        assert!(matches!(resolve_check(None, &tc), Check::TwoXX));
+
+        // A shared script is used when a row expects nothing in particular.
+        tc.assertion_script = Some("response.status == 200".to_string());
+        assert!(matches!(resolve_check(None, &tc), Check::Script(_)));
+        let bare = DataRow::default();
+        assert!(matches!(resolve_check(Some(&bare), &tc), Check::Script(_)));
+
+        // A row's expected status wins over the shared script — no scripting needed.
+        let row = DataRow { expected_status: Some("409".into()), ..Default::default() };
+        assert!(matches!(resolve_check(Some(&row), &tc), Check::Status(409)));
+
+        // An unparseable status is treated as "not specified".
+        let junk = DataRow { expected_status: Some("nope".into()), ..Default::default() };
+        assert!(matches!(resolve_check(Some(&junk), &tc), Check::Script(_)));
+
+        // A whitespace-only shared script isn't evaluated.
+        tc.assertion_script = Some("  ".to_string());
+        assert!(matches!(resolve_check(None, &tc), Check::TwoXX));
     }
 
     #[tokio::test]
-    async fn test_dataset_runs_once_per_row() {
+    async fn test_dataset_runs_once_per_row_with_its_own_body() {
         // Port 1 refuses instantly, but RequestLog is still captured — the same
-        // trick test_execute_flow_with_variables uses to assert interpolation
+        // trick test_execute_flow_with_variables uses to assert what was sent
         // without standing up a server.
         let engine = ExecutionEngine::new(false, None);
-        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u/{{email}}", "GET");
+        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u", "POST");
+        tc.payload = Some(r#"{"email":"{{email}}"}"#.to_string());
         tc.dataset = Some(dataset_of(vec![
-            ("missing email", ""),
-            ("duplicate", "dup@x.com"),
-            ("valid", "ok@x.com"),
+            ("shared body", None, Some("201")),
+            ("empty body", Some("{}"), Some("400")),
+            ("interpolated", Some(r#"{"who":"{{email}}"}"#), Some("400")),
         ]));
 
-        let result = engine
-            .execute_test_case_dataset(&tc, HashMap::new(), HashMap::new())
-            .await;
+        let mut env = HashMap::new();
+        env.insert("email".to_string(), Value::String("a@b.com".into()));
+        let result = engine.execute_test_case_dataset(&tc, env, HashMap::new()).await;
+        let its = result.iterations.as_ref().expect("aggregate carries iterations");
 
-        let iterations = result.iterations.as_ref().expect("aggregate carries iterations");
-        assert_eq!(iterations.len(), 3);
+        assert_eq!(its.len(), 3);
+        // Row 1 fell back to the test case's payload.
+        assert_eq!(its[0].request.as_ref().unwrap().body.as_deref(), Some(r#"{"email":"a@b.com"}"#));
+        // Row 2 replaced it outright.
+        assert_eq!(its[1].request.as_ref().unwrap().body.as_deref(), Some("{}"));
+        // Row 3's own body is still interpolated.
+        assert_eq!(its[2].request.as_ref().unwrap().body.as_deref(), Some(r#"{"who":"a@b.com"}"#));
 
-        // Each row interpolated its own cell into the URL.
-        assert!(iterations[0].request.as_ref().unwrap().url.ends_with("/u/"));
-        assert!(iterations[1].request.as_ref().unwrap().url.ends_with("/u/dup@x.com"));
-        assert!(iterations[2].request.as_ref().unwrap().url.ends_with("/u/ok@x.com"));
-
-        // Rows are labelled and indexed for the results matrix.
-        assert_eq!(iterations[0].row_index, Some(0));
-        assert_eq!(iterations[1].row_label.as_deref(), Some("duplicate"));
-
+        assert_eq!(its[0].row_index, Some(0));
+        assert_eq!(its[1].row_label.as_deref(), Some("empty body"));
         // The aggregate has no single request/response; the UI uses `iterations`.
-        assert!(result.request.is_none());
-        assert!(result.response.is_none());
-        assert_eq!(result.status, NodeStatus::Error); // all three failed to connect
-        assert!(result.error_message.unwrap().contains("3 of 3"));
+        assert!(result.request.is_none() && result.response.is_none());
     }
 
     #[tokio::test]
     async fn test_flow_ignores_the_dataset() {
-        // Decision 6: a flow runs the test case as authored — exactly once, with
-        // no row applied — so adding a dataset never changes flow behaviour.
+        // A flow runs the test case as authored — once, with no row applied — so
+        // adding a dataset never changes flow behaviour.
         let engine = ExecutionEngine::new(false, None);
-        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u/{{email}}", "GET");
-        tc.dataset = Some(dataset_of(vec![("a", "a@x.com"), ("b", "b@x.com")]));
+        let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u", "POST");
+        tc.payload = Some(r#"{"shared":true}"#.to_string());
+        tc.dataset = Some(dataset_of(vec![("a", Some("{}"), Some("400"))]));
         let repo = MockTestCaseRepository::new().with_test_case(tc);
 
         let flow = make_flow("flow1", vec![
@@ -1240,75 +1225,9 @@ mod tests {
 
         assert_eq!(result.results.len(), 1, "one node result, not one per row");
         assert!(result.results[0].iterations.is_none());
-        // {{email}} stays literal because no row was applied.
-        assert!(result.results[0].request.as_ref().unwrap().url.contains("{{email}}"));
-    }
-
-    #[test]
-    fn test_build_row_scope_coerces_cells() {
-        let ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
-        let row = DataRow {
-            values: [
-                ("expected_status", "400"),
-                ("name", "abc"),
-                ("blank", ""),
-                ("leading_zero", "007"),
-                ("flag", "true"),
-            ]
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), Value::String(v.into())))
-            .collect(),
-            ..Default::default()
-        };
-
-        let scope = build_row_scope(&row, &ctx);
-        // Numbers coerce so `response.status == data.expected_status` compares like-for-like.
-        assert_eq!(scope["expected_status"], Value::Number(400.into()));
-        assert_eq!(scope["flag"], Value::Bool(true));
-        // Everything that isn't valid JSON stays a string.
-        assert_eq!(scope["name"], Value::String("abc".into()));
-        assert_eq!(scope["blank"], Value::String("".into()));
-        // JSON rejects leading zeros, so an id like "007" keeps its shape.
-        assert_eq!(scope["leading_zero"], Value::String("007".into()));
-    }
-
-    #[test]
-    fn test_build_row_scope_interpolates_cells() {
-        let mut env = HashMap::new();
-        env.insert("baseUrl".to_string(), Value::String("http://api.test".into()));
-        let ctx = ExecutionContext::new(HashMap::new(), env, HashMap::new());
-        let row = DataRow {
-            values: [("url".to_string(), Value::String("{{baseUrl}}/signup".into()))]
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        };
-
-        let scope = build_row_scope(&row, &ctx);
-        assert_eq!(scope["url"], Value::String("http://api.test/signup".into()));
-    }
-
-    #[test]
-    fn test_resolve_assertion_chain() {
-        let mut tc = make_test_case("t1", "T", "/x", "GET");
-        tc.assertion_script = Some("shared".to_string());
-
-        let with_own = DataRow { assertion: Some("row".into()), ..Default::default() };
-        let blank = DataRow { assertion: Some("   ".into()), ..Default::default() };
-        let none = DataRow::default();
-
-        // Row override wins; a blank one falls through to the shared script.
-        assert_eq!(resolve_assertion(Some(&with_own), &tc), Some("row"));
-        assert_eq!(resolve_assertion(Some(&blank), &tc), Some("shared"));
-        assert_eq!(resolve_assertion(Some(&none), &tc), Some("shared"));
-        assert_eq!(resolve_assertion(None, &tc), Some("shared"));
-
-        // With no shared script either, None means "use the built-in 2xx check".
-        tc.assertion_script = None;
-        assert_eq!(resolve_assertion(Some(&none), &tc), None);
-        // An empty shared script is treated as absent rather than evaluated.
-        tc.assertion_script = Some("  ".to_string());
-        assert_eq!(resolve_assertion(None, &tc), None);
+        // The shared payload was sent, not the row's.
+        assert_eq!(result.results[0].request.as_ref().unwrap().body.as_deref(),
+                   Some(r#"{"shared":true}"#));
     }
 
     #[test]

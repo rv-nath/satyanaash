@@ -34,8 +34,6 @@ pub struct AssertionInput<'a> {
     pub headers: &'a HashMap<String, String>,
     /// Current environment, readable and writable as `SAT.env.*`.
     pub env: &'a HashMap<String, Value>,
-    /// Current data row, readable as `data.*`. Empty for a normal run.
-    pub data: &'a HashMap<String, Value>,
 }
 
 /// Assertion engine using Rhai for script evaluation
@@ -66,7 +64,7 @@ impl AssertionEngine {
     /// The last expression is the pass/fail boolean; `SAT.env.x = …` writes are
     /// captured as side-effects (applied even when the assertion returns false).
     pub fn evaluate(&self, input: AssertionInput<'_>) -> Result<AssertionOutcome, AppError> {
-        let AssertionInput { script, status, body, json, headers, env: env_in, data } = input;
+        let AssertionInput { script, status, body, json, headers, env: env_in } = input;
         let mut scope = Scope::new();
 
         // Build response object
@@ -99,18 +97,10 @@ impl AssertionEngine {
         // `vars` — a fresh mutable map for transient (this-run) values
         scope.push("vars", Map::new());
 
-        // `data` is the current data row — read-only by convention, never read back.
-        let mut data_map = Map::new();
-        for (k, v) in data {
-            data_map.insert(k.as_str().into(), json_to_rhai(v));
-        }
-        scope.push("data", data_map);
-
         // Rewrite SAT.env. → env., SAT.vars. → vars., SAT.data. → data.
         let rewritten = script
             .replace("SAT.env.", "env.")
-            .replace("SAT.vars.", "vars.")
-            .replace("SAT.data.", "data.");
+            .replace("SAT.vars.", "vars.");
 
         // Evaluate: last expression is the pass/fail boolean; var/env writes are side-effects
         let passed = match self.engine.eval_with_scope::<bool>(&mut scope, &rewritten) {
@@ -224,7 +214,6 @@ mod tests {
             json: &None,
             headers: &headers,
             env: &HashMap::new(),
-            data: &HashMap::new(),
         }).unwrap().passed;
         assert!(result);
 
@@ -235,7 +224,6 @@ mod tests {
             json: &None,
             headers: &headers,
             env: &HashMap::new(),
-            data: &HashMap::new(),
         }).unwrap().passed;
         assert!(!result);
     }
@@ -253,7 +241,6 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-            data: &HashMap::new(),
         }).unwrap().passed;
         assert!(result);
 
@@ -264,7 +251,6 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-            data: &HashMap::new(),
         }).unwrap().passed;
         assert!(result);
     }
@@ -282,7 +268,6 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-            data: &HashMap::new(),
         }).unwrap().passed;
         assert!(result);
     }
@@ -300,7 +285,6 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-            data: &HashMap::new(),
         }).unwrap().passed;
         assert!(result);
     }
@@ -318,70 +302,8 @@ mod tests {
             json: &json,
             headers: &headers,
             env: &HashMap::new(),
-            data: &HashMap::new(),
         }).unwrap().passed;
         assert!(result);
-    }
-
-    fn data_of(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
-    }
-
-    #[test]
-    fn test_data_scope_readable() {
-        let engine = AssertionEngine::new();
-        let outcome = engine
-            .evaluate(AssertionInput {
-                script: "response.status == data.expected_status",
-                status: 400,
-                body: "",
-                json: &None,
-                headers: &HashMap::new(),
-                env: &HashMap::new(),
-                data: &data_of(&[("expected_status", Value::Number(400.into()))]),
-            })
-            .unwrap();
-        assert!(outcome.passed);
-    }
-
-    #[test]
-    fn test_sat_data_prefix_is_rewritten() {
-        let engine = AssertionEngine::new();
-        let outcome = engine
-            .evaluate(AssertionInput {
-                script: "SAT.data.expected_status == 409",
-                status: 409,
-                body: "",
-                json: &None,
-                headers: &HashMap::new(),
-                env: &HashMap::new(),
-                data: &data_of(&[("expected_status", Value::Number(409.into()))]),
-            })
-            .unwrap();
-        assert!(outcome.passed);
-    }
-
-    #[test]
-    fn test_uncoerced_string_cell_silently_fails() {
-        // Pins down why engine::build_row_scope coerces cells. Rhai compares an
-        // i64 to a string as simply NOT EQUAL — it returns false rather than
-        // erroring. So without coercion `response.status == data.expected_status`
-        // would report every data row as *failed* with no hint why, which is far
-        // more confusing than an error. Do not "simplify" the coercion away.
-        let engine = AssertionEngine::new();
-        let result = engine.evaluate(AssertionInput {
-            script: "response.status == data.expected_status",
-            status: 400,
-            body: "",
-            json: &None,
-            headers: &HashMap::new(),
-            env: &HashMap::new(),
-            data: &data_of(&[("expected_status", Value::String("400".into()))]),
-        });
-        assert!(
-            !result.expect("Rhai does not error here — it just says not-equal").passed,
-            "an uncoerced \"400\" must not compare equal to 400"
-        );
     }
 
     #[test]
