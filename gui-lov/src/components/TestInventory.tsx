@@ -257,6 +257,7 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
           exports: tc.exports,
           assertion_script: tc.assertion_script ?? undefined,
           pre_test_script: tc.pre_test_script ?? undefined,
+          dataset: tc.dataset ?? undefined,
         },
       },
       {

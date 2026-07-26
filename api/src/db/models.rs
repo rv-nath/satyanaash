@@ -169,6 +169,11 @@ pub struct TestCase {
     // Pre-test script (Rhai, executed before HTTP request)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_test_script: Option<String>,
+    // Data-driven rows. Only the explicit "run all rows" action iterates these;
+    // a plain run and any flow run ignore them (the test case as authored is the
+    // primary test).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset: Option<Dataset>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -202,6 +207,49 @@ pub struct ExportVariable {
     pub json_path: String, // JSONPath expression (e.g., "$.data.token")
 }
 
+/// A table of input rows for data-driven testing: the same request run once per
+/// row. `columns` carries display order; each row's `values` is keyed by column
+/// name.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct Dataset {
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub rows: Vec<DataRow>,
+}
+
+/// One iteration's inputs, with an optional label and its own assertion override.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct DataRow {
+    /// Stable client-side id (React keys). The server never interprets it.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Cell values keyed by column name.
+    #[serde(default)]
+    pub values: HashMap<String, serde_json::Value>,
+    /// Overrides the test case's assertion for this row only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertion: Option<String>,
+}
+
+impl Dataset {
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Label for a row in result tables and log prefixes.
+    pub fn label_for(index: usize, row: &DataRow) -> String {
+        row.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Row {}", index + 1))
+    }
+}
+
 /// Create test case request
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateTestCase {
@@ -229,6 +277,8 @@ pub struct CreateTestCase {
     pub assertion_script: Option<String>,
     #[serde(default)]
     pub pre_test_script: Option<String>,
+    #[serde(default)]
+    pub dataset: Option<Dataset>,
 }
 
 /// Update test case request
@@ -261,6 +311,8 @@ pub struct UpdateTestCase {
     pub assertion_script: Option<String>,
     #[serde(default)]
     pub pre_test_script: Option<String>,
+    #[serde(default)]
+    pub dataset: Option<Dataset>,
 }
 
 // =============================================================================
@@ -323,4 +375,38 @@ fn default_page() -> u32 {
 
 fn default_per_page() -> u32 {
     20
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dataset_label_falls_back_to_row_number() {
+        let named = DataRow { name: Some("missing email".into()), ..Default::default() };
+        let blank = DataRow { name: Some("   ".into()), ..Default::default() };
+        let none = DataRow::default();
+
+        assert_eq!(Dataset::label_for(0, &named), "missing email");
+        assert_eq!(Dataset::label_for(1, &blank), "Row 2");
+        assert_eq!(Dataset::label_for(2, &none), "Row 3");
+    }
+
+    #[test]
+    fn test_dataset_json_roundtrip_tolerates_missing_fields() {
+        // The client may omit name/assertion entirely.
+        let json = r#"{"columns":["email"],"rows":[{"id":"r1","values":{"email":"a@b.c"}}]}"#;
+        let ds: Dataset = serde_json::from_str(json).unwrap();
+
+        assert_eq!(ds.columns, vec!["email"]);
+        assert_eq!(ds.rows.len(), 1);
+        assert_eq!(ds.rows[0].name, None);
+        assert_eq!(ds.rows[0].assertion, None);
+        assert_eq!(ds.rows[0].values["email"], serde_json::json!("a@b.c"));
+        assert!(!ds.is_empty());
+
+        // And an empty dataset round-trips as empty (how the UI clears one).
+        let empty: Dataset = serde_json::from_str(r#"{"columns":[],"rows":[]}"#).unwrap();
+        assert!(empty.is_empty());
+    }
 }

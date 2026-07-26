@@ -32,6 +32,24 @@ export interface ExportVariable {
   json_path: string;
 }
 
+/** One iteration's inputs for data-driven testing. */
+export interface DataRow {
+  id: string;
+  name?: string | null;
+  /** Cell values keyed by column name. Always strings from the grid — the server
+   *  coerces e.g. "400" to a number before exposing it to scripts as data.*  */
+  values: Record<string, string>;
+  /** Overrides the test case's assertion for this row only. */
+  assertion?: string | null;
+}
+
+/** A table of input rows. Only "run all rows" iterates these; a plain run and
+ *  any flow run ignore them. */
+export interface Dataset {
+  columns: string[];
+  rows: DataRow[];
+}
+
 export interface TestCase {
   id: string;
   project_id: string;
@@ -47,6 +65,7 @@ export interface TestCase {
   exports: ExportVariable[];
   assertion_script: string | null;
   pre_test_script: string | null;
+  dataset?: Dataset | null;
   created_at: string;
   updated_at: string;
 }
@@ -64,6 +83,9 @@ export interface CreateTestCaseRequest {
   exports?: ExportVariable[];
   assertion_script?: string;
   pre_test_script?: string;
+  /** Always send this (even empty) — the backend PATCH merge keeps the existing
+   *  dataset when the field is absent, which would make clearing impossible. */
+  dataset?: Dataset;
 }
 
 export interface UpdateTestCaseRequest {
@@ -79,6 +101,9 @@ export interface UpdateTestCaseRequest {
   exports?: ExportVariable[];
   assertion_script?: string;
   pre_test_script?: string;
+  /** Always send this (even empty) — the backend PATCH merge keeps the existing
+   *  dataset when the field is absent, which would make clearing impossible. */
+  dataset?: Dataset;
 }
 
 export interface TestGroup {

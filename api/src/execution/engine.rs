@@ -1007,6 +1007,7 @@ mod tests {
             exports: vec![],
             assertion_script: None,
             pre_test_script: None,
+            dataset: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -1309,6 +1310,7 @@ mod tests {
             exports: vec![],
             assertion_script: Some("response.status == 200".to_string()),
             pre_test_script: None,
+            dataset: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1371,6 +1373,7 @@ mod tests {
             ],
             assertion_script: None,
             pre_test_script: None,
+            dataset: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1417,6 +1420,7 @@ mod tests {
             ],
             assertion_script: None,
             pre_test_script: None,
+            dataset: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
@@ -1447,6 +1451,7 @@ mod tests {
             exports: vec![], // No exports
             assertion_script: None,
             pre_test_script: None,
+            dataset: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
