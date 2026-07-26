@@ -62,21 +62,70 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
       </div>
 
       {columns.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
-          No data rows. Add a column to start.
+        // Teach the model rather than just saying "empty" — a column is a
+        // variable name, a row is one run.
+        <div className="rounded-lg border border-dashed border-border p-6">
+          <p className="text-[13px] font-medium text-foreground">
+            A <span className="text-primary">column</span> is a variable, a{" "}
+            <span className="text-primary">row</span> is one run.
+          </p>
+          <p className="mt-1 max-w-2xl text-[13px] text-muted-foreground">
+            Add a column per value that changes, then a row per case. Each row sends the request
+            once, substituting its own values.
+          </p>
+
+          <div className="mt-4 overflow-x-auto">
+            <table className="text-[12px]">
+              <thead>
+                <tr className="text-muted-foreground">
+                  <th className="px-2 py-1 text-left font-medium">Case</th>
+                  <th className="px-2 py-1 text-left font-mono font-medium">email</th>
+                  <th className="px-2 py-1 text-left font-mono font-medium">expected_status</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono text-muted-foreground">
+                <tr className="border-t border-border/60">
+                  <td className="px-2 py-1 font-sans">missing email</td>
+                  <td className="px-2 py-1 italic opacity-60">(blank)</td>
+                  <td className="px-2 py-1">400</td>
+                </tr>
+                <tr className="border-t border-border/60">
+                  <td className="px-2 py-1 font-sans">valid</td>
+                  <td className="px-2 py-1">a@b.com</td>
+                  <td className="px-2 py-1">201</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p className="mt-4 max-w-2xl text-[12px] leading-relaxed text-muted-foreground">
+            Use <code className="rounded bg-muted px-1 font-mono">{"{{email}}"}</code> in the
+            request, and read any column in a check as{" "}
+            <code className="rounded bg-muted px-1 font-mono">data.expected_status</code>. A column
+            need not be sent anywhere — <code className="rounded bg-muted px-1 font-mono">expected_status</code>{" "}
+            exists only for the check.
+          </p>
+
+          <Button variant="outline" size="sm" className="mt-4 gap-1.5" onClick={() => onChange(addColumn(dataset))}>
+            <Plus className="h-3.5 w-3.5" /> Add the first column
+          </Button>
         </div>
       ) : (
         <div className="min-w-0 overflow-x-auto">
           <div className="min-w-max space-y-1.5">
-            {/* Column headers double as rename inputs */}
-            <div className="grid items-center gap-2" style={{ gridTemplateColumns: gridCols }}>
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            {/* Header band: the column NAMES. Tinted and borderless so it reads
+                as a header you may edit, not as another data row. */}
+            <div
+              className="grid items-center gap-2 rounded-t-md border-b-2 border-border bg-muted/50 px-1 py-1.5"
+              style={{ gridTemplateColumns: gridCols }}
+            >
+              <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Case
               </span>
               {columns.map((col) => {
                 const valid = isValidColumnName(col);
                 return (
-                  <div key={col} className="flex items-center gap-1">
+                  <div key={col} className="group flex items-center gap-1">
                     <Input
                       defaultValue={col}
                       onBlur={(e) => {
@@ -84,10 +133,12 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                         if (next && next !== col) onChange(renameColumn(dataset, col, next));
                         else e.target.value = col;
                       }}
-                      className={`h-8 font-mono text-xs ${valid ? "" : "border-destructive text-destructive"}`}
+                      className={`h-7 border-transparent bg-transparent px-2 font-mono text-xs font-semibold shadow-none hover:border-input focus-visible:border-input ${
+                        valid ? "" : "border-destructive text-destructive"
+                      }`}
                       title={
                         valid
-                          ? `Used as {{${col}}}`
+                          ? `Sent as {{${col}}} — click to rename`
                           : "Only letters, digits and _ (not starting with a digit) work as {{variables}}"
                       }
                     />
@@ -95,7 +146,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+                      className="h-6 w-6 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
                       onClick={() => onChange(removeColumn(dataset, col))}
                       aria-label={`Remove column ${col}`}
                       title={`Remove column "${col}"`}

@@ -14,19 +14,41 @@ function seed(): Dataset {
 }
 
 describe("DatasetEditor", () => {
-  it("prompts to add a column when empty", () => {
+  it("teaches the column/row model when empty", () => {
+    // An empty grid should explain the model, not just say "empty".
     render(<DatasetEditor dataset={emptyDataset()} onChange={vi.fn()} />);
-    expect(screen.getByText(/add a column to start/i)).toBeInTheDocument();
+    expect(screen.getByText(/is a variable/i)).toBeInTheDocument();
+    expect(screen.getByText(/is one run/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add the first column/i })).toBeInTheDocument();
   });
 
-  it("adds a column", async () => {
+  it("adds a column from the empty state", async () => {
     const onChange = vi.fn();
     render(<DatasetEditor dataset={emptyDataset()} onChange={onChange} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /column/i }));
+    await userEvent.click(screen.getByRole("button", { name: /add the first column/i }));
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange.mock.calls[0][0].columns).toEqual(["column"]);
+  });
+
+  it("adds a column from the toolbar", async () => {
+    const onChange = vi.fn();
+    render(<DatasetEditor dataset={seed()} onChange={onChange} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Column" }));
+
+    expect(onChange.mock.calls[0][0].columns).toEqual(["email", "column"]);
+  });
+
+  it("renders column names in a header band, not as another data row", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    // The header cell is the column NAME; the data cell is the value.
+    expect(screen.getByDisplayValue("email")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("a@x.com")).toBeInTheDocument();
+    // The name box is styled as a label (borderless until hover), the value isn't.
+    expect(screen.getByDisplayValue("email").className).toContain("border-transparent");
+    expect(screen.getByDisplayValue("a@x.com").className).not.toContain("border-transparent");
   });
 
   it("reports a cell edit", async () => {
