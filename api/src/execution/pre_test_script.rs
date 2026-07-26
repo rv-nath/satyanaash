@@ -52,6 +52,7 @@ impl PreTestScriptEngine {
         &self,
         script: &str,
         env_in: &HashMap<String, Value>,
+        data: &HashMap<String, Value>,
     ) -> Result<PreTestOutcome, AppError> {
         let mut scope = Scope::new();
 
@@ -65,10 +66,18 @@ impl PreTestScriptEngine {
         }
         scope.push("env", env_map);
 
+        // `data` is the current data row — read-only, never read back out.
+        let mut data_map = Map::new();
+        for (k, v) in data {
+            data_map.insert(k.as_str().into(), json_to_rhai(v));
+        }
+        scope.push("data", data_map);
+
         // Rewrite SAT.env.xxx → env.xxx and SAT.vars.xxx → vars.xxx
         let rewritten = script
             .replace("SAT.env.", "env.")
-            .replace("SAT.vars.", "vars.");
+            .replace("SAT.vars.", "vars.")
+            .replace("SAT.data.", "data.");
 
         // Run the script (we only care about side effects on `vars` / `env`)
         self.engine.run_with_scope(&mut scope, &rewritten)
@@ -163,7 +172,7 @@ mod tests {
     #[test]
     fn test_simple_var_assignment() {
         let engine = PreTestScriptEngine::new();
-        let out = engine.execute(r#"SAT.vars.baseUrl = "http://localhost:3000";"#, &empty()).unwrap();
+        let out = engine.execute(r#"SAT.vars.baseUrl = "http://localhost:3000";"#, &empty(), &HashMap::new()).unwrap();
         assert_eq!(out.vars.get("baseUrl"), Some(&Value::String("http://localhost:3000".to_string())));
     }
 
@@ -174,7 +183,7 @@ mod tests {
             SAT.vars.baseUrl = "http://localhost:3000";
             SAT.vars.apiKey = "secret123";
             SAT.vars.timeout = 5000;
-        "#, &empty()).unwrap();
+        "#, &empty(), &HashMap::new()).unwrap();
         assert_eq!(out.vars.get("baseUrl"), Some(&Value::String("http://localhost:3000".to_string())));
         assert_eq!(out.vars.get("apiKey"), Some(&Value::String("secret123".to_string())));
         assert_eq!(out.vars.get("timeout"), Some(&Value::Number(5000.into())));
@@ -187,14 +196,14 @@ mod tests {
             let base = "http://localhost";
             let port = 8080;
             SAT.vars.url = base + ":" + port.to_string();
-        "#, &empty()).unwrap();
+        "#, &empty(), &HashMap::new()).unwrap();
         assert_eq!(out.vars.get("url"), Some(&Value::String("http://localhost:8080".to_string())));
     }
 
     #[test]
     fn test_empty_script() {
         let engine = PreTestScriptEngine::new();
-        let out = engine.execute("", &empty()).unwrap();
+        let out = engine.execute("", &empty(), &HashMap::new()).unwrap();
         assert!(out.vars.is_empty());
         assert!(out.env.is_empty());
     }
@@ -202,14 +211,14 @@ mod tests {
     #[test]
     fn test_direct_vars_syntax() {
         let engine = PreTestScriptEngine::new();
-        let out = engine.execute(r#"vars.baseUrl = "http://localhost:3000";"#, &empty()).unwrap();
+        let out = engine.execute(r#"vars.baseUrl = "http://localhost:3000";"#, &empty(), &HashMap::new()).unwrap();
         assert_eq!(out.vars.get("baseUrl"), Some(&Value::String("http://localhost:3000".to_string())));
     }
 
     #[test]
     fn test_script_error() {
         let engine = PreTestScriptEngine::new();
-        let result = engine.execute("this is not valid rhai", &empty());
+        let result = engine.execute("this is not valid rhai", &empty(), &HashMap::new());
         assert!(result.is_err());
     }
 
@@ -221,6 +230,7 @@ mod tests {
         let out = engine.execute(
             r#"SAT.env.token = "abc"; SAT.env.copied = SAT.env.existing;"#,
             &seed,
+            &HashMap::new(),
         ).unwrap();
         // Only new/changed keys are returned — not the untouched seed value
         assert_eq!(out.env.get("token"), Some(&Value::String("abc".to_string())));
@@ -232,7 +242,7 @@ mod tests {
     fn test_generator_functions() {
         let engine = PreTestScriptEngine::new();
         let out = engine
-            .execute(r#"SAT.vars.n = randomInt(5, 5); SAT.vars.u = randomUsername();"#, &empty())
+            .execute(r#"SAT.vars.n = randomInt(5, 5); SAT.vars.u = randomUsername();"#, &empty(), &HashMap::new())
             .unwrap();
         assert_eq!(out.vars.get("n"), Some(&Value::Number(5.into())));
         assert!(matches!(out.vars.get("u"), Some(Value::String(s)) if s.starts_with("user_")));

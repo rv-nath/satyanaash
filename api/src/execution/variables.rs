@@ -1,6 +1,7 @@
 //! Variable interpolation and execution context management
 //!
 //! Resolution order (highest priority first):
+//! 0. Data-row variables (the current data-driven iteration's cells)
 //! 1. Execution variables (passed in execute request)
 //! 2. Context variables (exports from previous test cases + pre-test script vars)
 //! 3. Node input variables (static per-node overrides set in flow editor)
@@ -19,6 +20,10 @@ use crate::error::AppError;
 /// Execution context that holds all variables during flow execution
 #[derive(Debug, Clone)]
 pub struct ExecutionContext {
+    /// Cells of the data row being run right now. Highest priority: a row's value
+    /// is the explicit input for that iteration, so it must beat exports, script
+    /// vars and the environment. Empty for a normal (non-data-driven) run.
+    row_vars: HashMap<String, Value>,
     /// Variables passed in the execute request
     execution_vars: HashMap<String, Value>,
     /// Accumulated exports from test cases during execution
@@ -39,12 +44,18 @@ impl ExecutionContext {
         flow_vars: HashMap<String, Value>,
     ) -> Self {
         Self {
+            row_vars: HashMap::new(),
             execution_vars,
             context: HashMap::new(),
             node_input_vars: HashMap::new(),
             flow_vars,
             environment,
         }
+    }
+
+    /// Replace the current iteration's row values (wholesale, like node input vars).
+    pub fn set_row_vars(&mut self, vars: HashMap<String, Value>) {
+        self.row_vars = vars;
     }
 
     /// Set an environment variable at run time (from SAT.env writes in scripts).
@@ -66,7 +77,8 @@ impl ExecutionContext {
 
     /// Resolve a variable by name using the resolution order
     pub fn resolve(&self, name: &str) -> Option<&Value> {
-        self.execution_vars.get(name)
+        self.row_vars.get(name)
+            .or_else(|| self.execution_vars.get(name))
             .or_else(|| self.context.get(name))
             .or_else(|| self.node_input_vars.get(name))
             .or_else(|| self.flow_vars.get(name))
@@ -329,6 +341,36 @@ mod tests {
         // Unknown variables stay as-is
         let result = ctx.interpolate("{{unknown}}/test").unwrap();
         assert_eq!(result, "{{unknown}}/test");
+    }
+
+    #[test]
+    fn test_row_vars_beat_every_other_scope() {
+        // A data row's cell is the explicit input for that iteration, so it must
+        // win over exports, execution vars, node vars, flow vars and the env.
+        let mut env = HashMap::new();
+        env.insert("email".to_string(), Value::String("from_env".into()));
+        let mut flow = HashMap::new();
+        flow.insert("email".to_string(), Value::String("from_flow".into()));
+        let mut exec = HashMap::new();
+        exec.insert("email".to_string(), Value::String("from_exec".into()));
+
+        let mut ctx = ExecutionContext::new(exec, env, flow);
+        ctx.set("email", Value::String("from_export".into()));
+        let mut node = HashMap::new();
+        node.insert("email".to_string(), Value::String("from_node".into()));
+        ctx.set_node_input_vars(node);
+
+        // Without a row, the normal order applies (execution vars first).
+        assert_eq!(ctx.interpolate("{{email}}").unwrap(), "from_exec");
+
+        let mut row = HashMap::new();
+        row.insert("email".to_string(), Value::String("from_row".into()));
+        ctx.set_row_vars(row);
+        assert_eq!(ctx.interpolate("{{email}}").unwrap(), "from_row");
+
+        // Clearing the row restores the lower scopes.
+        ctx.set_row_vars(HashMap::new());
+        assert_eq!(ctx.interpolate("{{email}}").unwrap(), "from_exec");
     }
 
     #[test]

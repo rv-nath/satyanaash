@@ -8,11 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::db::models::{ExportVariable, Flow, GraphNode, TestCase};
+use crate::db::models::{DataRow, ExportVariable, Flow, GraphNode, TestCase};
 use crate::db::repositories::TestCaseRepository;
 use crate::error::AppError;
 
 use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine};
+use super::assertions::AssertionInput;
 use super::http::{RequestLog, ResponseLog};
 
 /// The last meaningful line of a script — for an assertion that's the expression
@@ -57,6 +58,52 @@ fn find_unresolved(
         }
     }
     names
+}
+
+/// Turn a data row's raw cells into the map used for BOTH `{{col}}` interpolation
+/// and `data.col` in scripts.
+///
+/// Two passes per cell, in this order:
+///  1. interpolate, so a cell may hold `{{baseUrl}}/x` or `{{$RandomEmail}}`. The
+///     context does not yet have the row applied, so cells can't reference
+///     each other.
+///  2. coerce via JSON, so `"400"` becomes a number. Without this a shared
+///     assertion like `response.status == data.expected_status` compares an i64
+///     to a string, which Rhai reports as simply not-equal — so every row would
+///     be marked *failed* with no hint why. See the assertion-engine test
+///     `test_uncoerced_string_cell_silently_fails`.
+///
+/// Note `"007"` stays a string (JSON rejects leading zeros) and `""` stays `""`.
+fn build_row_scope(row: &DataRow, ctx: &ExecutionContext) -> HashMap<String, Value> {
+    row.values
+        .iter()
+        .map(|(k, raw)| {
+            let v = match raw {
+                Value::String(s) => {
+                    let interpolated = ctx.interpolate(s).unwrap_or_else(|_| s.clone());
+                    serde_json::from_str::<Value>(interpolated.trim())
+                        .unwrap_or(Value::String(interpolated))
+                }
+                other => other.clone(),
+            };
+            (k.clone(), v)
+        })
+        .collect()
+}
+
+/// Which assertion applies to this run: the row's own override, else the test
+/// case's shared script, else `None` meaning the built-in 2xx check.
+fn resolve_assertion<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Option<&'a str> {
+    row.and_then(|r| r.assertion.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            test_case
+                .assertion_script
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        })
 }
 
 /// The only real differences between the flow-node path and the standalone path.
@@ -535,6 +582,7 @@ impl ExecutionEngine {
 
         self.run_once(
             &test_case,
+            None,
             ctx,
             RunOptions {
                 node_id: &node.id,
@@ -663,6 +711,8 @@ impl ExecutionEngine {
     async fn run_once(
         &self,
         test_case: &TestCase,
+        // The data row for this iteration, or None for a normal run.
+        row: Option<&DataRow>,
         ctx: &mut ExecutionContext,
         opts: RunOptions<'_>,
         mut logs: Vec<String>,
@@ -689,10 +739,18 @@ impl ExecutionEngine {
             };
         }
 
+        // The data row supplies the highest-priority {{variables}} and the script
+        // `data` map. Built before it is applied, so cells can't reference each other.
+        let data_map: HashMap<String, Value> = match row {
+            Some(r) => build_row_scope(r, ctx),
+            None => HashMap::new(),
+        };
+        ctx.set_row_vars(data_map.clone());
+
         // Execute pre-test script if present (sets variables before interpolation)
         if let Some(ref script) = test_case.pre_test_script {
             if !script.trim().is_empty() {
-                match self.pre_test.execute(script, &ctx.environment_snapshot()) {
+                match self.pre_test.execute(script, &ctx.environment_snapshot(), &data_map) {
                     Ok(outcome) => {
                         for (k, v) in outcome.vars {
                             if self.debug_mode {
@@ -783,15 +841,16 @@ impl ExecutionEngine {
         // Run assertions. On failure we record *why*, so the console shows a reason
         // instead of a bare "failed".
         let mut assertion_failure: Option<String> = None;
-        let assertion_passed = if let Some(ref assertion_script) = test_case.assertion_script {
-            match self.assertions.evaluate(
-                assertion_script,
-                http_result.response.status,
-                &http_result.response.body,
-                &http_result.response.json,
-                &http_result.response.headers,
-                &ctx.environment_snapshot(),
-            ) {
+        let assertion_passed = if let Some(assertion_script) = resolve_assertion(row, test_case) {
+            match self.assertions.evaluate(AssertionInput {
+                script: assertion_script,
+                status: http_result.response.status,
+                body: &http_result.response.body,
+                json: &http_result.response.json,
+                headers: &http_result.response.headers,
+                env: &ctx.environment_snapshot(),
+                data: &data_map,
+            }) {
                 Ok(outcome) => {
                     if self.debug_mode {
                         logs.push(format!("Assertion result: {}", if outcome.passed { "PASS" } else { "FAIL" }));
@@ -886,6 +945,7 @@ impl ExecutionEngine {
 
         self.run_once(
             test_case,
+            None,
             &mut ctx,
             RunOptions { node_id: "direct", extra_exports: &[], report_unresolved: true },
             logs,
@@ -905,6 +965,73 @@ impl Default for ExecutionEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_row_scope_coerces_cells() {
+        let ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let row = DataRow {
+            values: [
+                ("expected_status", "400"),
+                ("name", "abc"),
+                ("blank", ""),
+                ("leading_zero", "007"),
+                ("flag", "true"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), Value::String(v.into())))
+            .collect(),
+            ..Default::default()
+        };
+
+        let scope = build_row_scope(&row, &ctx);
+        // Numbers coerce so `response.status == data.expected_status` compares like-for-like.
+        assert_eq!(scope["expected_status"], Value::Number(400.into()));
+        assert_eq!(scope["flag"], Value::Bool(true));
+        // Everything that isn't valid JSON stays a string.
+        assert_eq!(scope["name"], Value::String("abc".into()));
+        assert_eq!(scope["blank"], Value::String("".into()));
+        // JSON rejects leading zeros, so an id like "007" keeps its shape.
+        assert_eq!(scope["leading_zero"], Value::String("007".into()));
+    }
+
+    #[test]
+    fn test_build_row_scope_interpolates_cells() {
+        let mut env = HashMap::new();
+        env.insert("baseUrl".to_string(), Value::String("http://api.test".into()));
+        let ctx = ExecutionContext::new(HashMap::new(), env, HashMap::new());
+        let row = DataRow {
+            values: [("url".to_string(), Value::String("{{baseUrl}}/signup".into()))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+
+        let scope = build_row_scope(&row, &ctx);
+        assert_eq!(scope["url"], Value::String("http://api.test/signup".into()));
+    }
+
+    #[test]
+    fn test_resolve_assertion_chain() {
+        let mut tc = make_test_case("t1", "T", "/x", "GET");
+        tc.assertion_script = Some("shared".to_string());
+
+        let with_own = DataRow { assertion: Some("row".into()), ..Default::default() };
+        let blank = DataRow { assertion: Some("   ".into()), ..Default::default() };
+        let none = DataRow::default();
+
+        // Row override wins; a blank one falls through to the shared script.
+        assert_eq!(resolve_assertion(Some(&with_own), &tc), Some("row"));
+        assert_eq!(resolve_assertion(Some(&blank), &tc), Some("shared"));
+        assert_eq!(resolve_assertion(Some(&none), &tc), Some("shared"));
+        assert_eq!(resolve_assertion(None, &tc), Some("shared"));
+
+        // With no shared script either, None means "use the built-in 2xx check".
+        tc.assertion_script = None;
+        assert_eq!(resolve_assertion(Some(&none), &tc), None);
+        // An empty shared script is treated as absent rather than evaluated.
+        tc.assertion_script = Some("  ".to_string());
+        assert_eq!(resolve_assertion(None, &tc), None);
+    }
 
     #[test]
     fn test_last_expression_picks_the_deciding_line() {
