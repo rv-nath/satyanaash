@@ -15,7 +15,7 @@ export const newRowId = (): string =>
   `row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function addRow(d: Dataset): Dataset {
-  const row: DataRow = { id: newRowId(), name: "", body: "", expected_status: "" };
+  const row: DataRow = { id: newRowId(), name: "", body: "", check: "" };
   return { rows: [...d.rows, row] };
 }
 
@@ -35,8 +35,15 @@ export function setRowBody(d: Dataset, rowId: string, body: string): Dataset {
   return patchRow(d, rowId, { body });
 }
 
-export function setRowExpectedStatus(d: Dataset, rowId: string, expected: string): Dataset {
-  return patchRow(d, rowId, { expected_status: expected });
+export function setRowCheck(d: Dataset, rowId: string, check: string): Dataset {
+  return patchRow(d, rowId, { check });
+}
+
+/** True when a check is nothing but a status code — the shorthand form. Anything
+ *  else is sent to the engine as a Rhai expression. Mirrors DataRow::
+ *  expected_status_code on the server. */
+export function isStatusShorthand(check: string): boolean {
+  return /^\d+$/.test(check.trim());
 }
 
 /** Duplicate a row — the usual way to build a matrix is tweak-and-repeat. */

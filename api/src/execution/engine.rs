@@ -862,8 +862,10 @@ impl ExecutionEngine {
         //    (optionally) decides the verdict.
         let assertion_passed = match row {
             Some(data_row) => {
-                let passed = match data_row.expected_status_code() {
-                    Some(expected) => {
+                // A row's check is either a bare status code (shorthand) or a Rhai
+                // expression. Blank falls back to any 2xx.
+                let passed = match (data_row.expected_status_code(), data_row.check_expr()) {
+                    (Some(expected), _) => {
                         let ok = status_code == expected;
                         if !ok {
                             assertion_failure =
@@ -871,11 +873,54 @@ impl ExecutionEngine {
                         }
                         ok
                     }
-                    None => {
+                    (None, Some(expr)) => match self.assertions.evaluate(AssertionInput {
+                        script: expr,
+                        status: status_code,
+                        body: &http_result.response.body,
+                        json: &http_result.response.json,
+                        headers: &http_result.response.headers,
+                        env: &ctx.environment_snapshot(),
+                    }) {
+                        Ok(outcome) => {
+                            // A row's own script may capture values too.
+                            for (k, v) in outcome.vars {
+                                ctx.set(&k, v);
+                            }
+                            for (k, v) in outcome.env {
+                                ctx.set_environment_var(&k, v.clone());
+                                env_writes.insert(k, v);
+                            }
+                            match outcome.passed {
+                                Some(true) => true,
+                                Some(false) => {
+                                    assertion_failure = Some(format!(
+                                        "Check returned false: {}  (actual: HTTP {})",
+                                        last_expression(expr), status_code
+                                    ));
+                                    false
+                                }
+                                // Not a yes/no answer — say so rather than guessing.
+                                None => {
+                                    assertion_failure = Some(format!(
+                                        "This row's check must be a status code or an expression \
+                                         that is true or false — got: {}",
+                                        last_expression(expr)
+                                    ));
+                                    false
+                                }
+                            }
+                        }
+                        Err(e) => bail!(
+                            format!("This row's check could not run: {}", e),
+                            Some(http_result.request),
+                            Some(http_result.response)
+                        ),
+                    },
+                    (None, None) => {
                         let ok = AssertionEngine::default_assertion(status_code);
                         if !ok {
                             assertion_failure = Some(format!(
-                                "No expected status given, so a 2xx was required — got HTTP {}",
+                                "No check given, so a 2xx was required — got HTTP {}",
                                 status_code
                             ));
                         }
@@ -1146,7 +1191,7 @@ mod tests {
                     id: format!("r{}", i),
                     name: Some(name.to_string()),
                     body: body.map(str::to_string),
-                    expected_status: status.map(str::to_string),
+                    check: status.map(str::to_string),
                 })
                 .collect(),
         }
@@ -1212,6 +1257,21 @@ mod tests {
         assert_eq!(its[1].row_label.as_deref(), Some("empty body"));
         // The aggregate has no single request/response; the UI uses `iterations`.
         assert!(result.request.is_none() && result.response.is_none());
+    }
+
+    #[test]
+    fn test_row_check_forms() {
+        // The shorthand and the expression form are told apart by whether the check
+        // is nothing but digits.
+        let shorthand = DataRow { check: Some("409".into()), ..Default::default() };
+        assert_eq!(shorthand.expected_status_code(), Some(409));
+
+        let expression = DataRow {
+            check: Some("response.json.token != ()".into()),
+            ..Default::default()
+        };
+        assert_eq!(expression.expected_status_code(), None);
+        assert_eq!(expression.check_expr(), Some("response.json.token != ()"));
     }
 
     #[tokio::test]

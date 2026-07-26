@@ -2,14 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DatasetEditor } from "@/components/DatasetEditor";
-import { addRow, emptyDataset, setRowBody, setRowExpectedStatus, setRowName } from "@/lib/dataset";
+import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName } from "@/lib/dataset";
 import type { Dataset } from "@/lib/api/types";
 
 function seed(): Dataset {
   let d = addRow(emptyDataset());
   d = setRowName(d, d.rows[0].id, "valid");
   d = setRowBody(d, d.rows[0].id, '{"email":"a@b.com"}');
-  d = setRowExpectedStatus(d, d.rows[0].id, "201");
+  d = setRowCheck(d, d.rows[0].id, "201");
   return d;
 }
 
@@ -28,7 +28,7 @@ describe("DatasetEditor", () => {
     expect(onChange.mock.calls[0][0].rows).toHaveLength(1);
   });
 
-  it("reports body and expected-status edits", async () => {
+  it("reports body and check edits", async () => {
     const onChange = vi.fn();
     const d = seed();
     render(<DatasetEditor dataset={d} onChange={onChange} />);
@@ -37,8 +37,8 @@ describe("DatasetEditor", () => {
     expect(onChange.mock.calls.at(-1)![0].rows[0].body).toBe('{"email":"a@b.com"}!');
 
     onChange.mockClear();
-    await userEvent.clear(screen.getByLabelText(/expected status for valid/i));
-    expect(onChange.mock.calls.at(-1)![0].rows[0].expected_status).toBe("");
+    await userEvent.clear(screen.getByLabelText(/expected result for valid/i));
+    expect(onChange.mock.calls.at(-1)![0].rows[0].check).toBe("");
   });
 
   it("keeps the body one row tall until it is focused", async () => {
@@ -68,17 +68,26 @@ describe("DatasetEditor", () => {
     expect(screen.getByText(/not valid json/i)).toBeInTheDocument();
   });
 
-  it("explains the fallback when no status is given", async () => {
+  it("says a blank check means any 2xx", async () => {
     let d = seed();
-    d = setRowExpectedStatus(d, d.rows[0].id, "");
+    d = setRowCheck(d, d.rows[0].id, "");
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    await userEvent.click(screen.getByLabelText(/expected result for valid/i));
+    expect(screen.getByText(/passes on any 2xx/i)).toBeInTheDocument();
+  });
+
+  it("explains a status shorthand and an expression differently", async () => {
+    const d = seed(); // check is "201"
     const { rerender } = render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
 
-    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
-    expect(screen.getByText(/passes on any 2xx/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText(/expected result for valid/i));
+    expect(screen.getByText(/shorthand for response.status == 201/i)).toBeInTheDocument();
 
-    rerender(<DatasetEditor dataset={d} onChange={vi.fn()} sharedAssertion="response.status == 200" />);
-    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
-    expect(screen.getByText(/check from the scripts tab/i)).toBeInTheDocument();
+    const expr = setRowCheck(d, d.rows[0].id, "response.json.token != ()");
+    rerender(<DatasetEditor dataset={expr} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByLabelText(/expected result for valid/i));
+    expect(screen.getByText(/rhai expression/i)).toBeInTheDocument();
   });
 
   it("duplicates a case", async () => {

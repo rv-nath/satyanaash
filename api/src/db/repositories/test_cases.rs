@@ -326,7 +326,7 @@ mod tests {
                 id: "r1".into(),
                 name: Some("missing email".into()),
                 body: Some(r#"{"mobile":"9876500001"}"#.into()),
-                expected_status: Some("400".into()),
+                check: Some("400".into()),
             }],
         });
 

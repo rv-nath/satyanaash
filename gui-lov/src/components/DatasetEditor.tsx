@@ -10,8 +10,9 @@ import {
   looksLikeInvalidJson,
   removeRow,
   rowLabel,
+  isStatusShorthand,
   setRowBody,
-  setRowExpectedStatus,
+  setRowCheck,
   setRowName,
 } from "@/lib/dataset";
 
@@ -22,12 +23,13 @@ interface DatasetEditorProps {
   sharedAssertion?: string;
 }
 
-// #, case, body, status, duplicate, delete
-const GRID = "24px 180px minmax(240px,1fr) 88px 32px 32px";
+// #, case, body, expect, duplicate, delete
+const GRID = "24px 150px minmax(200px,1fr) minmax(170px,0.7fr) 32px 32px";
 
 export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEditorProps) {
   // Which row's body is being edited — that one expands, the rest stay one line.
   const [editingBody, setEditingBody] = useState<string | null>(null);
+  const [editingCheck, setEditingCheck] = useState<string | null>(null);
   const { rows } = dataset;
   const hasShared = !!sharedAssertion?.trim();
 
@@ -91,8 +93,8 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 Body
               </span>
-              <span className="pl-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Status
+              <span className="pl-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Expect
               </span>
               <span />
               <span />
@@ -101,8 +103,9 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
             {rows.map((row, i) => {
               const body = row.body ?? "";
               const badJson = looksLikeInvalidJson(body);
-              const noStatus = !(row.expected_status ?? "").trim();
               const editing = editingBody === row.id;
+              const check = row.check ?? "";
+              const editingThisCheck = editingCheck === row.id;
               return (
                 <div
                   key={row.id}
@@ -137,30 +140,43 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     />
                     {/* Hints only while editing — otherwise they would defeat the
                         single-row height. A bad body still shows a warning border. */}
-                    {editing && (badJson || noStatus) && (
+                    {editing && badJson && (
                       <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
                         {badJson && (
                           <span className="flex items-center gap-1 text-warning">
                             <AlertTriangle className="h-3 w-3" /> Not valid JSON — sent as-is
                           </span>
                         )}
-                        {noStatus && (
-                          <span>
-                            No expected status —{" "}
-                            {hasShared ? "uses the check from the Scripts tab." : "passes on any 2xx."}
-                          </span>
-                        )}
                       </div>
                     )}
                   </div>
 
-                  <Input
-                    value={row.expected_status ?? ""}
-                    placeholder="200"
-                    onChange={(e) => onChange(setRowExpectedStatus(dataset, row.id, e.target.value))}
-                    className="h-9 font-mono text-[13px]"
-                    aria-label={`Expected status for ${rowLabel(i, row)}`}
-                  />
+                  <div className="min-w-0">
+                    <Textarea
+                      value={check}
+                      onChange={(e) => onChange(setRowCheck(dataset, row.id, e.target.value))}
+                      onFocus={() => setEditingCheck(row.id)}
+                      onBlur={() => setEditingCheck((cur) => (cur === row.id ? null : cur))}
+                      placeholder="400   — or an expression"
+                      className={`resize-none font-mono text-xs transition-[height] duration-150 ${
+                        editingThisCheck
+                          ? "h-[132px] min-h-0 whitespace-pre"
+                          : "h-9 min-h-0 overflow-hidden whitespace-nowrap py-2"
+                      }`}
+                      aria-label={`Expected result for ${rowLabel(i, row)}`}
+                    />
+                    {editingThisCheck && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {!check.trim()
+                          ? hasShared
+                            ? "Blank — this row passes on any 2xx (the Scripts tab is not used for rows)."
+                            : "Blank — this row passes on any 2xx."
+                          : isStatusShorthand(check)
+                            ? `Shorthand for response.status == ${check.trim()}`
+                            : "Rhai expression — must end in something true or false."}
+                      </p>
+                    )}
+                  </div>
 
                   <Button
                     variant="ghost"

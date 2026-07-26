@@ -8,7 +8,8 @@ import {
   removeRow,
   rowLabel,
   setRowBody,
-  setRowExpectedStatus,
+  setRowCheck,
+  isStatusShorthand,
   setRowName,
 } from "@/lib/dataset";
 import type { Dataset } from "@/lib/api/types";
@@ -17,7 +18,7 @@ function seed(): Dataset {
   let d = addRow(addRow(emptyDataset()));
   d = setRowName(d, d.rows[0].id, "valid");
   d = setRowBody(d, d.rows[0].id, '{"email":"a@b.com"}');
-  d = setRowExpectedStatus(d, d.rows[0].id, "201");
+  d = setRowCheck(d, d.rows[0].id, "201");
   return d;
 }
 
@@ -31,7 +32,7 @@ describe("dataset reducers", () => {
     const d = addRow(emptyDataset());
     expect(d.rows).toHaveLength(1);
     expect(d.rows[0].body).toBe("");
-    expect(d.rows[0].expected_status).toBe("");
+    expect(d.rows[0].check).toBe("");
     expect(d.rows[0].id).toBeTruthy();
   });
 
@@ -40,9 +41,9 @@ describe("dataset reducers", () => {
     const id = d.rows[0].id;
     let next = setRowName(d, id, "renamed");
     next = setRowBody(next, id, "{}");
-    next = setRowExpectedStatus(next, id, "400");
+    next = setRowCheck(next, id, "400");
 
-    expect(next.rows[0]).toMatchObject({ name: "renamed", body: "{}", expected_status: "400" });
+    expect(next.rows[0]).toMatchObject({ name: "renamed", body: "{}", check: "400" });
     expect(next.rows[1]).toEqual(d.rows[1]);
   });
 
@@ -69,6 +70,15 @@ describe("dataset reducers", () => {
     expect(looksLikeInvalidJson("[1,2")).toBe(true);
     expect(looksLikeInvalidJson("")).toBe(false);
     expect(looksLikeInvalidJson("name=value")).toBe(false); // form data
+  });
+
+  it("tells a status shorthand from an expression", () => {
+    // Mirrors the server: a check that is nothing but digits is a status check.
+    expect(isStatusShorthand("400")).toBe(true);
+    expect(isStatusShorthand(" 201 ")).toBe(true);
+    expect(isStatusShorthand("response.status == 201")).toBe(false);
+    expect(isStatusShorthand("2xx")).toBe(false);
+    expect(isStatusShorthand("")).toBe(false);
   });
 
   it("labels rows like the server does", () => {

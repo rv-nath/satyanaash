@@ -232,10 +232,12 @@ pub struct DataRow {
     /// means "use the test case's payload".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
-    /// Status this row should return. Kept as a string so a blank field is simply
-    /// "not specified" rather than a parse error.
+    /// What must be true for this row to pass. Either a bare status code ("400",
+    /// shorthand for `response.status == 400`) or a Rhai expression
+    /// (`response.status == 201 && response.json.token != ()`). Blank means
+    /// "any 2xx". Kept as a string so a blank field is simply "not specified".
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_status: Option<String>,
+    pub check: Option<String>,
 }
 
 impl Dataset {
@@ -260,9 +262,15 @@ impl DataRow {
         self.body.as_deref().map(str::trim).filter(|s| !s.is_empty())
     }
 
-    /// The status this row expects, if a valid one was given.
+    /// This row's check, if it gave one.
+    pub fn check_expr(&self) -> Option<&str> {
+        self.check.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// A check that is nothing but a status code — the shorthand form. Anything
+    /// else is treated as a Rhai expression.
     pub fn expected_status_code(&self) -> Option<u16> {
-        self.expected_status.as_deref()?.trim().parse::<u16>().ok()
+        self.check_expr()?.parse::<u16>().ok()
     }
 }
 
@@ -409,9 +417,28 @@ mod tests {
     }
 
     #[test]
+    fn test_check_distinguishes_a_status_from_an_expression() {
+        let status = DataRow { check: Some(" 400 ".into()), ..Default::default() };
+        assert_eq!(status.expected_status_code(), Some(400));
+        assert_eq!(status.check_expr(), Some("400"));
+
+        let expr = DataRow {
+            check: Some("response.status == 201 && response.json.id != ()".into()),
+            ..Default::default()
+        };
+        // Not a bare number, so it is an expression, not a status shorthand.
+        assert_eq!(expr.expected_status_code(), None);
+        assert!(expr.check_expr().unwrap().starts_with("response.status"));
+
+        let blank = DataRow { check: Some("   ".into()), ..Default::default() };
+        assert_eq!(blank.check_expr(), None);
+        assert_eq!(blank.expected_status_code(), None);
+    }
+
+    #[test]
     fn test_dataset_json_roundtrip_tolerates_missing_fields() {
         // The client may omit body/expected_status entirely.
-        let json = r#"{"rows":[{"id":"r1","name":"empty body","body":"{}","expected_status":"400"}]}"#;
+        let json = r#"{"rows":[{"id":"r1","name":"empty body","body":"{}","check":"400"}]}"#;
         let ds: Dataset = serde_json::from_str(json).unwrap();
         assert_eq!(ds.rows.len(), 1);
         assert_eq!(ds.rows[0].body_override(), Some("{}"));

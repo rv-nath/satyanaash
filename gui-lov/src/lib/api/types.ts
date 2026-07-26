@@ -40,9 +40,9 @@ export interface DataRow {
   /** Body to send instead of the test case's payload. Still interpolated, so
    *  {{variables}} work. Blank means "use the test case's payload". */
   body?: string | null;
-  /** Status this row should return. A string so a blank field is simply
-   *  "not specified" rather than a parse error. */
-  expected_status?: string | null;
+  /** What must be true for this row to pass: either a bare status code ("400")
+   *  or a Rhai expression. Blank means "any 2xx". */
+  check?: string | null;
 }
 
 /** A table of cases. Only "run all rows" iterates these; a plain run and any
