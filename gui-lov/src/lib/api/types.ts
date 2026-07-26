@@ -32,10 +32,6 @@ export interface ExportVariable {
   json_path: string;
 }
 
-/** Where a row's request body comes from. "No override" and "an empty body" are
- *  different intents, so this is three-state rather than a nullable string. */
-export type PayloadMode = "shared" | "custom" | "none";
-
 /** One iteration's inputs for data-driven testing. */
 export interface DataRow {
   id: string;
@@ -45,10 +41,6 @@ export interface DataRow {
   values: Record<string, string>;
   /** Overrides the test case's assertion for this row only. */
   assertion?: string | null;
-  /** Where this row's body comes from; defaults to "shared". */
-  payload_mode?: PayloadMode;
-  /** Body used when payload_mode is "custom" (still interpolated). */
-  payload?: string | null;
 }
 
 /** A table of input rows. Only "run all rows" iterates these; a plain run and

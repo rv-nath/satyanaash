@@ -88,46 +88,14 @@ describe("DatasetEditor", () => {
     expect("email" in next.rows[0].values).toBe(false);
   });
 
-  it("reveals per-row overrides on demand", async () => {
+  it("reveals a per-row assertion box on demand", async () => {
     const d = seed();
     render(<DatasetEditor dataset={d} onChange={vi.fn()} sharedAssertion="response.status == 200" />);
 
     expect(screen.queryByPlaceholderText("response.status == 201")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /show overrides/i }));
+    await userEvent.click(screen.getByRole("button", { name: /show assertion/i }));
 
-    // Both the payload selector and the check are in the expander.
-    expect(screen.getByText("Payload")).toBeInTheDocument();
-    expect(screen.getByText("Check")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("response.status == 201")).toBeInTheDocument();
     expect(screen.getByText(/uses the shared check/i)).toBeInTheDocument();
-    // Shared is the default, so no body textarea until Custom is chosen.
-    expect(screen.getByText(/uses the body from the request tab/i)).toBeInTheDocument();
-  });
-
-  it("shows a body textarea only for a custom payload", async () => {
-    const d = seed();
-    d.rows[0].payload_mode = "custom";
-    d.rows[0].payload = '{"a":1}';
-    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /show overrides/i }));
-    expect(screen.getByDisplayValue('{"a":1}')).toBeInTheDocument();
-  });
-
-  it("says no body will be sent when the mode is none", async () => {
-    const d = seed();
-    d.rows[0].payload_mode = "none";
-    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /show overrides/i }));
-    expect(screen.getByText(/sends no body at all/i)).toBeInTheDocument();
-  });
-
-  it("marks a row that overrides something", () => {
-    const d = seed();
-    d.rows[0].payload_mode = "none";
-    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
-    // The collapsed chevron advertises what's overridden.
-    expect(screen.getByRole("button", { name: /show overrides/i }).title).toContain("payload");
   });
 });
