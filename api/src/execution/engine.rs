@@ -584,25 +584,37 @@ impl ExecutionEngine {
         // Accumulates SAT.env writes from pre-test + assertion scripts (persisted by the client)
         let mut env_writes: HashMap<String, Value> = HashMap::new();
 
-        // Node-level outputVars merge with the test case's own exports.
-        let node_output_vars: Vec<ExportVariable> = node.data
+        // Node-level outputVars merge with the test case's own exports. A row that
+        // is only half filled in used to be dropped in silence, and the only symptom
+        // was {{name}} arriving literally at some later node — so say so here.
+        let mut node_output_vars: Vec<ExportVariable> = Vec::new();
+        if let Some(rows) = node.data
             .get("config")
             .and_then(|c| c.get("outputVars"))
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        let name = item.get("name")?.as_str()?;
-                        let path = item.get("path")?.as_str()?;
-                        if name.is_empty() || path.is_empty() { return None; }
-                        Some(ExportVariable {
-                            name: name.to_string(),
-                            json_path: path.to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        {
+            for row in rows {
+                let field = |key: &str| {
+                    row.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string()
+                };
+                let (name, path) = (field("name"), field("path"));
+                match (name.is_empty(), path.is_empty()) {
+                    (false, false) => node_output_vars
+                        .push(ExportVariable { name, json_path: path }),
+                    (false, true) => logs.push(format!(
+                        "⚠ Output variable \"{}\" has no JSON path, so nothing was \
+                         captured — {{{{{}}}}} will not resolve",
+                        name, name
+                    )),
+                    (true, false) => logs.push(format!(
+                        "⚠ Output variable with path {} has no name, so nothing was captured",
+                        path
+                    )),
+                    // A blank row the author just added and hasn't filled in.
+                    (true, true) => {}
+                }
+            }
+        }
 
         let mut result = self.run_once(
             &test_case,
@@ -611,7 +623,11 @@ impl ExecutionEngine {
             RunOptions {
                 node_id: &node.id,
                 extra_exports: &node_output_vars,
-                report_unresolved: false,
+                // Was false here and true on the standalone path — unintentional
+                // drift. An unresolved {{var}} shipping as a literal is worth saying
+                // out loud wherever it happens; in a flow it is the likelier place,
+                // since the value was supposed to come from an earlier node.
+                report_unresolved: true,
                 row_index: None,
                 row_label: None,
             },
@@ -1788,6 +1804,65 @@ mod tests {
     // =========================================================================
     // Variable Interpolation in Execution
     // =========================================================================
+
+    /// A "Login as PA" node exported my_jwt with no JSON path. The row was dropped
+    /// in silence and a later node sent "Bearer {{my_jwt}}" literally, so the only
+    /// evidence was a 500 from the server. Both halves must now say something.
+    #[tokio::test]
+    async fn a_half_filled_export_and_an_unresolved_variable_both_warn() {
+        let engine = ExecutionEngine::new(true, None);
+        let tc = TestCase {
+            id: "login".to_string(),
+            project_id: "proj1".to_string(),
+            group_id: None,
+            name: "Login".to_string(),
+            given_condition: None,
+            when_action: None,
+            then_expected: None,
+            method: "DELETE".to_string(),
+            // Nothing sets my_jwt, exactly as in the reported flow.
+            endpoint: "http://127.0.0.1:1/accounts/1".to_string(),
+            headers: serde_json::json!({"Authorization": "Bearer {{my_jwt}}"}),
+            payload: None,
+            exports: vec![],
+            assertion_script: None,
+            pre_test_script: None,
+            dataset: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("n1", "testCase", serde_json::json!({
+                "testCaseId": "login",
+                "config": {"outputVars": [
+                    {"name": "my_jwt", "path": ""},      // named, no path
+                    {"name": "", "path": "$.token"},     // path, no name
+                    {"name": "", "path": ""},            // untouched row: no noise
+                ]}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "n1", None),
+            make_edge("e2", "n1", "end", Some("success")),
+        ]);
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+        let logs = result.results[0].logs.join("\n");
+
+        assert!(logs.contains("my_jwt") && logs.contains("no JSON path"), "{}", logs);
+        assert!(logs.contains("$.token") && logs.contains("has no name"), "{}", logs);
+        // The literal that actually reached the server is now called out.
+        assert!(logs.contains("Unresolved variable(s) sent literally"), "{}", logs);
+        assert!(logs.contains("my_jwt"), "{}", logs);
+        // Exactly two export complaints — the blank row is not one of them.
+        assert_eq!(logs.matches("Output variable").count(), 2, "{}", logs);
+    }
 
     #[tokio::test]
     async fn test_execute_flow_with_variables() {
