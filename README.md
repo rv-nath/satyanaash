@@ -467,6 +467,12 @@ A flow is a graph you assemble on the canvas:
 ```
 
 - **Nodes** — a `start`, one `end`, and any number of `testCase` / `group` nodes.
+- **Naming a node** — a node shows its test case's name, but you can give it its
+  own in **Configure Node → Node name**. Two nodes may run the same request in
+  different roles — *Login as new user* and *Root login (for teardown)* — and the
+  name is what tells them apart on the canvas and in the run log. The request it
+  runs stays visible underneath. Pair it with **Input variables** on that node to
+  give each role its own credentials.
 - **Edges** — connect nodes to define order. Edges carry an optional type that
   controls **conditional routing**:
   - `success` — followed when the source node **passed**

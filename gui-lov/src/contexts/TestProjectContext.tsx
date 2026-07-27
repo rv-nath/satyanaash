@@ -126,7 +126,7 @@ interface TestProjectContextType {
   addNodeToCanvas: (nodeType: NodeType, data: any, position: { x: number; y: number }) => void;
   updateGroupFlow: (groupId: string, nodes: Node[], edges: Edge[]) => void;
   deleteNode: (nodeId: string) => void;
-  updateNodeConfig: (nodeId: string, config: any) => void;
+  updateNodeConfig: (nodeId: string, config: any, alias?: string) => void;
   alignNodes: (direction: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') => void;
   // Auto-layout is performed by the canvas (it owns fitView), so the toolbar
   // raises a request and TestCanvas applies it.
@@ -637,13 +637,16 @@ export const TestProjectProvider = ({
     setEdges(edges.filter(e => e.source !== nodeId && e.target !== nodeId));
   }, [activeFlowId, nodes, edges, setNodes, setEdges, testGroups, history]);
 
-  const updateNodeConfig = useCallback((nodeId: string, config: any) => {
+  const updateNodeConfig = useCallback((nodeId: string, config: any, alias?: string) => {
     if (!activeFlowId) return;
     const node = nodes.find(n => n.id === nodeId);
     history.pushState(testGroups, `Configure node: ${node?.data?.label || nodeId}`);
-    setNodes(nodes.map(n => 
-      n.id === nodeId 
-        ? { ...n, data: { ...n.data, config } }
+    // A blank alias clears the name rather than storing "" — the node falls back
+    // to the test case name, which is also what the engine does with a blank.
+    const trimmed = alias?.trim();
+    setNodes(nodes.map(n =>
+      n.id === nodeId
+        ? { ...n, data: { ...n.data, config, alias: trimmed || undefined } }
         : n
     ));
   }, [activeFlowId, nodes, setNodes, testGroups, history]);

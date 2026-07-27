@@ -239,6 +239,8 @@ export interface ResponseLog {
 
 export interface TestCaseExecutionResult {
   node_id: string;
+  /** The node's own name on the canvas, when the author gave it one. */
+  node_label?: string;
   test_case_id?: string;
   test_case_name?: string;
   status: 'passed' | 'failed' | 'error' | 'skipped';

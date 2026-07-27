@@ -25,8 +25,10 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const { updateNodeConfig } = useTestProject();
   const [inputVars, setInputVars] = useState<InputVariable[]>([]);
   const [outputVars, setOutputVars] = useState<OutputVariable[]>([]);
+  const [alias, setAlias] = useState("");
 
   useEffect(() => {
+    setAlias((node?.data?.alias as string) || "");
     if (node?.data?.config) {
       const config = node.data.config as { inputVars?: InputVariable[]; outputVars?: OutputVariable[] };
       setInputVars(config.inputVars || []);
@@ -49,13 +51,16 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
 
   const handleSave = () => {
     if (!node) return;
-    updateNodeConfig(node.id, { inputVars, outputVars });
+    updateNodeConfig(node.id, { inputVars, outputVars }, alias);
     onClose();
   };
 
   if (!node || node.type === "start" || node.type === "end") {
     return null;
   }
+
+  // The request behind this node — the name field's placeholder and the subtitle.
+  const testCaseName = (node.data.label as string) || "";
 
   return (
     <div className="absolute right-4 top-4 bottom-4 z-50 flex w-[680px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl">
@@ -64,7 +69,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-foreground">Configure node</h2>
           <p className="mt-0.5 truncate text-[13px] text-muted-foreground">
-            {(node.data.label as string) || node.id}
+            {testCaseName || node.id}
           </p>
         </div>
         <Button
@@ -86,6 +91,28 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
           downstream nodes. Reference any of them elsewhere as{" "}
           <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{"{{name}}"}</code>.
         </p>
+
+        <div className="mb-6">
+          <label
+            htmlFor="node-name"
+            className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+          >
+            Node name
+          </label>
+          <Input
+            id="node-name"
+            value={alias}
+            onChange={(e) => setAlias(e.target.value)}
+            placeholder={testCaseName || "Name this step"}
+            className="mt-1.5 h-9 text-[13px]"
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            What this step is for, shown on the canvas and in results — e.g.{" "}
+            <span className="text-foreground">Login as new user</span> and{" "}
+            <span className="text-foreground">Root login</span> for two nodes running
+            the same request. Leave it blank to use the request's own name.
+          </p>
+        </div>
 
         {/* Input Variables */}
         <Section

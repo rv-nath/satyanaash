@@ -62,6 +62,10 @@ npm run dev        # Starts on http://localhost:8080
   (`execution/script_log.rs`, a thread-local sink) into `NodeResult.logs`, not the
   server's stdout. It also maps JS habits (`console`, `typeof`, `null`, `JSON`) to
   advice appended to the Rhai error
+- **Node alias** — `node.data.alias` names a node on the canvas, so two nodes can
+  run one test case in different roles. The engine copies it to
+  `NodeResult.node_label` and the `node_started` event; blank is treated as unset.
+  Display rule lives in `nodeName()` (`hooks/useExecutionStream.ts`)
 - **Datasets** run one test case against many bodies — see below
 - **Project variables** stored in `project.settings.variables`, injected as environment into execution
 - **Variable interpolation:** `{{variableName}}` in URLs, headers, payloads — resolved from execution context

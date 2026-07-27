@@ -128,6 +128,11 @@ impl std::fmt::Display for NodeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeResult {
     pub node_id: String,
+    /// What this node is called on the canvas, when the author named it. Two nodes
+    /// can share one test case in different roles ("Login as new user" vs "Root
+    /// login"), and a result that says only "Login" can't tell them apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_label: Option<String>,
     pub test_case_id: Option<String>,
     pub test_case_name: Option<String>,
     pub status: NodeStatus,
@@ -170,6 +175,8 @@ pub enum ExecutionEvent {
     NodeStarted {
         node_id: String,
         node_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        node_label: Option<String>,
         test_case_id: Option<String>,
         test_case_name: Option<String>,
     },
@@ -448,6 +455,14 @@ impl ExecutionEngine {
         let start = std::time::Instant::now();
         let mut logs = Vec::new();
 
+        // The canvas name for this node, when the author gave it one. Blank counts
+        // as unnamed: an empty title would just erase the test case name downstream.
+        let node_label = node.data.get("alias")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         // Extract test case ID from node data
         let tc_id = node.data.get("testCaseId")
             .or_else(|| node.data.get("test_case_id"))
@@ -458,6 +473,7 @@ impl ExecutionEngine {
             Some(id) => id,
             None => {
                 return NodeResult {
+                    node_label: node_label.clone(),
                     node_id: node.id.clone(),
                     test_case_id: None,
                     test_case_name: None,
@@ -487,6 +503,7 @@ impl ExecutionEngine {
                 }
                 Ok(None) => {
                     return NodeResult {
+                        node_label: node_label.clone(),
                         node_id: node.id.clone(),
                         test_case_id: Some(tc_id),
                         test_case_name: None,
@@ -505,6 +522,7 @@ impl ExecutionEngine {
                 }
                 Err(e) => {
                     return NodeResult {
+                        node_label: node_label.clone(),
                         node_id: node.id.clone(),
                         test_case_id: Some(tc_id),
                         test_case_name: None,
@@ -529,6 +547,7 @@ impl ExecutionEngine {
             let _ = tx.send(ExecutionEvent::NodeStarted {
                 node_id: node.id.clone(),
                 node_type: "testCase".to_string(),
+                node_label: node_label.clone(),
                 test_case_id: Some(tc_id.clone()),
                 test_case_name: Some(test_case.name.clone()),
             }).await;
@@ -585,7 +604,7 @@ impl ExecutionEngine {
             })
             .unwrap_or_default();
 
-        self.run_once(
+        let mut result = self.run_once(
             &test_case,
             None,
             ctx,
@@ -600,7 +619,9 @@ impl ExecutionEngine {
             &mut env_writes,
             start,
         )
-        .await
+        .await;
+        result.node_label = node_label;
+        result
     }
 
     /// Process exports from response using JSONPath
@@ -731,6 +752,7 @@ impl ExecutionEngine {
         macro_rules! bail {
             ($msg:expr, $req:expr, $resp:expr) => {
                 return NodeResult {
+                    node_label: None,
                     node_id: opts.node_id.to_string(),
                     test_case_id: Some(test_case.id.clone()),
                     test_case_name: Some(test_case.name.clone()),
@@ -1026,6 +1048,7 @@ impl ExecutionEngine {
         };
 
         NodeResult {
+            node_label: None,
             node_id: opts.node_id.to_string(),
             test_case_id: Some(test_case.id.clone()),
             test_case_name: Some(test_case.name.clone()),
@@ -1131,6 +1154,8 @@ impl ExecutionEngine {
 
         NodeResult {
             node_id: "direct".to_string(),
+            // A dataset run is launched from the editor, not the canvas: no node.
+            node_label: None,
             test_case_id: Some(test_case.id.clone()),
             test_case_name: Some(test_case.name.clone()),
             status,
@@ -1645,6 +1670,40 @@ mod tests {
         assert_eq!(result.status, "completed");
         assert_eq!(result.stats.total, 0);
         assert_eq!(result.stats.passed, 0);
+    }
+
+    /// Two nodes can point at one test case in different roles. Without the node's
+    /// own name, both results read "Login" and you can't tell which one failed.
+    #[tokio::test]
+    async fn a_named_node_carries_its_name_into_the_result() {
+        // One node per flow: an errored node halts the run, so two aliases need two.
+        async fn label_for(alias: serde_json::Value) -> Option<String> {
+            let engine = ExecutionEngine::new(true, None);
+            let repo = MockTestCaseRepository::new();
+            let mut data = serde_json::json!({"testCaseId": "missing"});
+            data["alias"] = alias;
+            let flow = make_flow("flow1", vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("n1", "testCase", data),
+                make_node("end", "end", serde_json::json!({})),
+            ], vec![
+                make_edge("e1", "start", "n1", None),
+                make_edge("e2", "n1", "end", Some("success")),
+            ]);
+            let result = engine
+                .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+                .await
+                .unwrap();
+            result.results.first().expect("the node ran").node_label.clone()
+        }
+
+        assert_eq!(
+            label_for(serde_json::json!("Login as new user")).await.as_deref(),
+            Some("Login as new user")
+        );
+        // Blank is not a name: it must not blank out the test case name downstream.
+        assert_eq!(label_for(serde_json::json!("   ")).await, None);
+        assert_eq!(label_for(serde_json::Value::Null).await, None);
     }
 
     #[tokio::test]

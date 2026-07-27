@@ -18,16 +18,32 @@ interface ExecutionEventStarted {
   total_nodes: number;
 }
 
+/**
+ * What to call a node in the log. The author's name for it wins: two nodes can
+ * share one test case in different roles, and "Login" twice says nothing about
+ * which one you are reading. Falls back to the test case, then to raw ids.
+ */
+export function nodeName(n: {
+  node_label?: string;
+  test_case_name?: string;
+  test_case_id?: string;
+  node_id: string;
+}): string {
+  return n.node_label?.trim() || n.test_case_name || n.test_case_id || n.node_id;
+}
+
 interface ExecutionEventNodeStarted {
   type: 'node_started';
   node_id: string;
   node_type: string;
+  node_label?: string;
   test_case_id?: string;
   test_case_name?: string;
 }
 
 interface NodeResult {
   node_id: string;
+  node_label?: string;
   test_case_id?: string;
   test_case_name?: string;
   status: 'passed' | 'failed' | 'error' | 'skipped';
@@ -271,7 +287,7 @@ function handleEvent(
 
     case 'node_started':
       if (event.node_type === 'testCase') {
-        addLog(`▶ Running: ${event.test_case_name || event.test_case_id || event.node_id}`, 'info');
+        addLog(`▶ Running: ${nodeName(event)}`, 'info');
       } else if (event.node_type !== 'start' && event.node_type !== 'end') {
         addLog(`▶ Entering: ${event.node_type} node`, 'info');
       }
@@ -290,7 +306,7 @@ function handleEvent(
         result.status === 'passed' ? 'success' :
         result.status === 'error' || result.status === 'failed' ? 'error' : 'info';
 
-      const name = result.test_case_name || result.test_case_id || result.node_id;
+      const name = nodeName(result);
 
       // Build collapsible details for request/response
       const details: ConsoleLogDetail[] = [];

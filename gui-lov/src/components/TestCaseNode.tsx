@@ -10,6 +10,10 @@ interface TestCaseNodeData {
   method: string;
   endpoint?: string;
   testCaseId?: string;  // Reference to the test case for live name resolution
+  /** The author's name for this node. Two nodes may share one test case in
+   *  different roles ("Login as new user" vs "Root login"); the alias is what
+   *  distinguishes them. The test case name stays visible underneath. */
+  alias?: string;
 }
 
 interface TestCaseNodeProps {
@@ -35,7 +39,9 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
   const currentTestCase = data.testCaseId
     ? testCases?.find(tc => tc.id === data.testCaseId)
     : null;
-  const displayLabel = currentTestCase?.name || data.label;
+  const testCaseName = currentTestCase?.name || data.label;
+  const alias = data.alias?.trim();
+  const displayLabel = alias || testCaseName;
   const displayMethod = currentTestCase?.method || data.method;
   const displayEndpoint = currentTestCase?.endpoint || data.endpoint;
 
@@ -61,6 +67,11 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-auto max-w-[380px] p-3">
           <p className="text-[13px] font-medium leading-snug">{displayLabel}</p>
+          {alias && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              runs <span className="text-foreground">{testCaseName}</span>
+            </p>
+          )}
           <div className="mt-2 flex items-baseline gap-2">
             <span
               className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold ${getMethodColor(displayMethod)}`}
@@ -76,8 +87,16 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
         </PopoverContent>
       </Popover>
 
-      <span className="truncate text-xs font-mono font-medium text-foreground">
-        {displayLabel}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-mono text-xs font-medium text-foreground">
+          {displayLabel}
+        </span>
+        {/* Only when renamed — otherwise this would repeat the title. */}
+        {alias && (
+          <span className="block truncate font-mono text-[10px] leading-tight text-muted-foreground">
+            {testCaseName}
+          </span>
+        )}
       </span>
 
       {/* Output handles - bottom and right only */}
