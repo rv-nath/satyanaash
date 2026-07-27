@@ -81,6 +81,22 @@ fn plain(e: &AppError) -> String {
     msg
 }
 
+/// "(body has: access_token, refresh_token)" — enough to spot a misspelling
+/// without dumping a whole response into the log.
+fn top_level_keys(json: &Value) -> String {
+    const MAX: usize = 8;
+    match json.as_object() {
+        Some(map) if !map.is_empty() => {
+            let mut names: Vec<&str> = map.keys().take(MAX).map(String::as_str).collect();
+            let more = map.len().saturating_sub(names.len());
+            let tail = if more > 0 { format!(", … {} more", more) } else { String::new() };
+            names.sort_unstable();
+            format!(" (body has: {}{})", names.join(", "), tail)
+        }
+        _ => String::new(),
+    }
+}
+
 fn shared_script(test_case: &TestCase) -> Option<&str> {
     test_case
         .assertion_script
@@ -673,7 +689,15 @@ impl ExecutionEngine {
 
         let json = match json {
             Some(j) => j,
-            None => return None,
+            None => {
+                // Exports were configured against a body that isn't JSON. Silence
+                // here reads as "extracted fine" and the names never resolve.
+                logs.push(format!(
+                    "⚠ Response is not JSON, so nothing was extracted for: {}",
+                    all_exports.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ")
+                ));
+                return None;
+            }
         };
 
         let mut exported = HashMap::new();
@@ -688,13 +712,24 @@ impl ExecutionEngine {
                         if self.debug_mode {
                             logs.push(format!("Exported {} = {:?}", export.name, value));
                         }
+                    } else {
+                        // A path that matches nothing used to look exactly like a
+                        // path that worked. One typo ("$.accesss_token") then shows
+                        // up much later as a literal {{name}} in another request, so
+                        // name what the body actually offered.
+                        logs.push(format!(
+                            "⚠ Export \"{}\": nothing at {}{} — {{{{{}}}}} will not resolve",
+                            export.name,
+                            export.json_path,
+                            top_level_keys(json),
+                            export.name
+                        ));
                     }
                 }
-                Err(e) => {
-                    if self.debug_mode {
-                        logs.push(format!("Export path error for '{}': {}", export.json_path, e));
-                    }
-                }
+                Err(e) => logs.push(format!(
+                    "⚠ Export \"{}\" has an unusable path {}: {}",
+                    export.name, export.json_path, e
+                )),
             }
         }
 
@@ -1804,6 +1839,57 @@ mod tests {
     // =========================================================================
     // Variable Interpolation in Execution
     // =========================================================================
+
+    /// A one-character typo in a JSONPath ($.accesss_token) matched nothing, was
+    /// skipped in silence, and surfaced much later as a literal {{my_jwt}} in a
+    /// different request. The export itself has to say so, and name the real keys.
+    #[test]
+    fn an_export_path_that_matches_nothing_says_so() {
+        let engine = ExecutionEngine::new(false, None); // not debug: must warn anyway
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let mut logs = Vec::new();
+        let tc = make_test_case("tc1", "Login", "http://x/", "POST");
+        let body = serde_json::json!({"access_token": "ey.J", "refresh_token": "ey.R"});
+
+        let exported = engine.process_exports(
+            &tc,
+            &[ExportVariable { name: "my_jwt".into(), json_path: "$.accesss_token".into() }],
+            &Some(body),
+            &mut ctx,
+            &mut logs,
+        );
+
+        assert!(exported.is_none() || exported.unwrap().is_empty());
+        let log = logs.join("\n");
+        assert!(log.contains("nothing at $.accesss_token"), "{}", log);
+        assert!(log.contains("access_token, refresh_token"), "{}", log);
+        assert!(log.contains("{{my_jwt}} will not resolve"), "{}", log);
+        // And the correct spelling stays quiet and works.
+        let mut logs2 = Vec::new();
+        let ok = engine.process_exports(
+            &tc,
+            &[ExportVariable { name: "my_jwt".into(), json_path: "$.access_token".into() }],
+            &Some(serde_json::json!({"access_token": "ey.J"})),
+            &mut ctx,
+            &mut logs2,
+        );
+        assert_eq!(ok.unwrap().get("my_jwt").and_then(|v| v.as_str()), Some("ey.J"));
+        assert!(logs2.is_empty(), "{:?}", logs2);
+    }
+
+    #[test]
+    fn top_level_keys_names_what_the_body_offered() {
+        let body = serde_json::json!({"access_token": "a", "refresh_token": "b"});
+        assert_eq!(top_level_keys(&body), " (body has: access_token, refresh_token)");
+        // A wide body is summarised rather than dumped into the log.
+        let wide: serde_json::Map<String, serde_json::Value> =
+            (0..12).map(|i| (format!("k{:02}", i), serde_json::json!(i))).collect();
+        let listed = top_level_keys(&serde_json::Value::Object(wide));
+        assert!(listed.contains("\u{2026} 4 more"), "{}", listed);
+        // Nothing useful to say about a non-object.
+        assert_eq!(top_level_keys(&serde_json::json!([1, 2])), "");
+        assert_eq!(top_level_keys(&serde_json::json!({})), "");
+    }
 
     /// A "Login as PA" node exported my_jwt with no JSON path. The row was dropped
     /// in silence and a later node sent "Bearer {{my_jwt}}" literally, so the only

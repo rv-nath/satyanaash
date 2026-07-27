@@ -391,8 +391,11 @@ Things to remember:
   producer, following the flow's edges.
 - **Only if the assertion passed** — if the producing node fails its check, the
   export doesn't run and `{{token}}` stays **literal** in the request (a handy
-  debugging tell). JSONPath is rooted at the body with `$`; a path that matches
-  nothing is skipped silently.
+  debugging tell). JSONPath is rooted at the body with `$`.
+- **A path that matches nothing is reported**, naming the keys the body did have —
+  `⚠ Export "my_jwt": nothing at $.accesss_token (body has: access_token,
+  refresh_token)`. A typo here would otherwise only surface much later, as a
+  literal `{{my_jwt}}` in a different request.
 - **Scope is one flow run** — the context is fresh each run.
 
 **Exports vs. scripts:** exports pull values from a **response**. To chain a value
