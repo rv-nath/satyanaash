@@ -58,6 +58,10 @@ pub fn take() -> Vec<String> {
 /// Turn a Rhai "variable not found" into advice, when the missing name is a
 /// JavaScript habit. Scripts look enough like JS that reaching for `console.log`
 /// is the expected first move, and the bare message doesn't hint at a way out.
+///
+/// `data` is here for a different reason: it existed in an earlier data-driven
+/// design and scripts written against it still fail this way, with a message that
+/// gives no clue the feature moved.
 pub fn hint_for(message: &str) -> Option<&'static str> {
     const HINTS: &[(&str, &str)] = &[
         (
@@ -65,6 +69,12 @@ pub fn hint_for(message: &str) -> Option<&'static str> {
             "Rhai has no console — use print(\"…\") and the output appears in this run's log.",
         ),
         ("typeof", "Rhai spells this type_of(x)."),
+        (
+            "data",
+            "There is no data.* — a dataset row states what it expects in its own \
+             Expect column, and this script runs only for the request as authored. \
+             Assert the literal here (response.status == 201).",
+        ),
         (
             "JSON",
             "There is no JSON object — response.json is already parsed. \
@@ -159,6 +169,10 @@ mod tests {
             .unwrap()
             .contains("type_of"));
         assert!(hint_for("Variable not found: JSON").unwrap().contains("already parsed"));
+        // Not a JS habit — a script written against the retired dataset columns.
+        assert!(hint_for("Variable not found: data (line 5, position 20)")
+            .unwrap()
+            .contains("Expect column"));
         assert_eq!(hint_for("Function not found: myHelper (i64)"), None);
         assert!(hint_for("Variable not found: null").unwrap().contains("()"));
         // Rhai reserves `null`, so a JS-style null check fails as a syntax error.

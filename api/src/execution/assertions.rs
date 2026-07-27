@@ -105,7 +105,7 @@ impl AssertionEngine {
         // `vars` — a fresh mutable map for transient (this-run) values
         scope.push("vars", Map::new());
 
-        // Rewrite SAT.env. → env., SAT.vars. → vars., SAT.data. → data.
+        // Rewrite SAT.env. → env., SAT.vars. → vars.
         let rewritten = script
             .replace("SAT.env.", "env.")
             .replace("SAT.vars.", "vars.");
