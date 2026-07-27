@@ -405,17 +405,17 @@ const ProjectDetailContent = () => {
       {/* Header */}
       <header className="border-b border-border bg-card px-6 py-3 flex items-center justify-between">
         {/* Left: Back + Contextual Title */}
-        <div className="flex items-center gap-4">
+        <div className="flex min-w-0 items-center gap-4">
           <Link to="/">
             <Button variant="ghost" size="icon">
               <ArrowLeft className="w-4 h-4" />
             </Button>
           </Link>
-          <div className="flex items-center gap-3">
-            <div className="flex flex-col">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex min-w-0 flex-col">
               {/* Flow name row */}
-              <div className="flex items-center">
-                <span className="text-lg font-semibold font-mono text-foreground">
+              <div className="flex min-w-0 items-center">
+                <span className="truncate font-mono text-lg font-semibold text-foreground">
                   {project?.name || 'Project'}
                 </span>
                 {activeIsFlow && activeFlow && (
@@ -516,7 +516,9 @@ const ProjectDetailContent = () => {
         </div>
 
         {/* Right: Contextual Actions */}
-        <div className="flex items-center gap-1">
+        {/* shrink-0: the header doesn't wrap, so without this a long project or
+            flow name squeezes the toolbar and clips buttons off the right edge. */}
+        <div className="flex shrink-0 items-center gap-1">
           {/* Environment switcher — always visible so the active env is clear */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
