@@ -81,6 +81,7 @@ const ProjectDetailContent = () => {
     canUndo,
     canRedo,
     saveStatus,
+    manualSave,
     saveError,
     // Validation status
     validationStatus,
@@ -268,6 +269,16 @@ const ProjectDetailContent = () => {
     if (!activeFlowId) {
       toast.error("No flow selected to execute");
       return;
+    }
+
+    // The server runs the flow from its own copy of the graph, so an edit still
+    // sitting in the auto-save debounce would be invisible to the run — you'd be
+    // reading results from a version you can no longer see. Flush first.
+    if (saveStatus === "pending" || saveStatus === "saving" || saveStatus === "error") {
+      if (!(await manualSave())) {
+        toast.error("Couldn't save the flow, so a run would use an older version of it.");
+        return;
+      }
     }
 
     // Show console panel when executing

@@ -28,7 +28,10 @@ interface UseAutoSaveReturn {
   status: SaveStatus;
   lastSaved: Date | null;
   error: string | null;
-  save: () => Promise<void>;  // Manual save trigger
+  /** Persist now, resolving true once the server has this graph. Callers that
+   *  act on the saved copy — running a flow — need to know, and an auto-save
+   *  that only sets an error status can't tell them. */
+  save: () => Promise<boolean>;
 }
 
 /**
@@ -78,6 +81,9 @@ export function useAutoSave({
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
   const isInitializedRef = useRef(false);
+  // A save already on its way covers the state that triggered it; a second save
+  // racing it would send the same version twice and lose on optimistic locking.
+  const inFlightRef = useRef<Promise<boolean> | null>(null);
   const skipCountRef = useRef(0); // Skip first few renders after init (React Flow measures nodes)
 
   // Update version ref when it changes
@@ -97,9 +103,7 @@ export function useAutoSave({
   }, []);
 
   // Core save function
-  const performSave = useCallback(async () => {
-    if (!flowId || !isMountedRef.current) return;
-
+  const saveNow = useCallback(async (): Promise<boolean> => {
     setStatus('saving');
     setError(null);
 
@@ -147,6 +151,7 @@ export function useAutoSave({
           }
         }, 2000);
       }
+      return true;
     } catch (err) {
       if (isMountedRef.current) {
         const message = err instanceof Error ? err.message : 'Failed to save';
@@ -154,8 +159,23 @@ export function useAutoSave({
         setStatus('error');
         console.error('[AutoSave] Save failed:', err);
       }
+      return false;
     }
   }, [flowId, nodes, edges, edgeSettings, flowVariables, updateGraphMutation, onVersionUpdate]);
+
+  const performSave = useCallback(async (): Promise<boolean> => {
+    if (!flowId || !isMountedRef.current) return false;
+    // Join an in-flight save rather than racing it.
+    if (inFlightRef.current) return inFlightRef.current;
+
+    const promise = saveNow();
+    inFlightRef.current = promise;
+    try {
+      return await promise;
+    } finally {
+      inFlightRef.current = null;
+    }
+  }, [flowId, saveNow]);
 
   // Watch for changes and trigger debounced save
   useEffect(() => {

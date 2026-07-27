@@ -100,7 +100,7 @@ interface TestProjectContextType {
   saveStatus: SaveStatus;
   lastSaved: Date | null;
   saveError: string | null;
-  manualSave: () => Promise<void>;
+  manualSave: () => Promise<boolean>;
   // Validation status
   validationStatus: ValidationStatus;
   validationErrors: ValidationIssue[];
