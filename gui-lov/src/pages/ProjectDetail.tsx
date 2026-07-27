@@ -236,9 +236,42 @@ const ProjectDetailContent = () => {
   // SSE streaming for real-time execution logs
   // onEnvWrites: a flow run persists SAT.env writes to the active environment,
   // the same as a standalone run.
-  const { logs: consoleLogs, isExecuting, execute: executeFlow, clearLogs } = useExecutionStream({
+  const {
+    logsByFlow,
+    executingFlowId,
+    isExecuting,
+    execute: executeFlow,
+    clearLogs,
+    closeLogs,
+  } = useExecutionStream({
     onEnvWrites: applyEnvWrites,
   });
+
+  // Which flow's console is on screen. It follows the canvas, but you can pin
+  // another flow's log to compare two runs.
+  const [consoleFlowId, setConsoleFlowId] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeFlowId) setConsoleFlowId(activeFlowId);
+  }, [activeFlowId]);
+
+  // A tab per flow that has output, plus the flow on screen so the panel is never
+  // headless. Ordered like the rail rather than by when each last ran.
+  const consoleTabs = useMemo(() => {
+    const ids = new Set(Object.keys(logsByFlow));
+    if (activeFlowId) ids.add(activeFlowId);
+    return testGroups
+      .filter((g) => ids.has(g.id))
+      .map((g) => ({
+        id: g.id,
+        name: g.name,
+        entries: logsByFlow[g.id]?.length ?? 0,
+        running: executingFlowId === g.id,
+      }));
+  }, [logsByFlow, activeFlowId, testGroups, executingFlowId]);
+
+  const shownConsoleId = consoleTabs.some((t) => t.id === consoleFlowId)
+    ? consoleFlowId
+    : consoleTabs[0]?.id ?? null;
 
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);
@@ -944,7 +977,18 @@ const ProjectDetailContent = () => {
                       </ResizablePanel>
                       <ResizableHandle />
                       <ResizablePanel defaultSize={35} minSize={20}>
-                        <ConsolePanel logs={consoleLogs} onClose={() => setShowConsole(false)} onClear={clearLogs} />
+                        <ConsolePanel
+                          logs={(shownConsoleId && logsByFlow[shownConsoleId]) || []}
+                          tabs={consoleTabs}
+                          activeTabId={shownConsoleId}
+                          onSelectTab={setConsoleFlowId}
+                          onCloseTab={(flowId) => {
+                            closeLogs(flowId);
+                            if (flowId === consoleFlowId) setConsoleFlowId(activeFlowId ?? null);
+                          }}
+                          onClose={() => setShowConsole(false)}
+                          onClear={() => shownConsoleId && clearLogs(shownConsoleId)}
+                        />
                       </ResizablePanel>
                     </ResizablePanelGroup>
                   ) : (

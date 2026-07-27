@@ -7,15 +7,41 @@ import { copyText } from "@/lib/clipboard";
 import { formatLog, formatLogs, formatTimestamp } from "@/lib/consoleText";
 import type { ConsoleLog, ConsoleLogDetail } from "@/hooks/useExecutionStream";
 
+/** One console per flow. The tab names whose run you are reading. */
+export interface ConsoleTab {
+  id: string;
+  name: string;
+  entries: number;
+  running: boolean;
+}
+
 interface ConsolePanelProps {
   logs: ConsoleLog[];
+  tabs: ConsoleTab[];
+  activeTabId: string | null;
+  onSelectTab: (flowId: string) => void;
+  onCloseTab: (flowId: string) => void;
   onClose?: () => void;
   onClear?: () => void;
 }
 
-const ConsolePanel = ({ logs, onClose, onClear }: ConsolePanelProps) => {
+const ConsolePanel = ({
+  logs,
+  tabs,
+  activeTabId,
+  onSelectTab,
+  onCloseTab,
+  onClose,
+  onClear,
+}: ConsolePanelProps) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+
+  // Rows are tracked by index, so a stale expansion would open an unrelated
+  // entry after switching flows.
+  useEffect(() => {
+    setExpandedRows(new Set());
+  }, [activeTabId]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -66,12 +92,51 @@ const ConsolePanel = ({ logs, onClose, onClear }: ConsolePanelProps) => {
   return (
     <div className="h-full bg-console-background border-t border-border flex flex-col">
       <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <div className="flex items-center gap-2">
-          <Terminal className="w-4 h-4 text-primary" />
-          <span className="text-sm font-semibold font-mono text-foreground">Console</span>
-          <span className="text-xs text-muted-foreground">
-            {logs.length} {logs.length === 1 ? "entry" : "entries"}
-          </span>
+        <div className="flex min-w-0 items-center gap-2">
+          <Terminal className="w-4 h-4 shrink-0 text-primary" />
+          <div className="scrollbar-hairline flex min-w-0 items-center gap-1 overflow-x-auto">
+            {tabs.length === 0 ? (
+              <span className="text-sm font-mono font-semibold text-foreground">Console</span>
+            ) : (
+              tabs.map((tab) => {
+                const active = tab.id === activeTabId;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => onSelectTab(tab.id)}
+                    title={`${tab.name} — ${tab.entries} ${tab.entries === 1 ? "entry" : "entries"}`}
+                    className={`group flex max-w-[200px] shrink-0 items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-mono transition-colors ${
+                      active
+                        ? "border-primary/40 bg-primary/10 text-foreground"
+                        : "border-transparent text-muted-foreground hover:bg-muted/30 hover:text-foreground"
+                    }`}
+                  >
+                    {tab.running && (
+                      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+                    )}
+                    <span className="truncate">{tab.name}</span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground/70">
+                      {tab.entries}
+                    </span>
+                    {/* A span, not a button: nesting buttons is invalid HTML. */}
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={`Close ${tab.name} console`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCloseTab(tab.id);
+                      }}
+                      className="shrink-0 rounded opacity-0 hover:text-destructive group-hover:opacity-100"
+                    >
+                      <X className="h-3 w-3" />
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -90,7 +155,7 @@ const ConsolePanel = ({ logs, onClose, onClear }: ConsolePanelProps) => {
           >
             <Copy className="w-3 h-3" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClear} title="Clear console">
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClear} title="Clear this flow\u2019s console">
             <Trash2 className="w-3 h-3" />
           </Button>
           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose} title="Close console">
@@ -101,6 +166,11 @@ const ConsolePanel = ({ logs, onClose, onClear }: ConsolePanelProps) => {
 
       <ScrollArea className="flex-1" ref={scrollRef}>
         <div className="p-4 space-y-1 font-mono text-xs">
+          {logs.length === 0 && (
+            <p className="text-muted-foreground">
+              No output yet — run this flow and its log appears here.
+            </p>
+          )}
           {logs.map((log, index) => {
             const hasDetails = log.details && log.details.length > 0;
             const isExpanded = expandedRows.has(index);

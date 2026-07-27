@@ -121,10 +121,15 @@ interface UseExecutionStreamOptions {
 }
 
 export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = {}) {
-  const [logs, setLogs] = useState<ConsoleLog[]>([
-    { timestamp: new Date().toISOString(), message: 'Ready to execute tests', type: 'info' }
-  ]);
-  const [isExecuting, setIsExecuting] = useState(false);
+  // Logs are kept per flow. One shared list mixed unrelated runs together, so
+  // switching flows meant reading someone else's failures — and a second run
+  // buried the first.
+  const [logsByFlow, setLogsByFlow] = useState<Record<string, ConsoleLog[]>>({});
+  const [executingFlowId, setExecutingFlowId] = useState<string | null>(null);
+
+  // Which flow the events arriving right now belong to. A ref because addLog is
+  // called from the stream loop, long after the state that started it.
+  const targetFlowRef = useRef<string | null>(null);
 
   // Store AbortController to cancel previous stream
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -134,23 +139,36 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
   onEnvWritesRef.current = onEnvWrites;
 
   const addLog = useCallback((message: string, type: ConsoleLog['type'] = 'info', details?: ConsoleLogDetail[]) => {
-    setLogs(prev => [...prev, {
+    const flowId = targetFlowRef.current;
+    if (!flowId) return;
+    const entry: ConsoleLog = {
       timestamp: new Date().toISOString(),
       message,
       type,
       ...(details && { details }),
-    }]);
+    };
+    setLogsByFlow(prev => ({ ...prev, [flowId]: [...(prev[flowId] ?? []), entry] }));
   }, []);
 
-  const clearLogs = useCallback(() => {
-    setLogs([]);
+  /** Empty one flow's console, keeping its tab. */
+  const clearLogs = useCallback((flowId: string) => {
+    setLogsByFlow(prev => ({ ...prev, [flowId]: [] }));
+  }, []);
+
+  /** Drop one flow's console entirely — closing its tab. */
+  const closeLogs = useCallback((flowId: string) => {
+    setLogsByFlow(prev => {
+      const next = { ...prev };
+      delete next[flowId];
+      return next;
+    });
   }, []);
 
   const cancelExecution = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
-      setIsExecuting(false);
+      setExecutingFlowId(null);
       addLog('Execution cancelled', 'info');
     }
   }, [addLog]);
@@ -165,7 +183,11 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    setIsExecuting(true);
+    // Everything logged from here belongs to this flow.
+    targetFlowRef.current = flowId;
+    setExecutingFlowId(flowId);
+    // A re-run replaces the previous one rather than appending to it.
+    setLogsByFlow(prev => ({ ...prev, [flowId]: [] }));
     addLog(`Starting ${options.debug_mode ? 'debug' : 'test'} execution...`, 'info');
 
     // SAT.env writes from every node in this run. Collected as events stream in and
@@ -259,17 +281,20 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
         addLog('Unknown error occurred', 'error');
       }
     } finally {
-      setIsExecuting(false);
+      setExecutingFlowId(null);
       abortControllerRef.current = null;
     }
   }, [addLog]);
 
   return {
-    logs,
-    isExecuting,
+    logsByFlow,
+    /** The flow currently running, if any — one execution at a time. */
+    executingFlowId,
+    isExecuting: executingFlowId !== null,
     execute,
     cancelExecution,
     clearLogs,
+    closeLogs,
   };
 }
 
