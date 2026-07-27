@@ -477,6 +477,15 @@ A flow is a graph you assemble on the canvas:
 - **Input variables** — values set on a node in **Configure Node** win over
   anything an earlier step exported or a script set, for that node only. That's how
   two nodes running one request use different credentials.
+- **Expect** — what must be true *at this point in this flow*. Blank means the test
+  case's own assertion, as always; `402` is shorthand for
+  `response.status == 402`; anything else is a Rhai expression. Use it when one
+  request means different things in different scenarios — a send that should be
+  **202** normally and **402** in a no-balance flow — rather than duplicating the
+  request. When a node states an Expect, the test case's post-test script does not
+  run for that node (same rule as a dataset row), so state what you need in the
+  Expect itself; it may capture too. **Output variables are unaffected** and remain
+  the flow-scoped way to carry values forward.
 - **Naming a node** — a node shows its test case's name, but you can give it its
   own in **Configure Node → Node name**. Two nodes may run the same request in
   different roles — *Login as new user* and *Root login (for teardown)* — and the

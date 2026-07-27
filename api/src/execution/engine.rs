@@ -97,6 +97,25 @@ fn top_level_keys(json: &Value) -> String {
     }
 }
 
+/// What a hand-written check says: a bare status code, a Rhai expression, or
+/// nothing. Written once because a dataset row's Expect and a node's Expect mean
+/// exactly the same thing and must not drift apart.
+enum Check<'a> {
+    Status(u16),
+    Expr(&'a str),
+    Unstated,
+}
+
+fn parse_check(raw: Option<&str>) -> Check<'_> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Check::Unstated,
+        Some(text) => match text.parse::<u16>() {
+            Ok(status) => Check::Status(status),
+            Err(_) => Check::Expr(text),
+        },
+    }
+}
+
 fn shared_script(test_case: &TestCase) -> Option<&str> {
     test_case
         .assertion_script
@@ -117,6 +136,11 @@ struct RunOptions<'a> {
     /// Set on iteration results so the UI can label them.
     row_index: Option<usize>,
     row_label: Option<String>,
+    /// This node's own Expect, when the author gave it one. A node states what
+    /// should be true for its place in the flow — the same request may be a 202
+    /// in one scenario and a 402 in another — and like a dataset row it stands
+    /// alone: the test case's post-test script does not run for that node.
+    node_check: Option<&'a str>,
 }
 
 /// Result status for a node execution
@@ -632,6 +656,14 @@ impl ExecutionEngine {
             }
         }
 
+        // This node's Expect, when the author gave it one.
+        let node_check = node.data
+            .get("config")
+            .and_then(|c| c.get("check"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
         let mut result = self.run_once(
             &test_case,
             None,
@@ -639,6 +671,7 @@ impl ExecutionEngine {
             RunOptions {
                 node_id: &node.id,
                 extra_exports: &node_output_vars,
+                node_check,
                 // Was false here and true on the standalone path — unintentional
                 // drift. An unresolved {{var}} shipping as a literal is worth saying
                 // out loud wherever it happens; in a flow it is the likelier place,
@@ -938,20 +971,26 @@ impl ExecutionEngine {
         let mut assertion_failure: Option<String> = None;
         let status_code = http_result.response.status;
 
-        // Two self-contained worlds, decided by whether this is a dataset row:
+        // Where the verdict comes from, most specific first:
         //
-        //  * A dataset row defines its own check — its expected status, else any 2xx.
-        //    The shared post-test script is NOT run: the Data tab stands alone, so a
-        //    script written for the single-request case can neither decide nor break
-        //    a row's verdict.
-        //  * A normal run uses the post-test script, which both captures values and
-        //    (optionally) decides the verdict.
-        let assertion_passed = match row {
-            Some(data_row) => {
-                // A row's check is either a bare status code (shorthand) or a Rhai
-                // expression. Blank falls back to any 2xx.
-                let passed = match (data_row.expected_status_code(), data_row.check_expr()) {
-                    (Some(expected), _) => {
+        //  * a dataset row's Expect,
+        //  * else this node's Expect (its role in the flow: 202 here, 402 there),
+        //  * else the test case's post-test script.
+        //
+        // The first two stand alone — the shared script does not run for them. The
+        // author has said what should be true for this row or this step, and a
+        // script written for the request in isolation can neither decide nor break
+        // it. Nothing is lost: output variables run either way, and an Expect can
+        // capture for itself.
+        let own_check = match row {
+            Some(data_row) => Some((data_row.check_expr(), "This row's check")),
+            None => opts.node_check.map(|c| (Some(c), "This node's check")),
+        };
+
+        let assertion_passed = match own_check {
+            Some((raw, what)) => {
+                let passed = match parse_check(raw) {
+                    Check::Status(expected) => {
                         let ok = status_code == expected;
                         if !ok {
                             assertion_failure =
@@ -959,7 +998,7 @@ impl ExecutionEngine {
                         }
                         ok
                     }
-                    (None, Some(expr)) => match self.assertions.evaluate(AssertionInput {
+                    Check::Expr(expr) => match self.assertions.evaluate(AssertionInput {
                         script: expr,
                         status: status_code,
                         body: &http_result.response.body,
@@ -969,7 +1008,7 @@ impl ExecutionEngine {
                     }) {
                         Ok(outcome) => {
                             logs.extend(outcome.output);
-                            // A row's own script may capture values too.
+                            // A check may capture on its way to a verdict.
                             for (k, v) in outcome.vars {
                                 ctx.set(&k, v);
                             }
@@ -989,8 +1028,9 @@ impl ExecutionEngine {
                                 // Not a yes/no answer — say so rather than guessing.
                                 None => {
                                     assertion_failure = Some(format!(
-                                        "This row's check must be a status code or an expression \
-                                         that is true or false — got: {}",
+                                        "{} must be a status code or an expression that is \
+                                         true or false — got: {}",
+                                        what,
                                         last_expression(expr)
                                     ));
                                     false
@@ -998,12 +1038,12 @@ impl ExecutionEngine {
                             }
                         }
                         Err(e) => bail!(
-                            format!("This row's check could not run: {}", plain(&e)),
+                            format!("{} could not run: {}", what, plain(&e)),
                             Some(http_result.request),
                             Some(http_result.response)
                         ),
                     },
-                    (None, None) => {
+                    Check::Unstated => {
                         let ok = AssertionEngine::default_assertion(status_code);
                         if !ok {
                             assertion_failure = Some(format!(
@@ -1155,6 +1195,7 @@ impl ExecutionEngine {
                     &mut row_ctx,
                     RunOptions {
                         node_id: "direct",
+                        node_check: None,
                         extra_exports: &[],
                         report_unresolved: true,
                         row_index: Some(index),
@@ -1250,6 +1291,7 @@ impl ExecutionEngine {
             &mut ctx,
             RunOptions {
                 node_id: "direct",
+                node_check: None,
                 extra_exports: &[],
                 report_unresolved: true,
                 row_index: None,
@@ -1721,6 +1763,105 @@ mod tests {
         assert_eq!(result.status, "completed");
         assert_eq!(result.stats.total, 0);
         assert_eq!(result.stats.passed, 0);
+    }
+
+    /// A one-shot HTTP server that answers with the given status and body. The
+    /// other tests here point at a refused port, which is fine when only the
+    /// request log matters — but a verdict needs a real response to judge.
+    async fn stub_once(status: u16, body: &'static str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await; // drain the request
+                let response = format!(
+                    "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status, body.len(), body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        format!("http://{}/sms", addr)
+    }
+
+    /// "Send SMS" is a 202 in one flow and a 402 in the flow with no balance. The
+    /// node says which, and the test case's own assertion — written for the happy
+    /// path — must not get a vote on that node.
+    #[tokio::test]
+    async fn a_nodes_expect_decides_and_the_shared_script_stays_out_of_it() {
+        async fn run(node_config: serde_json::Value) -> NodeResult {
+            let url = stub_once(402, r#"{"code":"LOW_BALANCE"}"#).await;
+            let engine = ExecutionEngine::new(true, None);
+            let mut tc = make_test_case("sms", "Send SMS", &url, "POST");
+            // The happy-path assertion: would fail this 402, and captures as it goes.
+            tc.assertion_script =
+                Some("SAT.vars.txn = \"captured\"; response.status == 202".to_string());
+            let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+            let mut data = serde_json::json!({"testCaseId": "sms"});
+            data.as_object_mut().unwrap().insert("config".into(), node_config);
+            let flow = make_flow("flow1", vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("n1", "testCase", data),
+                make_node("end", "end", serde_json::json!({})),
+            ], vec![
+                make_edge("e1", "start", "n1", None),
+                make_edge("e2", "n1", "end", Some("success")),
+            ]);
+            engine
+                .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+                .await
+                .unwrap()
+                .results
+                .remove(0)
+        }
+
+        // The node says 402, so the 402 passes even though the test case wanted 202.
+        let shorthand = run(serde_json::json!({"check": "402"})).await;
+        assert_eq!(shorthand.status, NodeStatus::Passed, "{:?}", shorthand.error_message);
+
+        // An expression can look at the body, and may capture for itself.
+        let expr = run(serde_json::json!({
+            "check": "SAT.vars.reason = response.json.code; response.status == 402"
+        })).await;
+        assert_eq!(expr.status, NodeStatus::Passed, "{:?}", expr.error_message);
+
+        // A blank Expect hands the verdict back to the test case, which wants 202.
+        let blank = run(serde_json::json!({"check": "   "})).await;
+        assert_eq!(blank.status, NodeStatus::Failed);
+        assert!(
+            blank.error_message.as_deref().unwrap_or("").contains("Assertion returned false"),
+            "{:?}",
+            blank.error_message
+        );
+
+        // No Expect at all behaves exactly as it did before this existed.
+        let none = run(serde_json::json!({})).await;
+        assert_eq!(none.status, NodeStatus::Failed);
+
+        // A node's wrong Expect names the node, so you know which layer decided.
+        let wrong = run(serde_json::json!({"check": "202"})).await;
+        assert_eq!(wrong.status, NodeStatus::Failed);
+        assert_eq!(
+            wrong.error_message.as_deref(),
+            Some("Expected HTTP 202, got 402")
+        );
+    }
+
+    /// The status shorthand and a full expression are read the same way for a node
+    /// as for a dataset row — one parser, so they can't drift apart.
+    #[test]
+    fn a_check_is_a_status_a_expression_or_nothing() {
+        assert!(matches!(parse_check(Some("402")), Check::Status(402)));
+        assert!(matches!(parse_check(Some("  402  ")), Check::Status(402)));
+        assert!(matches!(parse_check(Some("response.status == 402")), Check::Expr(_)));
+        // Not a u16, so it can only be an expression.
+        assert!(matches!(parse_check(Some("99999")), Check::Expr(_)));
+        assert!(matches!(parse_check(Some("   ")), Check::Unstated));
+        assert!(matches!(parse_check(None), Check::Unstated));
     }
 
     /// Two nodes can point at one test case in different roles. Without the node's

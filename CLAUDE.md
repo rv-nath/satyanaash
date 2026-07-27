@@ -68,6 +68,10 @@ npm run dev        # Starts on http://localhost:8080
   run one test case in different roles. The engine copies it to
   `NodeResult.node_label` and the `node_started` event; blank is treated as unset.
   Display rule lives in `nodeName()` (`hooks/useExecutionStream.ts`)
+- **Node Expect** — `node.data.config.check` overrides the verdict for one node in
+  one flow. Same two forms as a dataset row's Expect, through the same
+  `parse_check`; when set, `assertion_script` does not run for that node. Verdict
+  precedence in `run_once`: row Expect → node Expect → post-test script → 2xx
 - **Datasets** run one test case against many bodies — see below
 - **Project variables** stored in `project.settings.variables`, injected as environment into execution
 - **Variable interpolation:** `{{variableName}}` in URLs, headers, payloads — resolved from execution context

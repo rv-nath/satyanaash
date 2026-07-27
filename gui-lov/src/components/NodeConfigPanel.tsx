@@ -2,7 +2,9 @@ import { useState, useEffect } from "react";
 import { Node } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Trash2, Plus, X, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
+import { Trash2, Plus, X, ArrowDownToLine, ArrowUpFromLine, Target } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { isStatusShorthand } from "@/lib/dataset";
 import { useTestProject } from "@/contexts/TestProjectContext";
 
 interface InputVariable {
@@ -26,16 +28,23 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const [inputVars, setInputVars] = useState<InputVariable[]>([]);
   const [outputVars, setOutputVars] = useState<OutputVariable[]>([]);
   const [alias, setAlias] = useState("");
+  const [check, setCheck] = useState("");
 
   useEffect(() => {
     setAlias((node?.data?.alias as string) || "");
     if (node?.data?.config) {
-      const config = node.data.config as { inputVars?: InputVariable[]; outputVars?: OutputVariable[] };
+      const config = node.data.config as {
+        inputVars?: InputVariable[];
+        outputVars?: OutputVariable[];
+        check?: string;
+      };
       setInputVars(config.inputVars || []);
       setOutputVars(config.outputVars || []);
+      setCheck(config.check || "");
     } else {
       setInputVars([]);
       setOutputVars([]);
+      setCheck("");
     }
   }, [node]);
 
@@ -51,7 +60,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
 
   const handleSave = () => {
     if (!node) return;
-    updateNodeConfig(node.id, { inputVars, outputVars }, alias);
+    updateNodeConfig(node.id, { inputVars, outputVars, check }, alias);
     onClose();
   };
 
@@ -155,6 +164,40 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
 
         <div className="my-6 h-px bg-border" />
 
+        <Section
+          icon={<Target className="h-3.5 w-3.5" />}
+          title="Expect"
+          subtitle="What must be true here — leave blank to use the request's own assertion"
+          accent={false}
+        >
+          <Textarea
+            value={check}
+            onChange={(e) => setCheck(e.target.value)}
+            placeholder="402   — or an expression"
+            className="min-h-0 resize-y whitespace-pre px-2 py-1.5 font-mono text-xs"
+            rows={2}
+            aria-label="Expected result for this node"
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            {!check.trim()
+              ? "Blank — this node uses the request's own assertion, as it does today."
+              : isStatusShorthand(check)
+                ? `Shorthand for response.status == ${check.trim()}`
+                : "Rhai expression — must end in something true or false."}
+            {check.trim() && (
+              <>
+                {" "}The request's post-test script does not run for this node, so state
+                everything you need here. Output variables are unaffected.
+              </>
+            )}
+          </p>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            Use this when the same request means different things in different flows —
+            a send that should be <span className="text-foreground">202</span> here and{" "}
+            <span className="text-foreground">402</span> in a no-balance scenario.
+          </p>
+        </Section>
+
         {/* Output Variables */}
         <Section
           icon={<ArrowUpFromLine className="h-3.5 w-3.5" />}
@@ -231,7 +274,8 @@ function Section({
   icon: React.ReactNode;
   title: string;
   subtitle: string;
-  onAdd: () => void;
+  /** Omitted for a section with a single field rather than a list of rows. */
+  onAdd?: () => void;
   accent: boolean;
   children: React.ReactNode;
 }) {
@@ -251,10 +295,12 @@ function Section({
             <p className="text-xs text-muted-foreground">{subtitle}</p>
           </div>
         </div>
-        <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5" onClick={onAdd}>
-          <Plus className="h-3.5 w-3.5" />
-          Add
-        </Button>
+        {onAdd && (
+          <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5" onClick={onAdd}>
+            <Plus className="h-3.5 w-3.5" />
+            Add
+          </Button>
+        )}
       </div>
       {children}
     </section>

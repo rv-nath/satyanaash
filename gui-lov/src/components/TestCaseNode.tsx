@@ -14,6 +14,7 @@ interface TestCaseNodeData {
    *  different roles ("Login as new user" vs "Root login"); the alias is what
    *  distinguishes them. The test case name stays visible underneath. */
   alias?: string;
+  config?: { check?: string };
 }
 
 interface TestCaseNodeProps {
@@ -41,6 +42,9 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
     : null;
   const testCaseName = currentTestCase?.name || data.label;
   const alias = data.alias?.trim();
+  // A node that overrides the expectation says so on the canvas: otherwise the
+  // graph looks identical to one that doesn't, and a passing 402 reads as a bug.
+  const check = data.config?.check?.trim();
   const displayLabel = alias || testCaseName;
   const displayMethod = currentTestCase?.method || data.method;
   const displayEndpoint = currentTestCase?.endpoint || data.endpoint;
@@ -72,6 +76,11 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
               runs <span className="text-foreground">{testCaseName}</span>
             </p>
           )}
+          {check && (
+            <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
+              expects <span className="text-foreground">{check}</span>
+            </p>
+          )}
           <div className="mt-2 flex items-baseline gap-2">
             <span
               className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] font-semibold ${getMethodColor(displayMethod)}`}
@@ -86,6 +95,15 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
           </div>
         </PopoverContent>
       </Popover>
+
+      {check && (
+        <span
+          className="shrink-0 rounded border border-primary/40 bg-primary/10 px-1 font-mono text-[9px] font-semibold text-primary"
+          title={`This node expects: ${check}`}
+        >
+          {/^\d+$/.test(check) ? check : "chk"}
+        </span>
+      )}
 
       <span className="min-w-0 flex-1">
         <span className="block truncate font-mono text-xs font-medium text-foreground">
