@@ -21,6 +21,90 @@ pub async fn create_flow(
     Ok((StatusCode::CREATED, Json(flow)))
 }
 
+/// POST /api/v1/flows/:id/clone - Copy a flow, graph and all
+///
+/// The point is the *graph*: a scenario usually starts as "the last one, with the
+/// tail changed", and re-wiring four identical steps by hand is where the typing
+/// goes. Node ids are kept — they only have to be unique within their own flow —
+/// so every alias, input variable and output variable survives the copy.
+pub async fn clone_flow(
+    State(repo): State<Arc<dyn FlowRepository>>,
+    Path(id): Path<String>,
+    body: Option<Json<CloneFlow>>,
+) -> Result<(StatusCode, Json<Flow>), AppError> {
+    let source = repo.get_by_id(&id).await?
+        .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", id)))?;
+
+    let requested = body
+        .and_then(|Json(b)| b.name)
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
+
+    let name = match requested {
+        Some(name) => name,
+        None => next_copy_name(&*repo, &source).await?,
+    };
+
+    let flow = repo.create(&source.project_id, CreateFlow {
+        name,
+        description: source.description.clone(),
+        graph_data: Some(source.graph_data.clone()),
+    }).await?;
+
+    Ok((StatusCode::CREATED, Json(flow)))
+}
+
+async fn next_copy_name(repo: &dyn FlowRepository, source: &Flow) -> Result<String, AppError> {
+    let existing = repo
+        .list_by_project(&source.project_id, Pagination { page: 1, per_page: 500 })
+        .await?;
+    let taken: std::collections::HashSet<&str> =
+        existing.data.iter().map(|f| f.name.as_str()).collect();
+    Ok(copy_name(&source.name, &taken))
+}
+
+/// "Signup (copy)", then "Signup (copy 2)" — cloning twice shouldn't leave two
+/// flows wearing the same name in the rail.
+fn copy_name(base: &str, taken: &std::collections::HashSet<&str>) -> String {
+    let first = format!("{} (copy)", base);
+    if !taken.contains(first.as_str()) {
+        return first;
+    }
+    (2..)
+        .map(|n| format!("{} (copy {})", base, n))
+        .find(|candidate| !taken.contains(candidate.as_str()))
+        // The range is unbounded, so there is always a free name.
+        .unwrap_or(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_name;
+    use std::collections::HashSet;
+
+    #[test]
+    fn a_copy_gets_a_name_nobody_is_using() {
+        let mut taken: HashSet<&str> = HashSet::new();
+        taken.insert("Signup");
+        assert_eq!(copy_name("Signup", &taken), "Signup (copy)");
+
+        taken.insert("Signup (copy)");
+        assert_eq!(copy_name("Signup", &taken), "Signup (copy 2)");
+
+        taken.insert("Signup (copy 2)");
+        taken.insert("Signup (copy 3)");
+        assert_eq!(copy_name("Signup", &taken), "Signup (copy 4)");
+    }
+
+    #[test]
+    fn cloning_a_copy_doesnt_stack_suffixes_beyond_one() {
+        let mut taken: HashSet<&str> = HashSet::new();
+        taken.insert("Signup (copy)");
+        // Cloning the copy itself reads oddly whatever we do; keep it predictable.
+        assert_eq!(copy_name("Signup (copy)", &taken), "Signup (copy) (copy)");
+    }
+}
+
 /// GET /api/v1/projects/:project_id/flows - List all flows for a project (paginated)
 pub async fn list_flows(
     State(repo): State<Arc<dyn FlowRepository>>,

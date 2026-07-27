@@ -44,7 +44,7 @@ import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
 import type { TestCaseExecutionResult } from "@/lib/api/types";
 import type { LayoutSpacing } from "@/lib/layoutUtils";
-import { useProject, useFlows, useCreateFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useTestCases } from "@/hooks/useApi";
+import { useProject, useFlows, useCreateFlow, useCloneFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useTestCases } from "@/hooks/useApi";
 import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
@@ -226,6 +226,7 @@ const ProjectDetailContent = () => {
 
   // API mutations for flows
   const createFlowMutation = useCreateFlow();
+  const cloneFlowMutation = useCloneFlow();
   const updateFlowMutation = useUpdateFlow();
   const deleteFlowMutation = useDeleteFlow();
 
@@ -320,6 +321,33 @@ const ProjectDetailContent = () => {
   };
 
   // Auto-create a new flow with generated name
+  const handleCloneFlow = async (flowId: string) => {
+    if (!projectId) return;
+
+    // The server copies its own stored graph, so an edit still waiting on the
+    // auto-save debounce would be missing from the duplicate — and you'd only
+    // find out later, looking at a copy of something you never saw.
+    if (
+      flowId === activeFlowId &&
+      (saveStatus === "pending" || saveStatus === "saving" || saveStatus === "error")
+    ) {
+      if (!(await manualSave())) {
+        toast.error("Couldn't save this flow, so a copy would miss your latest change.");
+        return;
+      }
+    }
+
+    try {
+      const copy = await cloneFlowMutation.mutateAsync({ id: flowId, projectId });
+      setActiveFlowId(copy.id);
+      openFlowTab(copy.id, false);
+      toast.success(`Created "${copy.name}"`);
+    } catch (err) {
+      toast.error("Failed to duplicate flow");
+      console.error(err);
+    }
+  };
+
   const handleCreateFlow = async () => {
     if (!projectId) {
       toast.error("Project ID not found");
@@ -827,6 +855,7 @@ const ProjectDetailContent = () => {
                     setEditingGroup({ id: group.id, name: group.name, description: group.description });
                     setGroupDialogOpen(true);
                   }}
+                  onCloneGroup={handleCloneFlow}
                   onDeleteGroup={async (flowId) => {
                     if (!projectId) return;
                     try {

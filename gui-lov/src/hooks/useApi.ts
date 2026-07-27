@@ -263,6 +263,18 @@ export function useUpdateFlowGraph() {
 }
 
 /** Delete a flow */
+/** Copy a flow, graph and all */
+export function useCloneFlow() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; projectId: string; name?: string }) =>
+      flowsApi.clone(id, name),
+    onSuccess: (_, { projectId }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.flows(projectId) });
+    },
+  });
+}
+
 export function useDeleteFlow() {
   const queryClient = useQueryClient();
   return useMutation({

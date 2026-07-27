@@ -90,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/flows/{id}", get(flows::get_flow))
         .route("/api/v1/flows/{id}", patch(flows::update_flow))
         .route("/api/v1/flows/{id}/graph", put(flows::update_graph))
+        .route("/api/v1/flows/{id}/clone", post(flows::clone_flow))
         .route("/api/v1/flows/{id}", delete(flows::delete_flow))
         .with_state(flow_repo.clone());
 

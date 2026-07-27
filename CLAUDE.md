@@ -36,7 +36,9 @@ npm run dev        # Starts on http://localhost:8080
 - **Database:** SQLite via SQLx with raw SQL migrations in `api/migrations/`
 - **Pattern:** Repository traits in `db/repositories/mod.rs`, implementations in separate files
 - **Modules:**
-  - `api/` — HTTP handlers (projects, flows, test_cases, executions)
+  - `api/` — HTTP handlers (projects, flows, test_cases, executions);
+    `POST /flows/{id}/clone` copies a flow's graph, keeping node ids (unique
+    per flow) so aliases and node config survive
   - `db/` — Models and repository implementations
   - `execution/` — Test execution engine, Rhai scripting (assertions + pre-test scripts), SSE streaming
   - `validation/` — Graph structure validation

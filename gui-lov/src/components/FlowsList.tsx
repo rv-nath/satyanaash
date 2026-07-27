@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderTree, Plus, Edit2, Trash2, MoreVertical } from "lucide-react";
+import { FolderTree, Plus, Edit2, Trash2, MoreVertical, Copy } from "lucide-react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -10,10 +10,11 @@ interface FlowsListProps {
   onOpenFlow: (flowId: string) => void;
   onAddGroup: () => void;
   onEditGroup: (group: any) => void;
+  onCloneGroup: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
 }
 
-export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }: FlowsListProps) => {
+export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, onDeleteGroup }: FlowsListProps) => {
   const { testGroups } = useTestProject();
   // Single click selects (highlights); double click opens — mirrors the tests rail.
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
@@ -81,6 +82,10 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onDeleteGroup }
                       <DropdownMenuItem onClick={() => onEditGroup(group)}>
                         <Edit2 className="w-3 h-3 mr-2" />
                         Edit Flow
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onCloneGroup(group.id)}>
+                        <Copy className="w-3 h-3 mr-2" />
+                        Duplicate Flow
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         className="text-destructive"

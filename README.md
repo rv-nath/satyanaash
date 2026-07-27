@@ -469,6 +469,10 @@ A flow is a graph you assemble on the canvas:
                └──────────────┘
 ```
 
+- **Duplicating a flow** — most scenarios start as "the last one, with the tail
+  changed". **Duplicate Flow** in a flow's ⋮ menu copies the whole graph, including
+  each node's name, input variables and output variables, and opens the copy so you
+  can edit from there. The original is untouched.
 - **Nodes** — a `start`, one `end`, and any number of `testCase` / `group` nodes.
 - **Input variables** — values set on a node in **Configure Node** win over
   anything an earlier step exported or a script set, for that node only. That's how

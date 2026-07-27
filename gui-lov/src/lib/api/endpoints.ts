@@ -128,6 +128,11 @@ export const flowsApi = {
   updateGraph: (id: string, data: UpdateGraphRequest) =>
     apiClient.put<Flow>(`/flows/${id}/graph`, data),
 
+  /** Copy a flow with its whole graph. Omit the name and the server picks
+   *  "<name> (copy)", stepping to "(copy 2)" if that's taken. */
+  clone: (id: string, name?: string) =>
+    apiClient.post<Flow>(`/flows/${id}/clone`, name ? { name } : {}),
+
   /** Delete a flow */
   delete: (id: string) => apiClient.delete(`/flows/${id}`),
 

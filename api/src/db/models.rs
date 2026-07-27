@@ -127,6 +127,13 @@ pub struct UpdateFlow {
     pub version: i32,
 }
 
+/// Clone flow request. The name is optional — the server picks "<name> (copy)".
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CloneFlow {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// Update graph data request (includes canvas_settings inside graph_data)
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateGraphData {
