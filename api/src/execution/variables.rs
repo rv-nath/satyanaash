@@ -2,8 +2,8 @@
 //!
 //! Resolution order (highest priority first):
 //! 1. Execution variables (passed in execute request)
-//! 2. Context variables (exports from previous test cases + pre-test script vars)
-//! 3. Node input variables (static per-node overrides set in flow editor)
+//! 2. Node input variables (static per-node overrides set in flow editor)
+//! 3. Context variables (exports from previous test cases + pre-test script vars)
 //! 4. Flow variables (scoped to the flow)
 //! 5. Environment variables (from project settings)
 //! 6. Built-in variables ($UUID, $Timestamp, etc.)
@@ -65,10 +65,15 @@ impl ExecutionContext {
     }
 
     /// Resolve a variable by name using the resolution order
+    /// Most specific wins. `node_input_vars` sits above `context` deliberately: it
+    /// is what the author typed on *this* node, while `context` is inherited from
+    /// whatever ran earlier. With it below, a node that set my_email explicitly
+    /// still sent the value a previous step's script happened to leave behind —
+    /// an override that cannot override.
     pub fn resolve(&self, name: &str) -> Option<&Value> {
         self.execution_vars.get(name)
-            .or_else(|| self.context.get(name))
             .or_else(|| self.node_input_vars.get(name))
+            .or_else(|| self.context.get(name))
             .or_else(|| self.flow_vars.get(name))
             .or_else(|| self.environment.get(name))
     }
@@ -283,8 +288,10 @@ mod tests {
 
         // Execution vars have highest priority
         assert_eq!(ctx.resolve("token"), Some(&Value::String("exec_token".to_string())));
-        // Context (exports) beats node input vars
+        // Context is reachable when nothing more specific claims the name
         assert_eq!(ctx.resolve("userId"), Some(&Value::String("123".to_string())));
+        // The node's own value beats one inherited from an earlier step
+        assert_eq!(ctx.resolve("nodeVar"), Some(&Value::String("node_value".to_string())));
         // Node input vars beat flow vars
         assert_eq!(ctx.resolve("nodeVar"), Some(&Value::String("node_value".to_string())));
         // Flow vars beat environment vars
@@ -293,6 +300,32 @@ mod tests {
         assert_eq!(ctx.resolve("baseUrl"), Some(&Value::String("http://api.test".to_string())));
         // Not found returns None
         assert_eq!(ctx.resolve("notfound"), None);
+    }
+
+    /// A flow signed up a user, whose pre-test script left my_email in the context,
+    /// then logged in as an admin on a node that set my_email explicitly. With
+    /// context ranked above the node, the login sent the new user's address and came
+    /// back 403. The node's own value has to win.
+    #[test]
+    fn a_nodes_own_value_beats_one_inherited_from_an_earlier_step() {
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set("my_email", Value::String("newuser@example.com".to_string()));
+
+        let mut node_vars = HashMap::new();
+        node_vars.insert("my_email".to_string(), Value::String("admin@example.com".to_string()));
+        ctx.set_node_input_vars(node_vars);
+        assert_eq!(
+            ctx.resolve("my_email"),
+            Some(&Value::String("admin@example.com".to_string()))
+        );
+
+        // Once that node is done, the inherited value is visible again — the
+        // override is scoped to the node, not a permanent overwrite.
+        ctx.set_node_input_vars(HashMap::new());
+        assert_eq!(
+            ctx.resolve("my_email"),
+            Some(&Value::String("newuser@example.com".to_string()))
+        );
     }
 
     #[test]

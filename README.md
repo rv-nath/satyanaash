@@ -470,6 +470,9 @@ A flow is a graph you assemble on the canvas:
 ```
 
 - **Nodes** — a `start`, one `end`, and any number of `testCase` / `group` nodes.
+- **Input variables** — values set on a node in **Configure Node** win over
+  anything an earlier step exported or a script set, for that node only. That's how
+  two nodes running one request use different credentials.
 - **Naming a node** — a node shows its test case's name, but you can give it its
   own in **Configure Node → Node name**. Two nodes may run the same request in
   different roles — *Login as new user* and *Root login (for teardown)* — and the

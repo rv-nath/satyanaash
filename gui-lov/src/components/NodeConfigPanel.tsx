@@ -86,8 +86,9 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
       {/* Scrollable body */}
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
         <p className="mb-6 text-xs leading-relaxed text-muted-foreground">
-          Inject static <span className="text-foreground">input</span> values before this node runs,
-          and extract <span className="text-foreground">output</span> values from its response for
+          Set <span className="text-foreground">input</span> values for this node — they
+          override anything an earlier step left behind — and extract{" "}
+          <span className="text-foreground">output</span> values from its response for
           downstream nodes. Reference any of them elsewhere as{" "}
           <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">{"{{name}}"}</code>.
         </p>
@@ -118,7 +119,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
         <Section
           icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
           title="Input variables"
-          subtitle="Static values injected before this node runs"
+          subtitle="Set here, these win over earlier steps — for this node only"
           onAdd={addInputVar}
           accent={false}
         >

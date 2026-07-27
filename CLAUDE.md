@@ -76,13 +76,18 @@ Defined by `ExecutionContext::resolve` in `api/src/execution/variables.rs`.
 **Lowest number wins** — the first tier that has the name is used.
 
 1. `execution_vars` — one-off values passed in the execute request
-2. `context` — exports from earlier test cases **and** `SAT.vars` set by scripts
-3. `node_input_vars` — per-node overrides set on the flow canvas
+2. `node_input_vars` — per-node overrides set on the flow canvas
+3. `context` — exports from earlier test cases **and** `SAT.vars` set by scripts
 4. `flow_vars` — variables scoped to a flow
 5. `environment` — Globals + the active Environment merged client-side (env wins);
    `SAT.env` writes land here
 6. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
    `generate_builtin`)
+
+`node_input_vars` sits **above** `context` on purpose: it is what the author typed
+on this node, while `context` is inherited from whatever ran earlier. Ranked the
+other way, a node that set `my_email` explicitly still sent the value an earlier
+step's pre-test script left behind. Don't swap them back.
 
 There is deliberately **no data-row tier** — a dataset row overrides the body
 wholesale rather than supplying variables (see below).
