@@ -7,6 +7,7 @@ import type { Dataset } from "@/lib/api/types";
 import {
   addRow,
   duplicateRow,
+  joinEndpoint,
   looksLikeInvalidJson,
   oneLine,
   removeRow,
@@ -15,6 +16,7 @@ import {
   setRowBody,
   setRowCheck,
   setRowName,
+  setRowPath,
 } from "@/lib/dataset";
 
 interface DatasetEditorProps {
@@ -24,8 +26,8 @@ interface DatasetEditorProps {
   sharedAssertion?: string;
 }
 
-// #, case, body, expect, duplicate, delete
-const GRID = "30px 160px minmax(200px,1fr) minmax(160px,0.6fr) 34px 34px";
+// #, case, path, body, expect, duplicate, delete
+const GRID = "30px 150px minmax(110px,0.45fr) minmax(180px,1fr) minmax(150px,0.55fr) 34px 34px";
 
 /** Borders belong to the table, not to the fields — a field with its own border
  *  inside a bordered cell reads as a box in a box and wastes the width. */
@@ -152,7 +154,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
         </div>
       ) : (
         <div className="scrollbar-hairline overflow-x-auto">
-          <div className="min-w-[640px] overflow-hidden rounded-md border border-border">
+          <div className="min-w-[780px] overflow-hidden rounded-md border border-border">
             {/* Header band, tinted so it reads as a header rather than another row
                 of inputs. Its cells carry the same dividers as the rows below. */}
             <div
@@ -160,7 +162,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               style={{ gridTemplateColumns: GRID }}
             >
               <span className={CELL} />
-              {["Case", "Body", "Expect"].map((h) => (
+              {["Case", "Path / query", "Body", "Expect"].map((h) => (
                 <span
                   key={h}
                   className={`px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground ${CELL}`}
@@ -194,6 +196,21 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                       onChange={(e) => onChange(setRowName(dataset, row.id, e.target.value))}
                       className={`h-9 px-2 text-[13px] ${FIELD}`}
                       aria-label={`Case name for row ${i + 1}`}
+                    />
+                  </div>
+
+                  <div className={`min-w-0 ${CELL}`}>
+                    <Input
+                      value={row.path ?? ""}
+                      placeholder="?org=acme"
+                      onChange={(e) => onChange(setRowPath(dataset, row.id, e.target.value))}
+                      className={`h-9 px-2 font-mono text-[13px] ${FIELD}`}
+                      aria-label={`Path or query for ${label}`}
+                      title={
+                        row.path?.trim()
+                          ? `Appended to the request's endpoint: …${joinEndpoint("", row.path)}`
+                          : "Appended to the request's endpoint — leave blank to use it as authored"
+                      }
                     />
                   </div>
 
@@ -266,11 +283,17 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
 
       {rows.length > 0 && (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          A blank body falls back to the Request tab's body. Bodies are interpolated, so{" "}
+          <strong className="font-medium">Path / query</strong> is appended to the request's
+          endpoint — <code className="rounded bg-muted px-1 font-mono">?org=acme</code> or{" "}
+          <code className="rounded bg-muted px-1 font-mono">/acme/summary</code> — and joins
+          with <code className="rounded bg-muted px-1 font-mono">&amp;</code> if the endpoint
+          already has a query. A blank body falls back to the Request tab's body. Both are
+          interpolated, so{" "}
           <code className="rounded bg-muted px-1 font-mono">{"{{baseUrl}}"}</code> and{" "}
           <code className="rounded bg-muted px-1 font-mono">{"{{$RandomEmail}}"}</code> work inside
-          them. <strong className="font-medium">Run request</strong> ignores these cases and runs the
-          request as authored — use <strong className="font-medium">Run dataset</strong> to iterate.
+          them. <strong className="font-medium">Run request</strong> ignores these cases and runs
+          the request as authored — use <strong className="font-medium">Run dataset</strong> to
+          iterate, or set a flow node to run once per row.
         </p>
       )}
     </div>

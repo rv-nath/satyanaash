@@ -15,7 +15,7 @@ export const newRowId = (): string =>
   `row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function addRow(d: Dataset): Dataset {
-  const row: DataRow = { id: newRowId(), name: "", body: "", check: "" };
+  const row: DataRow = { id: newRowId(), name: "", path: "", body: "", check: "" };
   return { rows: [...d.rows, row] };
 }
 
@@ -37,6 +37,22 @@ export function setRowBody(d: Dataset, rowId: string, body: string): Dataset {
 
 export function setRowCheck(d: Dataset, rowId: string, check: string): Dataset {
   return patchRow(d, rowId, { check });
+}
+
+export function setRowPath(d: Dataset, rowId: string, path: string): Dataset {
+  return patchRow(d, rowId, { path });
+}
+
+/** How a row's suffix will join the request's endpoint — shown as a hint, and
+ *  mirroring `resolve_endpoint` on the server. A row adding "?org=acme" to an
+ *  endpoint that already has a query joins with "&", because "?limit=10?org=acme"
+ *  is one broken parameter rather than two. */
+export function joinEndpoint(endpoint: string, path: string): string {
+  const suffix = path.trim();
+  if (!suffix) return endpoint;
+  return suffix.startsWith("?") && endpoint.includes("?")
+    ? `${endpoint}&${suffix.slice(1)}`
+    : `${endpoint}${suffix}`;
 }
 
 /** True when a check is nothing but a status code — the shorthand form. Anything

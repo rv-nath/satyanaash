@@ -4,6 +4,7 @@ import {
   duplicateRow,
   emptyDataset,
   isEmptyDataset,
+  joinEndpoint,
   looksLikeInvalidJson,
   oneLine,
   removeRow,
@@ -93,6 +94,19 @@ describe("dataset reducers", () => {
       "response.status == 201 && response.json.id != ()",
     );
     expect(oneLine("   ")).toBe("");
+  });
+
+  it("joins a row's suffix onto the endpoint the way the server does", () => {
+    // A path segment is simply appended.
+    expect(joinEndpoint("http://x/campaigns", "/acme")).toBe("http://x/campaigns/acme");
+    expect(joinEndpoint("http://x/campaigns", "?org=acme")).toBe("http://x/campaigns?org=acme");
+
+    // "?limit=10?org=acme" is one broken parameter, not two.
+    expect(joinEndpoint("http://x/c?limit=10", "?org=acme")).toBe("http://x/c?limit=10&org=acme");
+
+    // Blank leaves the endpoint alone.
+    expect(joinEndpoint("http://x/c", "   ")).toBe("http://x/c");
+    expect(joinEndpoint("http://x/c", "")).toBe("http://x/c");
   });
 
   it("labels rows like the server does", () => {

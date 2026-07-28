@@ -43,10 +43,15 @@ export interface DataRow {
   /** What must be true for this row to pass: either a bare status code ("400")
    *  or a Rhai expression. Blank means "any 2xx". */
   check?: string | null;
+  /** Appended to the test case's endpoint for this row — "?org=acme",
+   *  "/acme/summary" — so one request can be varied by URL as well as by body.
+   *  Interpolated like the endpoint itself. Blank uses the endpoint as authored. */
+  path?: string | null;
 }
 
-/** A table of cases. Only "run all rows" iterates these; a plain run and any
- *  flow run ignore them. */
+/** A table of cases. "Run dataset" in the editor iterates them, and so does a flow
+ *  node set to run once per row. A plain run, and any node not set that way, ignore
+ *  them and send the request as authored. */
 export interface Dataset {
   rows: DataRow[];
 }
