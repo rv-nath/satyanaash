@@ -90,6 +90,11 @@ Defined by `ExecutionContext::resolve` in `api/src/execution/variables.rs`.
 6. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
    `generate_builtin`)
 
+`resolve` delegates to `resolve_with_source`, so the order is stated once. In debug
+mode each node logs `name ← tier = value` for every `{{name}}` in its endpoint,
+headers and body (`ExecutionContext::provenance`) — the only way to see a value
+that resolved from the environment when the run should have produced it.
+
 A JSON **null is treated as absent** at every tier: it neither interpolates as the
 text "null" nor shadows a real value further down. A value that is literally the
 *string* `"null"` still resolves (it is a string), so `placeholder_values` reports

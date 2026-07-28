@@ -948,6 +948,30 @@ impl ExecutionEngine {
             }
         }
 
+        // In debug mode, say where each {{name}} came from. A value that resolves
+        // from the environment when this run was supposed to produce it looks
+        // completely normal in the request — it is the one failure no warning can
+        // detect, so the answer is to show the tier and let the author see it.
+        if self.debug_mode {
+            let mut seen: Vec<String> = Vec::new();
+            let mut templates: Vec<&str> = vec![test_case.endpoint.as_str()];
+            if let Some(map) = test_case.headers.as_object() {
+                templates.extend(map.values().filter_map(|v| v.as_str()));
+            }
+            if let Some(body_template) = resolve_body(row, test_case) {
+                templates.push(body_template);
+            }
+            for template in templates {
+                for (name, source, value) in ctx.provenance(template) {
+                    if seen.contains(&name) {
+                        continue;
+                    }
+                    seen.push(name.clone());
+                    logs.push(format!("{} ← {} = {}", name, source.label(), value));
+                }
+            }
+        }
+
         // Capture request info before executing (for debugging even on failure)
         let request_log = RequestLog {
             method: test_case.method.clone(),
@@ -1812,6 +1836,50 @@ mod tests {
         format!("http://{}/sms", addr)
     }
 
+    /// Debug mode has to answer "why did it send *that*?" — a value pulled from the
+    /// environment when this run was supposed to produce it looks entirely normal.
+    #[tokio::test]
+    async fn debug_mode_says_where_each_value_came_from() {
+        async fn logs_for(debug: bool) -> String {
+            let engine = ExecutionEngine::new(debug, None);
+            let tc = make_test_case(
+                "bal",
+                "Balance Enquiry",
+                "http://127.0.0.1:1/wallet/{{my_user_id}}/balance",
+                "GET",
+            );
+            let repo = MockTestCaseRepository::new().with_test_case(tc);
+            let flow = make_flow("flow1", vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("n1", "testCase", serde_json::json!({"testCaseId": "bal"})),
+                make_node("end", "end", serde_json::json!({})),
+            ], vec![
+                make_edge("e1", "start", "n1", None),
+                make_edge("e2", "n1", "end", Some("success")),
+            ]);
+            let mut env = HashMap::new();
+            env.insert("my_user_id".to_string(), serde_json::json!("stale-from-a-previous-run"));
+            engine
+                .execute_flow("exec1", &flow, &repo, env, HashMap::new(), None)
+                .await
+                .unwrap()
+                .results[0]
+                .logs
+                .join("\n")
+        }
+
+        let debug = logs_for(true).await;
+        assert!(
+            debug.contains("my_user_id ← environment/globals = stale-from-a-previous-run"),
+            "{}",
+            debug
+        );
+
+        // Quiet by default — this is a diagnostic, not a running commentary.
+        let plain = logs_for(false).await;
+        assert!(!plain.contains("←"), "{}", plain);
+    }
+
     /// A leftover my_user_id = "null" in Globals sent GET /wallet/null/balance and
     /// nothing said so: it resolved, so the unresolved-variable warning was silent.
     #[tokio::test]
@@ -1836,7 +1904,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("my_user_id".to_string(), serde_json::json!("null"));
         let result = engine
-            .execute_flow("exec1", &flow, &repo, HashMap::new(), env, None)
+            .execute_flow("exec1", &flow, &repo, env, HashMap::new(), None)
             .await
             .unwrap();
 

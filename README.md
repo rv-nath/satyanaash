@@ -265,6 +265,24 @@ response.status == 200 && response.json.ok == true   // combined
 > Side-effects (like `SAT.env.x = …`) apply **even if the assertion returns
 > `false`** — matching Postman. A *script error* (bad syntax) applies nothing.
 
+### Debugging a value that came from the wrong place
+
+Run a flow with **Debug** instead of Run and each node reports where every
+`{{name}}` it used was resolved from:
+
+```
+my_user_id   ← environment/globals = stale-uuid-from-a-previous-run
+signup_token ← an earlier step     = tok-from-this-run
+my_email     ← this node           = admin@example.com
+```
+
+The first line is the failure worth catching: a name that *this run* was supposed
+to produce, quietly satisfied by a leftover in Globals or the active environment.
+It resolves cleanly, so nothing else can flag it — the request looks perfectly
+normal and the server's answer points somewhere else entirely. The tiers are named
+in [resolution order](#variables--interpolation); "an earlier step" covers both
+output variables and `SAT.vars`.
+
 ### Printing from a script
 
 Scripts are **Rhai, not JavaScript** — there is no `console`. Use `print(…)`, or

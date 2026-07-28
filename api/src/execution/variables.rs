@@ -71,15 +71,44 @@ impl ExecutionContext {
     /// still sent the value a previous step's script happened to leave behind —
     /// an override that cannot override.
     pub fn resolve(&self, name: &str) -> Option<&Value> {
+        self.resolve_with_source(name).map(|(value, _)| value)
+    }
+
+    /// The same lookup, saying which tier answered. `resolve` delegates here so the
+    /// order can't be stated twice and drift.
+    pub fn resolve_with_source(&self, name: &str) -> Option<(&Value, VarSource)> {
         // A JSON null is an absent value, not a value of "null" — otherwise a null
         // sitting in one tier shadows a real value in the next, and interpolates
         // into a request as the four letters n-u-l-l.
         let present = |v: &&Value| !v.is_null();
-        self.execution_vars.get(name).filter(present)
-            .or_else(|| self.node_input_vars.get(name).filter(present))
-            .or_else(|| self.context.get(name).filter(present))
-            .or_else(|| self.flow_vars.get(name).filter(present))
-            .or_else(|| self.environment.get(name).filter(present))
+        let tiers: [(&HashMap<String, Value>, VarSource); 5] = [
+            (&self.execution_vars, VarSource::Request),
+            (&self.node_input_vars, VarSource::Node),
+            (&self.context, VarSource::EarlierStep),
+            (&self.flow_vars, VarSource::Flow),
+            (&self.environment, VarSource::Environment),
+        ];
+        tiers
+            .into_iter()
+            .find_map(|(map, source)| map.get(name).filter(present).map(|v| (v, source)))
+    }
+
+    /// Every `{{name}}` in this template, where its value came from, and a preview
+    /// of that value. Debug-mode only: the point is to answer "why did it send
+    /// *that*?" when a name resolves to something plausible but wrong — the one
+    /// failure a warning can't detect, because nothing about it looks wrong.
+    pub fn provenance(&self, template: &str) -> Vec<(String, VarSource, String)> {
+        let mut found: Vec<(String, VarSource, String)> = Vec::new();
+        for name in template_names(template) {
+            // Built-ins are generated per use; there is no tier to name.
+            if name.starts_with('$') || found.iter().any(|(n, _, _)| n == &name) {
+                continue;
+            }
+            if let Some((value, source)) = self.resolve_with_source(&name) {
+                found.push((name, source, preview(&value_to_string(value))));
+            }
+        }
+        found
     }
 
     /// Names in this template that resolve to the *text* "null" or "undefined".
@@ -89,23 +118,15 @@ impl ExecutionContext {
     /// with something unhelpful. They come from a leftover in Globals or an
     /// environment — a value nobody meant to send.
     pub fn placeholder_values(&self, template: &str) -> Vec<String> {
-        let re = match Regex::new(r"\{\{(\$?[\w]+)(?:\(([^)]*)\))?\}\}") {
-            Ok(re) => re,
-            Err(_) => return Vec::new(),
-        };
-        let mut found = Vec::new();
-        for caps in re.captures_iter(template) {
-            let name = match caps.get(1) {
-                Some(m) => m.as_str(),
-                None => continue,
-            };
-            if name.starts_with('$') {
+        let mut found: Vec<String> = Vec::new();
+        for name in template_names(template) {
+            if name.starts_with('$') || found.contains(&name) {
                 continue;
             }
-            if let Some(value) = self.resolve(name) {
+            if let Some(value) = self.resolve(&name) {
                 let text = value_to_string(value);
-                if (text == "null" || text == "undefined") && !found.iter().any(|n| n == name) {
-                    found.push(name.to_string());
+                if text == "null" || text == "undefined" {
+                    found.push(name);
                 }
             }
         }
@@ -218,6 +239,51 @@ impl ExecutionContext {
 }
 
 /// Convert a JSON value to a string for interpolation
+/// Which tier answered a lookup, named the way a test author thinks about it
+/// rather than after the field that holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarSource {
+    Request,
+    Node,
+    EarlierStep,
+    Flow,
+    Environment,
+}
+
+impl VarSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            VarSource::Request => "the run request",
+            VarSource::Node => "this node",
+            VarSource::EarlierStep => "an earlier step",
+            VarSource::Flow => "flow variables",
+            VarSource::Environment => "environment/globals",
+        }
+    }
+}
+
+/// Names inside `{{...}}`, in the order they appear.
+fn template_names(template: &str) -> Vec<String> {
+    let re = match Regex::new(r"\{\{(\$?[\w]+)(?:\(([^)]*)\))?\}\}") {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
+    re.captures_iter(template)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .collect()
+}
+
+/// Short enough to read in a log line — a JWT is a thousand characters and only
+/// its shape matters here.
+fn preview(value: &str) -> String {
+    const MAX: usize = 44;
+    if value.chars().count() <= MAX {
+        return value.to_string();
+    }
+    let head: String = value.chars().take(MAX).collect();
+    format!("{}… ({} chars)", head, value.chars().count())
+}
+
 fn value_to_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -334,6 +400,51 @@ mod tests {
         assert_eq!(ctx.resolve("baseUrl"), Some(&Value::String("http://api.test".to_string())));
         // Not found returns None
         assert_eq!(ctx.resolve("notfound"), None);
+    }
+
+    #[test]
+    fn provenance_names_the_tier_each_value_came_from() {
+        let mut exec = HashMap::new();
+        exec.insert("one_off".to_string(), Value::String("from-request".to_string()));
+        let mut env = HashMap::new();
+        env.insert("my_user_id".to_string(), Value::String("stale-from-env".to_string()));
+        let mut flow = HashMap::new();
+        flow.insert("region".to_string(), Value::String("in".to_string()));
+        let mut ctx = ExecutionContext::new(exec, env, flow);
+        ctx.set("signup_token", Value::String("from-earlier-step".to_string()));
+        let mut node = HashMap::new();
+        node.insert("my_email".to_string(), Value::String("admin@x.com".to_string()));
+        ctx.set_node_input_vars(node);
+
+        let listed = ctx.provenance(
+            "{{one_off}}/{{my_email}}/{{signup_token}}/{{region}}/{{my_user_id}}/{{missing}}/{{$UUID}}",
+        );
+        let seen: Vec<(&str, &str)> = listed
+            .iter()
+            .map(|(n, s, _)| (n.as_str(), s.label()))
+            .collect();
+        assert_eq!(seen, vec![
+            ("one_off", "the run request"),
+            ("my_email", "this node"),
+            ("signup_token", "an earlier step"),
+            ("region", "flow variables"),
+            // The one that matters: this run should have produced it.
+            ("my_user_id", "environment/globals"),
+        ]);
+    }
+
+    #[test]
+    fn provenance_shortens_a_long_value_and_lists_a_name_once() {
+        let jwt = "e".repeat(900);
+        let mut env = HashMap::new();
+        env.insert("token".to_string(), Value::String(jwt));
+        let ctx = ExecutionContext::new(HashMap::new(), env, HashMap::new());
+
+        let listed = ctx.provenance("{{token}} and again {{token}}");
+        assert_eq!(listed.len(), 1);
+        let (_, _, preview) = &listed[0];
+        assert!(preview.ends_with("(900 chars)"), "{}", preview);
+        assert!(preview.chars().count() < 70, "{}", preview);
     }
 
     #[test]
