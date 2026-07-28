@@ -30,6 +30,8 @@ describe("useAutoSave", () => {
   beforeEach(() => {
     mutateAsync.mockReset();
     mutateAsync.mockResolvedValue({ version: 2 });
+    // Each test is its own session: the hook remembers which flows it has seen.
+    sessionStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -70,6 +72,28 @@ describe("useAutoSave", () => {
       "Login as PA",
       "Delete",
     ]);
+  });
+
+  it("saves an edit that was pending when the hook remounted", async () => {
+    // react-refresh, strict mode, or switching flows and back all remount this hook.
+    // Its refs die with it, so the baseline is rebuilt from whatever is on screen —
+    // and if that includes an unsaved edit, the edit used to become the baseline and
+    // vanish. Nothing on screen said so: the status read "idle".
+    const first = setup([node("n1", "server value")]);
+    first.rerender({ nodes: [node("n1", "my edit")] });
+    first.unmount();
+    mutateAsync.mockClear();
+
+    setup([node("n1", "my edit")]);
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+    const sent = mutateAsync.mock.calls[0][0].data.graph_data.nodes;
+    expect(sent[0].data.label).toBe("my edit");
+  });
+
+  it("doesn't write anything merely because a flow was opened", async () => {
+    setup([node("n1", "server value")]);
+    await act(() => new Promise((r) => setTimeout(r, 40)));
+    expect(mutateAsync).not.toHaveBeenCalled();
   });
 
   it("reports whether the graph reached the server", async () => {

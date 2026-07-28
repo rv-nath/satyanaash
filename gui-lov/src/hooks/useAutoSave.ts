@@ -35,6 +35,36 @@ interface UseAutoSaveReturn {
 }
 
 /**
+ * Flows this browser session has already had open, remembered outside React so a
+ * remount can be told apart from a first load.
+ *
+ * It matters because the baseline — "what the server holds" — is taken from what is
+ * on screen the first time the hook sees a flow. That is true on a genuine load and
+ * false after a remount, where the screen may carry edits that never went out. Get
+ * it wrong and those edits become the baseline and are never saved: the original bug
+ * this hook had, arriving through a different door.
+ */
+const SEEN_KEY = "sat.autosave.seenFlows";
+
+function hasSeenFlow(flowId: string): boolean {
+  try {
+    return (JSON.parse(sessionStorage.getItem(SEEN_KEY) ?? "[]") as string[]).includes(flowId);
+  } catch {
+    return false; // Storage unavailable: treat as a first load rather than throwing.
+  }
+}
+
+function markFlowSeen(flowId: string): void {
+  try {
+    const seen = new Set(JSON.parse(sessionStorage.getItem(SEEN_KEY) ?? "[]") as string[]);
+    seen.add(flowId);
+    sessionStorage.setItem(SEEN_KEY, JSON.stringify([...seen]));
+  } catch {
+    // Nothing to do — the cost is one extra save, not a lost edit.
+  }
+}
+
+/**
  * Deep compare two values (simple implementation for nodes/edges)
  */
 function hasChanges(a: unknown, b: unknown): boolean {
@@ -213,12 +243,20 @@ export function useAutoSave({
 
     const current = fingerprint();
 
-    // First sight of this flow's data is what the server gave us.
     if (stateFlowRef.current !== flowId) {
       if (nodes.length === 0) return; // still loading
-      savedStateRef.current = current;
       stateFlowRef.current = flowId;
-      return;
+
+      if (!hasSeenFlow(flowId)) {
+        // A genuine first load: what's on screen is what the server gave us.
+        markFlowSeen(flowId);
+        savedStateRef.current = current;
+        return;
+      }
+      // Seen before in this session, so this is a remount and the screen may hold
+      // edits that never went out. Don't adopt it — save it. A redundant write is
+      // cheap; a dropped edit is not.
+      savedStateRef.current = "";
     }
 
     // Anything that differs from the server's copy is unsaved — including a
