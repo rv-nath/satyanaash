@@ -257,6 +257,20 @@ struct RunOptions<'a> {
     node_check: Option<&'a str>,
 }
 
+/// The only differences between the editor's "Run dataset" and a flow node running one
+/// request per row. Everything else about iterating rows — cloning the context, folding
+/// `SAT.env` forward, the worst-of verdict, the `[row] ` log prefix — lives in
+/// `run_rows` and only there, so the two paths cannot drift.
+struct RowRunOptions<'a> {
+    /// "direct" for the editor path, the node id for the flow path.
+    node_id: &'a str,
+    /// Node-level `outputVars`. Empty for a fan-out node: rows are isolated clones, so
+    /// nothing a row captures would survive to be exported.
+    extra_exports: &'a [ExportVariable],
+    /// This node's Expect, applied to any row that hasn't stated one of its own.
+    node_check: Option<&'a str>,
+}
+
 /// Result status for a node execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -1423,20 +1437,59 @@ impl ExecutionEngine {
         variables: HashMap<String, Value>,
     ) -> NodeResult {
         let start = std::time::Instant::now();
-        let rows: Vec<DataRow> = test_case
+        let rows: Vec<(usize, DataRow)> = test_case
             .dataset
             .as_ref()
-            .map(|d| d.rows.clone())
+            .map(|d| d.rows.iter().cloned().enumerate().collect())
             .unwrap_or_default();
 
         let mut base_ctx = ExecutionContext::new(variables, environment, HashMap::new());
-        let mut aggregate_env: HashMap<String, Value> = HashMap::new();
+        let mut env_writes: HashMap<String, Value> = HashMap::new();
+
+        self.run_rows(
+            test_case,
+            &rows,
+            &mut base_ctx,
+            RowRunOptions { node_id: "direct", extra_exports: &[], node_check: None },
+            Vec::new(),
+            &mut env_writes,
+            start,
+        )
+        .await
+    }
+
+    /// Run one request per row against `base_ctx`, folded into one aggregate result
+    /// whose `iterations` holds the per-row results.
+    ///
+    /// Each row gets a *clone* of the base context, so exports and pre-test vars can't
+    /// leak between rows while every row still sees whatever the caller's context
+    /// already holds — which is how a row inherits an earlier node's JWT. `SAT.env`
+    /// writes are folded forward, so a later row does see what an earlier one
+    /// persisted. Rows run sequentially and a failing row never stops the rest.
+    ///
+    /// Rows carry their index *in the dataset*, so a selected subset is still labelled
+    /// and ordered the way the editor's matrix shows it.
+    ///
+    /// Deliberately sequential: the `SAT.env` fold is order-dependent, and the Rhai
+    /// engines share a thread-local `print()` sink (`execution/script_log.rs`), so
+    /// concurrent rows would file their output under the wrong result.
+    async fn run_rows(
+        &self,
+        test_case: &TestCase,
+        rows: &[(usize, DataRow)],
+        base_ctx: &mut ExecutionContext,
+        opts: RowRunOptions<'_>,
+        logs: Vec<String>,
+        env_writes: &mut HashMap<String, Value>,
+        start: std::time::Instant,
+    ) -> NodeResult {
         let mut iterations: Vec<NodeResult> = Vec::with_capacity(rows.len());
+        let mut logs = logs;
 
         info!("Running \"{}\" over {} data row(s)", test_case.name, rows.len());
 
-        for (index, row) in rows.iter().enumerate() {
-            let label = crate::db::models::Dataset::label_for(index, row);
+        for (index, row) in rows {
+            let label = crate::db::models::Dataset::label_for(*index, row);
             let mut row_ctx = base_ctx.clone();
             let mut row_env: HashMap<String, Value> = HashMap::new();
 
@@ -1446,11 +1499,11 @@ impl ExecutionEngine {
                     Some(row),
                     &mut row_ctx,
                     RunOptions {
-                        node_id: "direct",
-                        node_check: None,
-                        extra_exports: &[],
+                        node_id: opts.node_id,
+                        node_check: opts.node_check,
+                        extra_exports: opts.extra_exports,
                         report_unresolved: true,
-                        row_index: Some(index),
+                        row_index: Some(*index),
                         row_label: Some(label.clone()),
                     },
                     Vec::new(),
@@ -1459,12 +1512,36 @@ impl ExecutionEngine {
                 )
                 .await;
 
-            // Carry SAT.env writes forward to later rows and into the aggregate.
+            // Carry SAT.env writes forward to later rows and out to the caller.
             for (k, v) in row_env {
                 base_ctx.set_environment_var(&k, v.clone());
-                aggregate_env.insert(k, v);
+                env_writes.insert(k, v);
             }
             iterations.push(result);
+        }
+
+        // No rows at all would fold to `Passed` having sent nothing — the worst kind of
+        // green. Neither caller should reach this, which is why it's worth stating.
+        if iterations.is_empty() {
+            logs.push("No data rows to run".to_string());
+            return NodeResult {
+                node_id: opts.node_id.to_string(),
+                teardown: None,
+                node_label: None,
+                test_case_id: Some(test_case.id.clone()),
+                test_case_name: Some(test_case.name.clone()),
+                status: NodeStatus::Failed,
+                duration_ms: start.elapsed().as_millis() as u64,
+                request: None,
+                response: None,
+                exports: None,
+                env: None,
+                error_message: Some("No data rows to run".to_string()),
+                logs,
+                row_index: None,
+                row_label: None,
+                iterations: Some(Vec::new()),
+            };
         }
 
         let failed = iterations.iter().filter(|r| r.status == NodeStatus::Failed).count();
@@ -1487,19 +1564,18 @@ impl ExecutionEngine {
             start.elapsed().as_millis()
         );
 
-        // Prefix each row's logs so a flat log view still says which row spoke.
-        let logs = iterations
-            .iter()
-            .flat_map(|r| {
-                let label = r.row_label.clone().unwrap_or_default();
-                r.logs.iter().map(move |l| format!("[{}] {}", label, l))
-            })
-            .collect();
+        // The caller's own notes first, unprefixed; then each row's, prefixed, so a flat
+        // log view still says which row spoke.
+        logs.extend(iterations.iter().flat_map(|r| {
+            let label = r.row_label.clone().unwrap_or_default();
+            r.logs.iter().map(move |l| format!("[{}] {}", label, l))
+        }));
 
         NodeResult {
-            node_id: "direct".to_string(),
+            node_id: opts.node_id.to_string(),
             teardown: None,
-            // A dataset run is launched from the editor, not the canvas: no node.
+            // Set by the flow path, which knows the node; a dataset run from the editor
+            // has no node to name.
             node_label: None,
             test_case_id: Some(test_case.id.clone()),
             test_case_name: Some(test_case.name.clone()),
@@ -1510,7 +1586,7 @@ impl ExecutionEngine {
             request: None,
             response: None,
             exports: None,
-            env: if aggregate_env.is_empty() { None } else { Some(aggregate_env) },
+            env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
             error_message,
             logs,
             row_index: None,
@@ -2021,6 +2097,29 @@ mod tests {
     /// A one-shot HTTP server that answers with the given status and body. The
     /// other tests here point at a refused port, which is fine when only the
     /// request log matters — but a verdict needs a real response to judge.
+    /// A stub that answers `times` requests before closing. Fan-out sends one request
+    /// per row, so a single-shot stub would leave later rows with a refused connection
+    /// — which errors before any verdict and hides what the test is checking.
+    async fn stub_times(status: u16, body: &'static str, times: usize) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for _ in 0..times {
+                let Ok((mut socket, _)) = listener.accept().await else { break };
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 8192];
+                let _ = socket.read(&mut buf).await; // drain the request
+                let response = format!(
+                    "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status, body.len(), body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        format!("http://{}/", addr)
+    }
+
     async fn stub_once(status: u16, body: &'static str) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
