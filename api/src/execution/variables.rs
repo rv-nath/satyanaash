@@ -71,11 +71,45 @@ impl ExecutionContext {
     /// still sent the value a previous step's script happened to leave behind —
     /// an override that cannot override.
     pub fn resolve(&self, name: &str) -> Option<&Value> {
-        self.execution_vars.get(name)
-            .or_else(|| self.node_input_vars.get(name))
-            .or_else(|| self.context.get(name))
-            .or_else(|| self.flow_vars.get(name))
-            .or_else(|| self.environment.get(name))
+        // A JSON null is an absent value, not a value of "null" — otherwise a null
+        // sitting in one tier shadows a real value in the next, and interpolates
+        // into a request as the four letters n-u-l-l.
+        let present = |v: &&Value| !v.is_null();
+        self.execution_vars.get(name).filter(present)
+            .or_else(|| self.node_input_vars.get(name).filter(present))
+            .or_else(|| self.context.get(name).filter(present))
+            .or_else(|| self.flow_vars.get(name).filter(present))
+            .or_else(|| self.environment.get(name).filter(present))
+    }
+
+    /// Names in this template that resolve to the *text* "null" or "undefined".
+    ///
+    /// These interpolate cleanly, so the unresolved-variable warning can't see
+    /// them: the request goes out with /wallet/null/balance and the server answers
+    /// with something unhelpful. They come from a leftover in Globals or an
+    /// environment — a value nobody meant to send.
+    pub fn placeholder_values(&self, template: &str) -> Vec<String> {
+        let re = match Regex::new(r"\{\{(\$?[\w]+)(?:\(([^)]*)\))?\}\}") {
+            Ok(re) => re,
+            Err(_) => return Vec::new(),
+        };
+        let mut found = Vec::new();
+        for caps in re.captures_iter(template) {
+            let name = match caps.get(1) {
+                Some(m) => m.as_str(),
+                None => continue,
+            };
+            if name.starts_with('$') {
+                continue;
+            }
+            if let Some(value) = self.resolve(name) {
+                let text = value_to_string(value);
+                if (text == "null" || text == "undefined") && !found.iter().any(|n| n == name) {
+                    found.push(name.to_string());
+                }
+            }
+        }
+        found
     }
 
     /// Set a context variable (from test case exports)
@@ -300,6 +334,45 @@ mod tests {
         assert_eq!(ctx.resolve("baseUrl"), Some(&Value::String("http://api.test".to_string())));
         // Not found returns None
         assert_eq!(ctx.resolve("notfound"), None);
+    }
+
+    #[test]
+    fn a_null_is_an_absent_value_not_the_word_null() {
+        let mut env = HashMap::new();
+        env.insert("my_user_id".to_string(), Value::Null);
+        let mut ctx = ExecutionContext::new(HashMap::new(), env, HashMap::new());
+
+        // Nothing else has it: the name stays unresolved rather than becoming "null".
+        assert_eq!(ctx.resolve("my_user_id"), None);
+        assert_eq!(
+            ctx.interpolate("/wallet/{{my_user_id}}/balance").unwrap(),
+            "/wallet/{{my_user_id}}/balance"
+        );
+
+        // And a null in one tier doesn't shadow a real value in another.
+        ctx.set("my_user_id", Value::String("u-1".to_string()));
+        assert_eq!(
+            ctx.interpolate("/wallet/{{my_user_id}}/balance").unwrap(),
+            "/wallet/u-1/balance"
+        );
+    }
+
+    /// The text "null" left in Globals resolves cleanly and sends nonsense.
+    #[test]
+    fn placeholder_values_finds_a_leftover_null() {
+        let mut env = HashMap::new();
+        env.insert("my_user_id".to_string(), Value::String("null".to_string()));
+        env.insert("other".to_string(), Value::String("undefined".to_string()));
+        env.insert("real".to_string(), Value::String("u-1".to_string()));
+        let ctx = ExecutionContext::new(HashMap::new(), env, HashMap::new());
+
+        assert_eq!(
+            ctx.placeholder_values("/wallet/{{my_user_id}}/x/{{real}}/{{other}}"),
+            vec!["my_user_id".to_string(), "other".to_string()]
+        );
+        // Nothing to say about a name that resolves to something real, a name that
+        // doesn't resolve at all, or a built-in.
+        assert!(ctx.placeholder_values("/x/{{real}}/{{missing}}/{{$UUID}}").is_empty());
     }
 
     /// A flow signed up a user, whose pre-test script left my_email in the context,

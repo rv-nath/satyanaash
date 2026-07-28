@@ -921,6 +921,31 @@ impl ExecutionEngine {
                     unresolved.join(", ")
                 ));
             }
+
+            // A name that resolved to the text "null" looks fine in the request and
+            // is invisible to the check above — it resolved. Almost always a
+            // leftover in Globals or an environment. Read from the templates, since
+            // by now the value is indistinguishable from a legitimate "null".
+            let mut placeholders: Vec<String> = ctx.placeholder_values(&test_case.endpoint);
+            if let Some(map) = test_case.headers.as_object() {
+                for value in map.values() {
+                    if let Some(text) = value.as_str() {
+                        placeholders.extend(ctx.placeholder_values(text));
+                    }
+                }
+            }
+            if let Some(template) = resolve_body(row, test_case) {
+                placeholders.extend(ctx.placeholder_values(template));
+            }
+            placeholders.sort();
+            placeholders.dedup();
+            if !placeholders.is_empty() {
+                logs.push(format!(
+                    "⚠ Variable(s) resolved to the text \"null\": {} — check Globals and \
+                     the active environment for a leftover value",
+                    placeholders.join(", ")
+                ));
+            }
         }
 
         // Capture request info before executing (for debugging even on failure)
@@ -1785,6 +1810,42 @@ mod tests {
             }
         });
         format!("http://{}/sms", addr)
+    }
+
+    /// A leftover my_user_id = "null" in Globals sent GET /wallet/null/balance and
+    /// nothing said so: it resolved, so the unresolved-variable warning was silent.
+    #[tokio::test]
+    async fn a_leftover_null_in_the_environment_is_called_out() {
+        let engine = ExecutionEngine::new(true, None);
+        let tc = make_test_case(
+            "bal",
+            "Balance Enquiry",
+            "http://127.0.0.1:1/wallet/{{my_user_id}}/balance",
+            "GET",
+        );
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("n1", "testCase", serde_json::json!({"testCaseId": "bal"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "n1", None),
+            make_edge("e2", "n1", "end", Some("success")),
+        ]);
+
+        let mut env = HashMap::new();
+        env.insert("my_user_id".to_string(), serde_json::json!("null"));
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), env, None)
+            .await
+            .unwrap();
+
+        let logs = result.results[0].logs.join("\n");
+        assert!(logs.contains("resolved to the text"), "{}", logs);
+        assert!(logs.contains("my_user_id"), "{}", logs);
+        // It really did go out as the four letters, which is the point.
+        let url = &result.results[0].request.as_ref().unwrap().url;
+        assert!(url.ends_with("/wallet/null/balance"), "{}", url);
     }
 
     /// "Send SMS" is a 202 in one flow and a 402 in the flow with no balance. The

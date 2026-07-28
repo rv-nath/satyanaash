@@ -90,6 +90,12 @@ Defined by `ExecutionContext::resolve` in `api/src/execution/variables.rs`.
 6. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
    `generate_builtin`)
 
+A JSON **null is treated as absent** at every tier: it neither interpolates as the
+text "null" nor shadows a real value further down. A value that is literally the
+*string* `"null"` still resolves (it is a string), so `placeholder_values` reports
+it in the run log — that case is a leftover in Globals, and it defeats the
+unresolved-variable warning by resolving.
+
 `node_input_vars` sits **above** `context` on purpose: it is what the author typed
 on this node, while `context` is inherited from whatever ran earlier. Ranked the
 other way, a node that set `my_email` explicitly still sent the value an earlier
