@@ -7,6 +7,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Trash2, Plus, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
 import { isStatusShorthand } from "@/lib/dataset";
 import { useTestProject } from "@/contexts/TestProjectContext";
+import { useTestCases } from "@/hooks/useApi";
 
 interface InputVariable {
   key: string;
@@ -39,7 +40,11 @@ interface NodeConfigPanelProps {
  * viewport removes that coupling entirely.
  */
 export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
-  const { updateNodeConfig } = useTestProject();
+  const { updateNodeConfig, projectId } = useTestProject();
+  // Resolve the request's *current* name, as the canvas does. node.data.label is a
+  // snapshot from when the node was created, so a renamed test case showed its old
+  // name here — misleading precisely when you are checking which request a node runs.
+  const { data: testCases } = useTestCases(projectId || "");
   const [inputVars, setInputVars] = useState<InputVariable[]>([]);
   const [outputVars, setOutputVars] = useState<OutputVariable[]>([]);
   const [alias, setAlias] = useState("");
@@ -87,9 +92,12 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
     return null;
   }
 
-  const testCaseName = (node.data.label as string) || "";
-  const method = (node.data.method as string) || "";
-  const endpoint = (node.data.endpoint as string) || "";
+  const testCase = node.data.testCaseId
+    ? testCases?.find((tc) => tc.id === node.data.testCaseId)
+    : undefined;
+  const testCaseName = testCase?.name || (node.data.label as string) || "";
+  const method = testCase?.method || (node.data.method as string) || "";
+  const endpoint = testCase?.endpoint || (node.data.endpoint as string) || "";
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>

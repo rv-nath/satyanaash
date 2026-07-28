@@ -5,7 +5,14 @@ import type { Node } from "@xyflow/react";
 
 const updateNodeConfig = vi.fn();
 vi.mock("@/contexts/TestProjectContext", () => ({
-  useTestProject: () => ({ updateNodeConfig }),
+  useTestProject: () => ({ updateNodeConfig, projectId: "p1" }),
+}));
+vi.mock("@/hooks/useApi", () => ({
+  useTestCases: () => ({
+    data: [
+      { id: "tc1", name: "Delete User (renamed)", method: "DELETE", endpoint: "/accounts/{{id}}" },
+    ],
+  }),
 }));
 
 import { NodeConfigPanel } from "@/components/NodeConfigPanel";
@@ -14,7 +21,13 @@ const node = (config: Record<string, unknown> = {}): Node => ({
   id: "n1",
   type: "testCase",
   position: { x: 0, y: 0 },
-  data: { label: "Delete User", method: "DELETE", endpoint: "{{baseUrl}}/accounts/{{id}}", config },
+  data: {
+    testCaseId: "tc1",
+    label: "Delete User",
+    method: "DELETE",
+    endpoint: "{{baseUrl}}/accounts/{{id}}",
+    config,
+  },
 });
 
 describe("NodeConfigPanel", () => {
@@ -49,6 +62,14 @@ describe("NodeConfigPanel", () => {
     await userEvent.clear(screen.getByLabelText(/^expect$/i));
     await userEvent.type(screen.getByLabelText(/^expect$/i), "response.json.ok");
     expect(screen.getByText(/rhai expression/i)).toBeInTheDocument();
+  });
+
+  it("shows the request's current name, not the one stored when the node was made", () => {
+    // A renamed test case used to keep showing its old name here while the canvas
+    // showed the new one — the two disagreeing about the same node.
+    render(<NodeConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.getByText("Delete User (renamed)")).toBeInTheDocument();
+    expect(screen.queryByText("Delete User")).not.toBeInTheDocument();
   });
 
   it("closes on Escape", async () => {
