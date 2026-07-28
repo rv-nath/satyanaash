@@ -1168,6 +1168,25 @@ export function SingleResultView({
           </div>
         </div>
 
+        {/* What the engine said while running. These were being dropped: an
+            unresolved {{variable}}, a leftover "null", an export that matched
+            nothing, and anything the script printed all arrive here, and a run
+            that warns has to say so where the run is shown. */}
+        {result.logs && result.logs.length > 0 && (
+          <div className="max-h-28 shrink-0 overflow-y-auto border-b bg-muted/20 px-6 py-2 scrollbar-hairline">
+            {result.logs.map((line, i) => (
+              <p
+                key={i}
+                className={`font-mono text-[11px] leading-relaxed ${
+                  line.startsWith("⚠") ? "text-warning" : "text-muted-foreground"
+                }`}
+              >
+                {line}
+              </p>
+            ))}
+          </div>
+        )}
+
         {/* Sub-tabs for Response details */}
         <Tabs defaultValue="body" className="flex-1 min-h-0 flex flex-col overflow-hidden">
           <div className="border-b px-6">
