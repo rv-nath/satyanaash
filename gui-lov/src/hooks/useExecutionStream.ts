@@ -9,6 +9,14 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { API_URL } from '@/lib/api/client';
+import type { TestCaseExecutionResult } from '@/lib/api/types';
+import type { ConsoleLogDetail } from '@/lib/consoleDetails';
+import { fanOutDetails, resultDetails, resultHeadline } from '@/lib/consoleDetails';
+
+/** One node's result off the wire. The single definition lives in lib/api/types —
+ *  this module used to keep its own copy, which is exactly why per-row results were
+ *  silently dropped from the console. */
+type NodeResult = TestCaseExecutionResult;
 
 /** Matches backend ExecutionEvent variants */
 interface ExecutionEventStarted {
@@ -41,32 +49,6 @@ interface ExecutionEventNodeStarted {
   test_case_name?: string;
 }
 
-interface NodeResult {
-  node_id: string;
-  node_label?: string;
-  teardown?: boolean;
-  test_case_id?: string;
-  test_case_name?: string;
-  status: 'passed' | 'failed' | 'error' | 'skipped';
-  duration_ms: number;
-  request?: {
-    method: string;
-    url: string;
-    headers?: Record<string, string>;
-    body?: string;
-  };
-  response?: {
-    status: number;
-    headers?: Record<string, string>;
-    body?: string;
-  };
-  exports?: Record<string, unknown>;
-  /** SAT.env writes made by this node, to persist into the active environment */
-  env?: Record<string, unknown>;
-  error_message?: string;
-  logs: string[];
-}
-
 interface ExecutionEventNodeCompleted {
   type: 'node_completed';
   node_id: string;
@@ -96,11 +78,9 @@ type ExecutionEvent =
   | ExecutionEventCompleted
   | ExecutionEventError;
 
-export interface ConsoleLogDetail {
-  label: string;
-  value: string;
-  type?: 'info' | 'error';
-}
+// Defined alongside the formatters that build them; re-exported here because the
+// console panel has always imported it from this module.
+export type { ConsoleLogDetail } from '@/lib/consoleDetails';
 
 export interface ConsoleLog {
   timestamp: string;
@@ -325,52 +305,17 @@ function handleEvent(
       if (result.env && envWrites) {
         Object.assign(envWrites, result.env);
       }
-      const statusIcon = result.status === 'passed' ? '✓' :
-                        result.status === 'failed' ? '✗' :
-                        result.status === 'error' ? '⚠' : '○';
-      // Teardown is cleanup, not the scenario. Say so on the line, so "1 failed"
-      // is never read as the test failing when it was the tidying up.
-      const suffix = result.teardown ? ' [teardown]' : '';
       const logType: ConsoleLog['type'] =
         result.status === 'passed' ? 'success' :
         result.status === 'error' || result.status === 'failed' ? 'error' : 'info';
 
-      const name = nodeName(result);
+      // A node that ran once per data row reports every row: a summary line each, and
+      // the full request and response for the ones that didn't pass.
+      const details: ConsoleLogDetail[] = result.iterations
+        ? fanOutDetails(result)
+        : resultDetails(result);
 
-      // Build collapsible details for request/response
-      const details: ConsoleLogDetail[] = [];
-      if (result.request) {
-        details.push({ label: 'Request', value: `${result.request.method} ${result.request.url}` });
-        if (result.request.headers && Object.keys(result.request.headers).length > 0) {
-          details.push({ label: 'Headers', value: JSON.stringify(result.request.headers, null, 2) });
-        }
-        if (result.request.body) {
-          // Try to pretty-print JSON payloads
-          let body = result.request.body;
-          try { body = JSON.stringify(JSON.parse(body), null, 2); } catch {}
-          details.push({ label: 'Payload', value: body });
-        }
-      }
-      if (result.response) {
-        details.push({ label: 'Status', value: String(result.response.status), type: result.response.status >= 400 ? 'error' : 'info' });
-        if (result.response.body) {
-          let body = result.response.body.trim();
-          try { body = JSON.stringify(JSON.parse(body), null, 2); } catch {}
-          details.push({ label: 'Response', value: body });
-        }
-      }
-      if (result.error_message) {
-        details.push({ label: 'Error', value: result.error_message, type: 'error' });
-      }
-      // Engine notes for this node (unresolved variables, assertion reason, debug logs)
-      if (result.logs && result.logs.length > 0) {
-        details.push({ label: 'Logs', value: result.logs.join('\n') });
-      }
-      if (result.exports && Object.keys(result.exports).length > 0) {
-        details.push({ label: 'Exports', value: JSON.stringify(result.exports, null, 2) });
-      }
-
-      addLog(`${statusIcon} ${name}${suffix}: ${result.status} (${result.duration_ms}ms)`, logType, details.length > 0 ? details : undefined);
+      addLog(resultHeadline(result, nodeName(result)), logType, details.length > 0 ? details : undefined);
       break;
     }
 
