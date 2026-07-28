@@ -323,6 +323,7 @@ mod tests {
         let mut input = new_input("SignUp");
         input.dataset = Some(Dataset {
             rows: vec![DataRow {
+                path: None,
                 id: "r1".into(),
                 name: Some("missing email".into()),
                 body: Some(r#"{"mobile":"9876500001"}"#.into()),

@@ -3,6 +3,7 @@
 //! Executes test flows by traversing the graph and running test cases.
 //! Uses repository pattern for fetching test case data on-demand.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -68,6 +69,26 @@ fn resolve_body<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Option
         .or_else(|| test_case.payload.as_deref())
 }
 
+/// The endpoint template for this row: the test case's, plus whatever the row appends.
+///
+/// Composed *before* interpolation, so the result is what gets interpolated, scanned
+/// for unresolved names, checked for leftover "null"s and reported by the provenance
+/// log. Reading `test_case.endpoint` directly anywhere in the request cycle would make
+/// a row's own `{{org}}` invisible to all four.
+fn resolve_endpoint<'a>(row: Option<&'a DataRow>, test_case: &'a TestCase) -> Cow<'a, str> {
+    let Some(suffix) = row.and_then(|r| r.path_suffix()) else {
+        return Cow::Borrowed(&test_case.endpoint);
+    };
+    // A row adding "?org=acme" to an endpoint that already has a query would otherwise
+    // produce "?limit=10?org=acme" — a URL the server reads as one broken parameter.
+    let joined = if suffix.starts_with('?') && test_case.endpoint.contains('?') {
+        format!("{}&{}", test_case.endpoint, &suffix[1..])
+    } else {
+        format!("{}{}", test_case.endpoint, suffix)
+    };
+    Cow::Owned(joined)
+}
+
 /// The shared post-test script, if there is a non-empty one.
 /// An AppError's own prefix reads as noise once the caller has said which script
 /// failed: "This row's check could not run: Assertion error: …" says it twice.
@@ -124,6 +145,131 @@ fn is_teardown(node: &GraphNode) -> bool {
         .and_then(|c| c.get("teardown"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+/// A node's fan-out choice, as the canvas stores it.
+#[derive(Debug, PartialEq)]
+enum FanOut {
+    /// Run the request once, as authored — the dataset is ignored.
+    Off,
+    /// One request per row, every row.
+    AllRows,
+    /// One request per row, for these row ids.
+    Rows(Vec<String>),
+}
+
+/// `config.forEachRow` marks a node; `config.rowIds` narrows it.
+///
+/// **An absent `rowIds` means every row** — absence is already how this config says
+/// "unset", and it means a row added to the dataset later is included without anyone
+/// revisiting the node. An *empty* list is different: it means none, and the node says
+/// so rather than helpfully running everything the author just unticked.
+fn fan_out(node: &GraphNode) -> FanOut {
+    let config = node.data.get("config");
+    let marked = config
+        .and_then(|c| c.get("forEachRow"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !marked {
+        return FanOut::Off;
+    }
+    match config.and_then(|c| c.get("rowIds")).and_then(|v| v.as_array()) {
+        None => FanOut::AllRows,
+        Some(ids) => {
+            let mut wanted: Vec<String> = Vec::new();
+            for id in ids.iter().filter_map(|v| v.as_str()) {
+                let id = id.trim();
+                if !id.is_empty() && !wanted.iter().any(|seen| seen == id) {
+                    wanted.push(id.to_string());
+                }
+            }
+            FanOut::Rows(wanted)
+        }
+    }
+}
+
+/// What a node will actually run.
+enum RowPlan {
+    /// Once, as authored.
+    Once,
+    /// One request per row, in dataset order whatever order they were selected in.
+    Rows(Vec<(usize, DataRow)>),
+    /// Rows were chosen and none of them are there any more.
+    NothingSelected(String),
+}
+
+/// Work out which rows a node runs, saying out loud anything that narrows the plan.
+///
+/// A selection is never quietly shortened: the author asked for coverage, and coverage
+/// silently going missing is how a green run comes to mean nothing.
+fn plan_rows(node: &GraphNode, test_case: &TestCase, logs: &mut Vec<String>) -> RowPlan {
+    let choice = fan_out(node);
+    if choice == FanOut::Off {
+        return RowPlan::Once;
+    }
+
+    let rows: Vec<DataRow> = test_case
+        .dataset
+        .as_ref()
+        .map(|d| d.rows.clone())
+        .unwrap_or_default();
+
+    if rows.is_empty() {
+        logs.push(format!(
+            "⚠ This step is set to run once per data row, but \"{}\" has no data rows — the request ran once, as authored",
+            test_case.name
+        ));
+        return RowPlan::Once;
+    }
+
+    match choice {
+        FanOut::Off => RowPlan::Once,
+        FanOut::AllRows => RowPlan::Rows(rows.into_iter().enumerate().collect()),
+        FanOut::Rows(wanted) => {
+            if wanted.is_empty() {
+                return RowPlan::NothingSelected(format!(
+                    "No data rows are selected for this step, so nothing ran. Open the node and pick the rows of \"{}\" it should run",
+                    test_case.name
+                ));
+            }
+            let selected: Vec<(usize, DataRow)> = rows
+                .iter()
+                .cloned()
+                .enumerate()
+                .filter(|(_, row)| wanted.iter().any(|id| *id == row.id))
+                .collect();
+
+            let missing: Vec<&str> = wanted
+                .iter()
+                .filter(|id| !rows.iter().any(|row| &row.id == *id))
+                .map(String::as_str)
+                .collect();
+
+            if selected.is_empty() {
+                return RowPlan::NothingSelected(format!(
+                    "None of the {} row(s) selected for this step exist in \"{}\" any more, so nothing ran ({})",
+                    wanted.len(),
+                    test_case.name,
+                    missing.join(", ")
+                ));
+            }
+            if !missing.is_empty() {
+                logs.push(format!(
+                    "⚠ {} selected data row(s) are no longer in \"{}\" ({}) — nothing ran for them. Open this node and re-pick its rows",
+                    missing.len(),
+                    test_case.name,
+                    missing.join(", ")
+                ));
+            }
+            if rows.iter().any(|row| row.id.trim().is_empty()) {
+                logs.push(
+                    "⚠ Some data rows have no id and can't be selected individually — open the request's Data tab and save it once to give them ids"
+                        .to_string(),
+                );
+            }
+            RowPlan::Rows(selected)
+        }
+    }
 }
 
 /// Teardown nodes in the order their edges imply — "log in as admin, then delete"
@@ -199,8 +345,13 @@ fn teardown_blocked(
     test_case: &TestCase,
     ctx: &ExecutionContext,
     produced: &std::collections::HashSet<String>,
+    // Anything else this run will put on the wire — a fan-out row's own body and URL
+    // suffix, which the test case knows nothing about. Left out, a row could aim a
+    // delete at a leftover id and slip past the guard entirely.
+    extra_templates: &[&str],
 ) -> Option<String> {
     let mut templates: Vec<&str> = vec![test_case.endpoint.as_str()];
+    templates.extend(extra_templates);
     if let Some(map) = test_case.headers.as_object() {
         templates.extend(map.values().filter_map(|v| v.as_str()));
     }
@@ -213,13 +364,13 @@ fn teardown_blocked(
             match source {
                 None => {
                     return Some(format!(
-                        "Not run: {{{{{}}}}} was never produced by this run, so this request                          would go out with a placeholder in it",
+                        "Not run: {{{{{}}}}} was never produced by this run, so this request would go out with a placeholder in it",
                         name
                     ))
                 }
                 Some(VarSource::Environment) if produced.contains(&name) => {
                     return Some(format!(
-                        "Not run: {} came from environment/globals, not from this run — it is a                          leftover naming something this run never created",
+                        "Not run: {} came from environment/globals, not from this run — it is a leftover naming something this run never created",
                         name
                     ))
                 }
@@ -789,8 +940,21 @@ impl ExecutionEngine {
         // Teardown only: check what this request would be aimed at before sending
         // it. Checked *after* node input vars are set, so a value supplied on the
         // node counts as coming from the node.
+        // Planned before the teardown guard, so the guard can inspect what a row would
+        // actually send, and reused below rather than planned twice.
+        let plan = plan_rows(node, &test_case, &mut logs);
+
         if let Some(produced) = teardown_guard {
-            if let Some(reason) = teardown_blocked(&test_case, ctx, produced) {
+            let row_templates: Vec<&str> = match &plan {
+                RowPlan::Rows(rows) => rows
+                    .iter()
+                    .flat_map(|(_, row)| {
+                        [row.body_override(), row.path_suffix()].into_iter().flatten()
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if let Some(reason) = teardown_blocked(&test_case, ctx, produced, &row_templates) {
                 logs.push(reason.clone());
                 return NodeResult {
                     node_id: node.id.clone(),
@@ -856,27 +1020,94 @@ impl ExecutionEngine {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        let mut result = self.run_once(
-            &test_case,
-            None,
-            ctx,
-            RunOptions {
-                node_id: &node.id,
-                extra_exports: &node_output_vars,
-                node_check,
-                // Was false here and true on the standalone path — unintentional
-                // drift. An unresolved {{var}} shipping as a literal is worth saying
-                // out loud wherever it happens; in a flow it is the likelier place,
-                // since the value was supposed to come from an earlier node.
-                report_unresolved: true,
-                row_index: None,
-                row_label: None,
-            },
-            logs,
-            &mut env_writes,
-            start,
-        )
-        .await;
+        // Once, or once per data row? Decided here rather than in run_once, because a
+        // fan-out sends N requests and run_once is the one-request cycle.
+        let mut result = match plan {
+            RowPlan::Once => {
+                self.run_once(
+                    &test_case,
+                    None,
+                    ctx,
+                    RunOptions {
+                        node_id: &node.id,
+                        extra_exports: &node_output_vars,
+                        node_check,
+                        // Was false here and true on the standalone path —
+                        // unintentional drift. An unresolved {{var}} shipping as a
+                        // literal is worth saying out loud wherever it happens; in a
+                        // flow it is the likelier place, since the value was supposed
+                        // to come from an earlier node.
+                        report_unresolved: true,
+                        row_index: None,
+                        row_label: None,
+                    },
+                    logs,
+                    &mut env_writes,
+                    start,
+                )
+                .await
+            }
+
+            RowPlan::Rows(rows) => {
+                // Rows are isolated clones, so nothing a row captures survives the
+                // step. Left unsaid, the only symptom is {{name}} arriving literally at
+                // a later node — the failure mode this codebase keeps paying for.
+                if !node_output_vars.is_empty() {
+                    logs.push(format!(
+                        "⚠ This step runs once per data row, so nothing is carried forward: output variable(s) {} were not captured. Capture on a step that runs once",
+                        node_output_vars
+                            .iter()
+                            .map(|e| e.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !test_case.exports.is_empty() {
+                    logs.push(format!(
+                        "⚠ \"{}\"'s own exports are captured per row but do not survive this step — rows are isolated",
+                        test_case.name
+                    ));
+                }
+                self.run_rows(
+                    &test_case,
+                    &rows,
+                    ctx,
+                    RowRunOptions {
+                        node_id: &node.id,
+                        extra_exports: &[],
+                        node_check,
+                    },
+                    logs,
+                    &mut env_writes,
+                    start,
+                )
+                .await
+            }
+
+            RowPlan::NothingSelected(reason) => {
+                logs.push(reason.clone());
+                NodeResult {
+                    node_id: node.id.clone(),
+                    node_label: None,
+                    teardown: None,
+                    test_case_id: Some(test_case.id.clone()),
+                    test_case_name: Some(test_case.name.clone()),
+                    // Failed, not Error: nothing broke, the step was mis-configured —
+                    // and Failed routes down the failure edge instead of ending the run.
+                    status: NodeStatus::Failed,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    request: None,
+                    response: None,
+                    exports: None,
+                    env: None,
+                    error_message: Some(reason),
+                    logs,
+                    row_index: None,
+                    row_label: None,
+                    iterations: None,
+                }
+            }
+        };
         result.node_label = node_label;
         result
     }
@@ -1093,8 +1324,13 @@ impl ExecutionEngine {
             }
         }
 
+        // The endpoint this row asks for — the test case's, plus the row's own suffix.
+        // Composed once here and used by the interpolation *and* every diagnostic
+        // below, so a row's {{org}} is visible to all of them.
+        let endpoint_template = resolve_endpoint(row, test_case);
+
         // Interpolate endpoint URL and prepend base URL if needed
-        let endpoint = match ctx.interpolate(&test_case.endpoint) {
+        let endpoint = match ctx.interpolate(&endpoint_template) {
             Ok(u) => u,
             Err(e) => bail!(format!("URL interpolation failed: {}", e), None, None),
         };
@@ -1142,7 +1378,7 @@ impl ExecutionEngine {
             // is invisible to the check above — it resolved. Almost always a
             // leftover in Globals or an environment. Read from the templates, since
             // by now the value is indistinguishable from a legitimate "null".
-            let mut placeholders: Vec<String> = ctx.placeholder_values(&test_case.endpoint);
+            let mut placeholders: Vec<String> = ctx.placeholder_values(&endpoint_template);
             if let Some(map) = test_case.headers.as_object() {
                 for value in map.values() {
                     if let Some(text) = value.as_str() {
@@ -1170,7 +1406,7 @@ impl ExecutionEngine {
         // detect, so the answer is to show the tier and let the author see it.
         if self.debug_mode {
             let mut seen: Vec<String> = Vec::new();
-            let mut templates: Vec<&str> = vec![test_case.endpoint.as_str()];
+            let mut templates: Vec<&str> = vec![endpoint_template.as_ref()];
             if let Some(map) = test_case.headers.as_object() {
                 templates.extend(map.values().filter_map(|v| v.as_str()));
             }
@@ -1247,14 +1483,34 @@ impl ExecutionEngine {
         // script written for the request in isolation can neither decide nor break
         // it. Nothing is lost: output variables run either way, and an Expect can
         // capture for itself.
-        let own_check = match row {
-            Some(data_row) => Some((data_row.check_expr(), "This row's check")),
-            None => opts.node_check.map(|c| (Some(c), "This node's check")),
+        // A row's Expect wins; when a row hasn't stated one, this node's applies. That
+        // middle step is what lets one dataset serve two scenarios: the rows describe
+        // the request, and the node says what its actor should get back — a listing that
+        // is 200 for a super user and 403 for an org admin.
+        let stated_check: Option<(Option<String>, &str)> = match row {
+            Some(data_row) => Some(match data_row.check_expr() {
+                Some(expr) => (Some(expr.to_string()), "This row's check"),
+                None => (opts.node_check.map(str::to_string), "This node's check"),
+            }),
+            None => opts.node_check.map(|c| (Some(c.to_string()), "This node's check")),
         };
 
+        // A check is interpolated, like the URL, headers and body already are — it was
+        // the one string that wasn't. That's what lets a row state the shape of the
+        // truth once and each node supply the actor's value:
+        //
+        // response.json.items.len() == {{expected_count}}
+        //
+        // Strings keep the body convention: `response.json.org == "{{org_id}}"`. An
+        // unresolved name stays literal, so the ⚠ warning fires rather than the check
+        // quietly comparing against nothing.
+        let own_check = stated_check.map(|(raw, what)| {
+            (raw.map(|text| ctx.interpolate(&text).unwrap_or(text)), what)
+        });
+
         let assertion_passed = match own_check {
-            Some((raw, what)) => {
-                let passed = match parse_check(raw) {
+            Some((ref raw, what)) => {
+                let passed = match parse_check(raw.as_deref()) {
                     Check::Status(expected) => {
                         let ok = status_code == expected;
                         if !ok {
@@ -1650,6 +1906,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(i, (name, body, status))| DataRow {
+                    path: None,
                     id: format!("r{}", i),
                     name: Some(name.to_string()),
                     body: body.map(str::to_string),
@@ -1763,9 +2020,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flow_ignores_the_dataset() {
-        // A flow runs the test case as authored — once, with no row applied — so
-        // adding a dataset never changes flow behaviour.
+    async fn a_node_not_marked_for_rows_ignores_the_dataset() {
+        // A flow runs the test case as authored — once, with no row applied — unless
+        // the node says otherwise. Adding a dataset never changes an existing flow.
         let engine = ExecutionEngine::new(false, None);
         let mut tc = make_test_case("tc1", "SignUp", "http://127.0.0.1:1/u", "POST");
         tc.payload = Some(r#"{"shared":true}"#.to_string());
@@ -2175,6 +2432,447 @@ mod tests {
             .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
         // C still runs, and Cleanup runs at the end rather than in place.
         assert_eq!(names, vec!["A", "C", "Cleanup"], "{:?}", names);
+    }
+
+    // ===================== fan-out: a dataset inside a flow =====================
+
+    /// A row that couldn't run at all is systemic, not a per-case outcome — so the
+    /// aggregate is Error and the flow stops. Cleanup still happens, which is what makes
+    /// stopping safe rather than destructive.
+    #[tokio::test]
+    async fn one_errored_row_stops_the_flow_but_teardown_still_runs() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", "http://127.0.0.1:1/send", "POST");
+        tc.dataset = Some(dataset_of(vec![("one", Some("{}"), None), ("two", Some("{}"), None)]));
+        let after = make_test_case("after", "Downstream", &stub_once(200, "{}").await, "POST");
+        let cleanup = make_test_case("cleanup", "Cleanup", &stub_once(200, "{}").await, "DELETE");
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(tc)
+            .with_test_case(after)
+            .with_test_case(cleanup);
+
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("b", "testCase", serde_json::json!({
+                "testCaseId": "tc", "config": {"forEachRow": true}
+            })),
+            make_node("c", "testCase", serde_json::json!({"testCaseId": "after"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "cleanup", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "b", None),
+            make_edge("e2", "b", "c", Some("success")),
+            make_edge("e3", "c", "end", Some("success")),
+        ]);
+
+        let results = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results;
+
+        let fanned = results.iter().find(|r| r.node_id == "b").unwrap();
+        assert_eq!(fanned.status, NodeStatus::Error);
+        assert!(results.iter().all(|r| r.node_id != "c"), "the flow stopped");
+        let cleanup = results.iter().find(|r| r.node_id == "t").expect("cleanup still ran");
+        assert_eq!(cleanup.teardown, Some(true));
+    }
+
+    /// A fan-out teardown node is guarded per row: a row's own body or URL suffix could
+    /// aim a delete at a leftover id the test case knows nothing about.
+    #[tokio::test]
+    async fn a_fanned_out_teardown_node_is_still_guarded() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut del = make_test_case("del", "Delete", "http://127.0.0.1:1/accounts", "DELETE");
+        let mut dataset = dataset_of(vec![("by id", None, None)]);
+        // The id lives in the row's URL suffix, not in the test case's endpoint.
+        dataset.rows[0].path = Some("/{{new_account_id}}".to_string());
+        del.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(del);
+
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({
+                "testCaseId": "del",
+                "config": {"outputVars": [{"name": "new_account_id", "path": "$.id"}]}
+            })),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "del", "config": {"teardown": true, "forEachRow": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "end", Some("success")),
+        ]);
+
+        // new_account_id is declared by node "a" but never produced (it errors), so the
+        // teardown row must not be sent.
+        let mut env = HashMap::new();
+        env.insert("new_account_id".to_string(), serde_json::json!("acct-from-a-previous-run"));
+        let results = engine
+            .execute_flow("exec1", &flow, &repo, env, HashMap::new(), None)
+            .await
+            .unwrap()
+            .results;
+
+        let cleanup = results.iter().find(|r| r.node_id == "t").expect("teardown was reached");
+        assert_eq!(cleanup.status, NodeStatus::Skipped);
+        assert!(cleanup.request.is_none(), "a stale id must never be deleted");
+        assert!(
+            cleanup.error_message.as_deref().unwrap_or("").contains("environment/globals"),
+            "{:?}",
+            cleanup.error_message
+        );
+    }
+
+
+    /// `start → b → end`, where `b` carries `config`. One node, so nothing upstream
+    /// can consume a stub's response or abort traversal before the fan-out runs.
+    fn one_node_flow(tc_id: &str, config: serde_json::Value) -> Flow {
+        let mut data = serde_json::json!({"testCaseId": tc_id});
+        if let Some(o) = data.as_object_mut() { o.insert("config".into(), config); }
+        make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("b", "testCase", data),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "b", None),
+            make_edge("e2", "b", "end", Some("success")),
+        ])
+    }
+
+    /// Build `start → a → b → end`, where `b` carries `config`.
+    fn fan_out_flow(a_id: &str, b_id: &str, a_config: serde_json::Value, b_config: serde_json::Value) -> Flow {
+        let mut a_data = serde_json::json!({"testCaseId": a_id});
+        let mut b_data = serde_json::json!({"testCaseId": b_id});
+        if let Some(o) = a_data.as_object_mut() { o.insert("config".into(), a_config); }
+        if let Some(o) = b_data.as_object_mut() { o.insert("config".into(), b_config); }
+        make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", a_data),
+            make_node("b", "testCase", b_data),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "b", Some("success")),
+            make_edge("e3", "b", "end", Some("success")),
+        ])
+    }
+
+    #[test]
+    fn an_absent_row_list_means_every_row() {
+        let off = make_node("n", "testCase", serde_json::json!({}));
+        assert_eq!(fan_out(&off), FanOut::Off);
+
+        let all = make_node("n", "testCase", serde_json::json!({"config": {"forEachRow": true}}));
+        assert_eq!(fan_out(&all), FanOut::AllRows);
+
+        // An empty list is not "all" — it is "none", and the node says so.
+        let none = make_node("n", "testCase", serde_json::json!({
+            "config": {"forEachRow": true, "rowIds": []}
+        }));
+        assert_eq!(fan_out(&none), FanOut::Rows(vec![]));
+
+        // Blanks dropped, duplicates collapsed.
+        let some = make_node("n", "testCase", serde_json::json!({
+            "config": {"forEachRow": true, "rowIds": ["r1", "  ", "r1", " r0 "]}
+        }));
+        assert_eq!(fan_out(&some), FanOut::Rows(vec!["r1".into(), "r0".into()]));
+    }
+
+    /// The whole point of the feature: a row inherits what an earlier node produced.
+    /// Without this, a dataset can only ever test requests that need no setup.
+    #[tokio::test]
+    async fn a_fanned_out_row_sees_what_an_earlier_node_produced() {
+        let engine = ExecutionEngine::new(false, None);
+
+        let login = make_test_case("login", "Login", &stub_once(200, r#"{"token":"T-42"}"#).await, "POST");
+        let mut sms = make_test_case("sms", "Send SMS", &stub_times(200, "{}", 2).await, "POST");
+        sms.headers = serde_json::json!({"Authorization": "Bearer {{token}}"});
+        sms.dataset = Some(dataset_of(vec![
+            ("first", Some(r#"{"n":1}"#), None),
+            ("second", Some(r#"{"n":2}"#), None),
+        ]));
+        let repo = MockTestCaseRepository::new().with_test_case(login).with_test_case(sms);
+
+        let flow = fan_out_flow(
+            "login",
+            "sms",
+            serde_json::json!({"outputVars": [{"name": "token", "path": "$.token"}]}),
+            serde_json::json!({"forEachRow": true}),
+        );
+        let results = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results;
+
+        let fanned = results.iter().find(|r| r.node_id == "b").expect("the sms node ran");
+        let rows = fanned.iterations.as_ref().expect("one result per row");
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            let auth = row.request.as_ref().unwrap().headers.get("Authorization");
+            assert_eq!(auth.map(String::as_str), Some("Bearer T-42"), "{:?}", row.row_label);
+        }
+        assert_eq!(fanned.status, NodeStatus::Passed);
+    }
+
+    #[tokio::test]
+    async fn a_node_can_run_a_chosen_subset_of_rows() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", "http://127.0.0.1:1/send", "POST");
+        tc.dataset = Some(dataset_of(vec![
+            ("one", Some(r#"{"n":1}"#), None),
+            ("two", Some(r#"{"n":2}"#), None),
+            ("three", Some(r#"{"n":3}"#), None),
+        ]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        // Selected out of order on purpose: results come back in dataset order.
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true, "rowIds": ["r2", "r0"]
+        }));
+        let results = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results;
+
+        let rows = results.iter().find(|r| r.node_id == "b").unwrap().iterations.clone().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter().map(|r| r.row_index).collect::<Vec<_>>(),
+            vec![Some(0), Some(2)],
+            "dataset order, not selection order"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_selected_row_that_no_longer_exists_is_named_not_dropped() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", "http://127.0.0.1:1/send", "POST");
+        tc.dataset = Some(dataset_of(vec![("one", Some("{}"), None)]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true, "rowIds": ["r0", "ghost"]
+        }));
+        let node = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        // The surviving row still runs — a stale id doesn't cancel real work.
+        assert_eq!(node.iterations.as_ref().unwrap().len(), 1);
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("ghost"), "{}", logs);
+        assert!(logs.contains("no longer"), "{}", logs);
+    }
+
+    #[tokio::test]
+    async fn a_selection_that_matches_nothing_fails_the_node() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", "http://127.0.0.1:1/send", "POST");
+        tc.dataset = Some(dataset_of(vec![("one", Some("{}"), None)]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc.clone());
+
+        for row_ids in [serde_json::json!(["ghost"]), serde_json::json!([])] {
+            let flow = one_node_flow("tc", serde_json::json!({
+                "forEachRow": true, "rowIds": row_ids
+            }));
+            let node = engine
+                .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+                .await
+                .unwrap()
+                .results
+                .into_iter()
+                .find(|r| r.node_id == "b")
+                .unwrap();
+
+            // Failed, not Error: nothing broke, and the request must not be sent as
+            // authored — that would be a different test reported as this one.
+            assert_eq!(node.status, NodeStatus::Failed);
+            assert!(node.request.is_none(), "nothing may be sent");
+            assert!(node.iterations.is_none(), "an empty matrix is worse than none");
+            assert!(
+                node.error_message.as_deref().unwrap_or("").contains("nothing ran"),
+                "{:?}",
+                node.error_message
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_node_marked_for_rows_on_a_request_without_any_runs_once() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", &stub_once(200, "{}").await, "POST");
+        tc.payload = Some(r#"{"authored":true}"#.to_string());
+        tc.dataset = None;
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let flow = one_node_flow("tc", serde_json::json!({"forEachRow": true}));
+        let node = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        assert!(node.iterations.is_none());
+        assert_eq!(
+            node.request.as_ref().unwrap().body.as_deref(),
+            Some(r#"{"authored":true}"#)
+        );
+        assert!(node.logs.join("\n").contains("no data rows"), "{:?}", node.logs);
+    }
+
+    /// A row with no Expect of its own falls back to the node's — which is what lets one
+    /// dataset serve two actors: 200 for a super user, 403 for an org admin.
+    #[tokio::test]
+    async fn a_row_without_its_own_expect_falls_back_to_the_nodes() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "List", &stub_times(403, "{}", 2).await, "GET");
+        tc.dataset = Some(dataset_of(vec![
+            ("inherits the node's", None, None),
+            ("states its own", None, Some("200")),
+        ]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true, "check": "403"
+        }));
+        let rows = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+            .iterations
+            .unwrap();
+
+        assert_eq!(rows[0].status, NodeStatus::Passed, "{:?}", rows[0].error_message);
+        // The row's own Expect still wins over the node's.
+        assert_eq!(rows[1].status, NodeStatus::Failed);
+    }
+
+    /// The actor-varying case: one Expect authored on the row, each node supplying the
+    /// value. Impossible until a check was interpolated like the URL and body already are.
+    #[tokio::test]
+    async fn a_check_can_be_parameterised_by_a_node_input_var() {
+        async fn verdict(expected: &str) -> NodeStatus {
+            let engine = ExecutionEngine::new(false, None);
+            let mut tc = make_test_case("tc", "List", &stub_once(200, r#"{"n":3}"#).await, "GET");
+            tc.dataset = Some(dataset_of(vec![(
+                "count depends on who is asking",
+                None,
+                Some("response.json.n == {{expected_count}}"),
+            )]));
+            let repo = MockTestCaseRepository::new().with_test_case(tc);
+            let flow = one_node_flow("tc", serde_json::json!({
+                "forEachRow": true,
+                "inputVars": [{"key": "expected_count", "value": expected}]
+            }));
+            engine
+                .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+                .await
+                .unwrap()
+                .results
+                .into_iter()
+                .find(|r| r.node_id == "b")
+                .unwrap()
+                .iterations
+                .unwrap()
+                .remove(0)
+                .status
+        }
+
+        assert_eq!(verdict("3").await, NodeStatus::Passed);
+        assert_eq!(verdict("12").await, NodeStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn output_variables_on_a_fanned_out_node_say_they_captured_nothing() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Login", &stub_once(200, r#"{"token":"T"}"#).await, "POST");
+        tc.dataset = Some(dataset_of(vec![("one", Some("{}"), None)]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true,
+            "outputVars": [{"name": "token", "path": "$.token"}]
+        }));
+        let node = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("token"), "{}", logs);
+        assert!(logs.contains("nothing is carried forward"), "{}", logs);
+        assert!(node.exports.is_none(), "a fan-out node exports nothing");
+    }
+
+    #[tokio::test]
+    async fn a_row_can_extend_the_endpoint() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "List", "http://127.0.0.1:1/campaigns", "GET");
+        let mut dataset = dataset_of(vec![("own org", None, None), ("all orgs", None, None)]);
+        dataset.rows[0].path = Some("?org={{my_org}}".to_string());
+        dataset.rows[1].path = Some("/all".to_string());
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true,
+            "inputVars": [{"key": "my_org", "value": "acme"}]
+        }));
+        let rows = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+            .iterations
+            .unwrap();
+
+        // A row's suffix is interpolated like the endpoint it extends.
+        assert!(rows[0].request.as_ref().unwrap().url.ends_with("/campaigns?org=acme"));
+        assert!(rows[1].request.as_ref().unwrap().url.ends_with("/campaigns/all"));
+    }
+
+    #[test]
+    fn a_rows_query_joins_an_endpoint_that_already_has_one() {
+        let mut tc = make_test_case("tc", "List", "http://x/campaigns?limit=10", "GET");
+        tc.payload = None;
+        let mut row = DataRow { path: Some("?org=acme".into()), ..Default::default() };
+
+        // "?limit=10?org=acme" is a URL the server reads as one broken parameter.
+        assert_eq!(resolve_endpoint(Some(&row), &tc), "http://x/campaigns?limit=10&org=acme");
+
+        // A path suffix is appended as-is.
+        row.path = Some("/all".into());
+        assert_eq!(resolve_endpoint(Some(&row), &tc), "http://x/campaigns?limit=10/all");
+
+        // Blank or absent leaves the endpoint alone.
+        row.path = Some("   ".into());
+        assert_eq!(resolve_endpoint(Some(&row), &tc), "http://x/campaigns?limit=10");
+        assert_eq!(resolve_endpoint(None, &tc), "http://x/campaigns?limit=10");
     }
 
     /// Teardown exists for the run that broke: an account created by a flow that

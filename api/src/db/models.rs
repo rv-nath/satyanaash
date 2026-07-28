@@ -251,6 +251,14 @@ pub struct DataRow {
     /// worst possible failure mode: a green row that tests nothing.
     #[serde(default, alias = "expected_status", skip_serializing_if = "Option::is_none")]
     pub check: Option<String>,
+    /// Appended to the test case's endpoint for this row, so one request can be
+    /// varied by URL as well as by body: "?org=acme", "/acme/summary". Interpolated
+    /// like the endpoint itself. Blank means the endpoint as authored.
+    ///
+    /// One field holding what goes on the wire, not one per parameter — the same
+    /// reason `body` is a single field: there is no template model to learn first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 impl Dataset {
@@ -273,6 +281,11 @@ impl DataRow {
     /// The body this row sends, or None to fall back to the test case's payload.
     pub fn body_override(&self) -> Option<&str> {
         self.body.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// This row's URL suffix, if it gave one.
+    pub fn path_suffix(&self) -> Option<&str> {
+        self.path.as_deref().map(str::trim).filter(|s| !s.is_empty())
     }
 
     /// This row's check, if it gave one.
