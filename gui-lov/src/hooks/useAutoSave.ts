@@ -73,14 +73,27 @@ export function useAutoSave({
   const updateGraphMutation = useUpdateFlowGraph();
 
   // Track previous values to detect changes
-  const prevNodesRef = useRef<string>('');
-  const prevEdgesRef = useRef<string>('');
-  const prevEdgeSettingsRef = useRef<string>('');
-  const prevFlowVariablesRef = useRef<string>('');
+  // What the server is believed to hold. Comparing against this rather than
+  // against the previous render is what makes the check honest: any difference is
+  // unsaved, whenever it appeared. The old code compared render-to-render and
+  // advanced its refs before deciding whether to save, so a change it chose to
+  // skip was recorded as saved and never sent again — one edit made just after
+  // opening a flow disappeared, with the status still reading "idle".
+  const savedStateRef = useRef<string>('');
   const currentVersionRef = useRef(version);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
-  const isInitializedRef = useRef(false);
+  // Which flow savedStateRef describes. Kept here rather than in a separate reset
+  // effect: that effect ran *after* this one on mount and undid its
+  // initialisation, so the next edit was mistaken for first sight and dropped.
+  const stateFlowRef = useRef<string | null>(null);
+  // The timer calls whatever the latest save is. Depending on performSave in the
+  // effect would re-run it on every render — including the re-render a failed save
+  // causes, turning one rejected save into a retry every debounce interval.
+  const performSaveRef = useRef<() => Promise<boolean>>(async () => false);
+  // saveNow runs from a timer, so it must read the latest state rather than the
+  // one captured when the timer was set.
+  const fingerprintRef = useRef<() => string>(() => '');
   // A save already on its way covers the state that triggered it; a second save
   // racing it would send the same version twice and lose on optimistic locking.
   const inFlightRef = useRef<Promise<boolean> | null>(null);
@@ -104,6 +117,7 @@ export function useAutoSave({
 
   // Core save function
   const saveNow = useCallback(async (): Promise<boolean> => {
+    const sending = fingerprintRef.current();
     setStatus('saving');
     setError(null);
 
@@ -135,6 +149,9 @@ export function useAutoSave({
       });
 
       if (isMountedRef.current) {
+        // Recorded only now: if the save had failed, the graph would still differ
+        // from the server's copy and the next change must send it again.
+        savedStateRef.current = sending;
         setStatus('saved');
         setLastSaved(new Date());
 
@@ -176,79 +193,47 @@ export function useAutoSave({
       inFlightRef.current = null;
     }
   }, [flowId, saveNow]);
+  performSaveRef.current = performSave;
 
-  // Watch for changes and trigger debounced save
+  // One string describing everything the server stores for this flow. Used both
+  // to decide whether there is anything to save and to record what a save sent.
+  const fingerprint = useCallback(() => JSON.stringify({
+    // Volatile fields (width/height) are excluded: React Flow re-measures on
+    // window focus, and that isn't an edit.
+    nodes: nodesForComparison(nodes),
+    edges: edgesToApi(edges),
+    edgeSettings: edgeSettings || {},
+    flowVariables: flowVariables || {},
+  }), [nodes, edges, edgeSettings, flowVariables]);
+  fingerprintRef.current = fingerprint;
+
+  // Watch for changes and trigger a debounced save
   useEffect(() => {
     if (!enabled || !flowId) return;
 
-    // Use nodesForComparison to exclude volatile fields (width/height)
-    const nodesJson = JSON.stringify(nodesForComparison(nodes));
-    const edgesJson = JSON.stringify(edgesToApi(edges));
-    const edgeSettingsJson = JSON.stringify(edgeSettings || {});
-    const flowVariablesJson = JSON.stringify(flowVariables || {});
+    const current = fingerprint();
 
-    // First time seeing data - just initialize refs, don't save
-    if (!isInitializedRef.current) {
-      if (nodes.length > 0) {
-        prevNodesRef.current = nodesJson;
-        prevEdgesRef.current = edgesJson;
-        prevEdgeSettingsRef.current = edgeSettingsJson;
-        prevFlowVariablesRef.current = flowVariablesJson;
-        isInitializedRef.current = true;
-        skipCountRef.current = 2; // Skip next 2 renders (React Flow measures nodes)
-        console.log('[AutoSave] Initialized with', nodes.length, 'nodes, skipping next 2 changes');
-      }
+    // First sight of this flow's data is what the server gave us.
+    if (stateFlowRef.current !== flowId) {
+      if (nodes.length === 0) return; // still loading
+      savedStateRef.current = current;
+      stateFlowRef.current = flowId;
       return;
     }
 
-    // Check if anything changed from last known state
-    const nodesChanged = hasChanges(nodesJson, prevNodesRef.current);
-    const edgesChanged = hasChanges(edgesJson, prevEdgesRef.current);
-    const edgeSettingsChanged = hasChanges(edgeSettingsJson, prevEdgeSettingsRef.current);
-    const flowVariablesChanged = hasChanges(flowVariablesJson, prevFlowVariablesRef.current);
+    // Anything that differs from the server's copy is unsaved — including a
+    // change that arrived while React Flow was still settling. If the settling
+    // produces the same content, this is simply equal and nothing happens.
+    if (current === savedStateRef.current) return;
 
-    if (!nodesChanged && !edgesChanged && !edgeSettingsChanged && !flowVariablesChanged) return;
-
-    // Update refs to current state
-    prevNodesRef.current = nodesJson;
-    prevEdgesRef.current = edgesJson;
-    prevEdgeSettingsRef.current = edgeSettingsJson;
-    prevFlowVariablesRef.current = flowVariablesJson;
-
-    // Skip initial changes from React Flow measuring nodes (but not for edge settings or flow variables)
-    if (skipCountRef.current > 0 && !edgeSettingsChanged && !flowVariablesChanged) {
-      skipCountRef.current--;
-      console.log('[AutoSave] Skipping initial change, remaining:', skipCountRef.current);
-      return;
-    }
-
-    console.log('[AutoSave] User change detected - nodes:', nodesChanged, 'edges:', edgesChanged, 'edgeSettings:', edgeSettingsChanged);
-
-    // Clear existing timer
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
-
-    // Set pending status immediately
     setStatus('pending');
-
-    // Schedule save
     debounceTimerRef.current = setTimeout(() => {
-      console.log('[AutoSave] Debounce timer fired, saving...');
-      performSave();
+      performSaveRef.current();
     }, debounceMs);
-
-  }, [nodes, edges, edgeSettings, flowVariables, flowId, enabled, debounceMs, performSave]);
-
-  // Reset initialization when flow changes
-  useEffect(() => {
-    isInitializedRef.current = false;
-    skipCountRef.current = 0;
-    prevNodesRef.current = '';
-    prevEdgesRef.current = '';
-    prevEdgeSettingsRef.current = '';
-    prevFlowVariablesRef.current = '';
-  }, [flowId]);
+  }, [fingerprint, nodes.length, flowId, enabled, debounceMs]);
 
   return {
     status,
