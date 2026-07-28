@@ -14,7 +14,7 @@ interface TestCaseNodeData {
    *  different roles ("Login as new user" vs "Root login"); the alias is what
    *  distinguishes them. The test case name stays visible underneath. */
   alias?: string;
-  config?: { check?: string; teardown?: boolean };
+  config?: { check?: string; teardown?: boolean; forEachRow?: boolean; rowIds?: string[] };
 }
 
 interface TestCaseNodeProps {
@@ -46,6 +46,8 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
   // graph looks identical to one that doesn't, and a passing 402 reads as a bug.
   const check = data.config?.check?.trim();
   const teardown = data.config?.teardown === true;
+  const forEachRow = data.config?.forEachRow === true;
+  const chosenRows = data.config?.rowIds?.length;
   const displayLabel = alias || testCaseName;
   const displayMethod = currentTestCase?.method || data.method;
   const displayEndpoint = currentTestCase?.endpoint || data.endpoint;
@@ -90,6 +92,13 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
               this run.
             </p>
           )}
+          {forEachRow && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Runs <span className="text-foreground">once per data row</span>
+              {chosenRows === undefined ? " — every row" : ` — ${chosenRows} selected`}, each
+              inheriting what earlier steps produced.
+            </p>
+          )}
           {check && (
             <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
               expects <span className="text-foreground">{check}</span>
@@ -116,6 +125,18 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
           title="Runs at the end, after the flow — even if the flow failed"
         >
           cleanup
+        </span>
+      )}
+      {forEachRow && (
+        <span
+          className="shrink-0 rounded border border-primary/40 bg-primary/10 px-1 font-mono text-[9px] font-semibold text-primary"
+          title={
+            chosenRows === undefined
+              ? "Runs once per data row — every row"
+              : `Runs once per data row — ${chosenRows} selected`
+          }
+        >
+          {chosenRows === undefined ? "rows" : `${chosenRows} rows`}
         </span>
       )}
       {check && (

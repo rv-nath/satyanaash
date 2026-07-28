@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Trash2, Plus, ArrowDownToLine, ArrowUpFromLine } from "lucide-react";
-import { isStatusShorthand } from "@/lib/dataset";
+import { Trash2, Plus, ArrowDownToLine, ArrowUpFromLine, Rows3 } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { isStatusShorthand, oneLine, rowLabel } from "@/lib/dataset";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
 
@@ -50,6 +51,10 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const [alias, setAlias] = useState("");
   const [check, setCheck] = useState("");
   const [teardown, setTeardown] = useState(false);
+  const [forEachRow, setForEachRow] = useState(false);
+  /** `null` means every row — the same thing an absent `rowIds` means on the wire, so a
+   *  row added to the dataset later is included without anyone revisiting this node. */
+  const [rowIds, setRowIds] = useState<string[] | null>(null);
 
   useEffect(() => {
     setAlias((node?.data?.alias as string) || "");
@@ -59,16 +64,22 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
         outputVars?: OutputVariable[];
         check?: string;
         teardown?: boolean;
+        forEachRow?: boolean;
+        rowIds?: string[];
       };
       setInputVars(config.inputVars || []);
       setOutputVars(config.outputVars || []);
       setCheck(config.check || "");
       setTeardown(config.teardown === true);
+      setForEachRow(config.forEachRow === true);
+      setRowIds(Array.isArray(config.rowIds) ? config.rowIds : null);
     } else {
       setInputVars([]);
       setOutputVars([]);
       setCheck("");
       setTeardown(false);
+      setForEachRow(false);
+      setRowIds(null);
     }
   }, [node]);
 
@@ -84,7 +95,13 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
 
   const handleSave = () => {
     if (!node) return;
-    updateNodeConfig(node.id, { inputVars, outputVars, check, teardown }, alias);
+    const config: Record<string, unknown> = { inputVars, outputVars, check, teardown };
+    if (forEachRow) {
+      config.forEachRow = true;
+      // Omitted, not `[]`: absence means every row, an empty list means none.
+      if (rowIds !== null) config.rowIds = rowIds;
+    }
+    updateNodeConfig(node.id, config, alias);
     onClose();
   };
 
@@ -98,6 +115,21 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const testCaseName = testCase?.name || (node.data.label as string) || "";
   const method = testCase?.method || (node.data.method as string) || "";
   const endpoint = testCase?.endpoint || (node.data.endpoint as string) || "";
+
+  // The rows this node could run. Undefined while the request is still loading —
+  // computing staleness against that would wipe a perfectly good selection.
+  const rows = testCase?.dataset?.rows;
+  const loadingRows = testCase === undefined;
+  const stale = rows ? (rowIds ?? []).filter((id) => !rows.some((r) => r.id === id)) : [];
+  const selectedCount = rowIds === null ? (rows?.length ?? 0) : rowIds.length;
+  const isSelected = (id: string) => rowIds === null || rowIds.includes(id);
+  const toggleRow = (id: string) => {
+    setRowIds((current) => {
+      // Unticking while "every row" is in force materialises the list minus that row.
+      const list = current ?? (rows ?? []).map((r) => r.id);
+      return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+    });
+  };
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
@@ -165,6 +197,50 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
             </Field>
 
             <Field
+              label="Data rows"
+              help={
+                !rows || rows.length === 0
+                  ? "This request has no data rows. Add them in the request's Data tab."
+                  : !forEachRow
+                    ? "The request runs once, with its own payload — its data rows are ignored."
+                    : rowIds === null
+                      ? `Every row runs here, in order — ${rows.length} requests, each inheriting what earlier steps produced.`
+                      : `${selectedCount} of ${rows.length} rows run here.`
+              }
+            >
+              <ToggleGroup
+                type="single"
+                value={forEachRow ? "each" : "once"}
+                onValueChange={(v) => {
+                  if (v) setForEachRow(v === "each");
+                }}
+                className="justify-start gap-1"
+              >
+                <ToggleGroupItem
+                  value="once"
+                  className="h-9 px-3 text-[13px] data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+                >
+                  Once, as authored
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="each"
+                  disabled={!rows || rows.length === 0}
+                  className="h-9 px-3 text-[13px] data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+                >
+                  Once per row{rows && rows.length > 0 ? ` · ${rows.length}` : ""}
+                </ToggleGroupItem>
+              </ToggleGroup>
+              {/* A config that predates the rows being deleted: say so rather than
+                  silently flipping the choice under the author. */}
+              {forEachRow && rows && rows.length === 0 && (
+                <p className="mt-1.5 text-[11px] text-destructive">
+                  This request no longer has any data rows — this step will run once, as
+                  authored.
+                </p>
+              )}
+            </Field>
+
+            <Field
               label="Expect"
               htmlFor="node-check"
               help={
@@ -224,6 +300,88 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                 </div>
               )}
             </Section>
+
+            {forEachRow && (rows?.length ?? 0) > 0 && (
+              <Section
+                icon={<Rows3 className="h-3.5 w-3.5" />}
+                title="Data rows"
+                subtitle="Which rows run at this step — a scenario may only satisfy some of them"
+                action={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 shrink-0"
+                    disabled={rowIds === null}
+                    onClick={() => setRowIds(null)}
+                  >
+                    All rows
+                  </Button>
+                }
+              >
+                {loadingRows ? (
+                  <EmptyRow label="Loading this request's rows…" />
+                ) : (
+                  <div className="space-y-1">
+                    {rows!.map((row, i) => (
+                      <label
+                        key={row.id}
+                        className="flex cursor-pointer items-center gap-2.5 rounded px-1 py-1 hover:bg-muted/30"
+                        title={row.id ? undefined : "This row has no id and can't be picked"}
+                      >
+                        <Checkbox
+                          checked={isSelected(row.id)}
+                          disabled={!row.id}
+                          onCheckedChange={() => toggleRow(row.id)}
+                          aria-label={`Run ${rowLabel(i, row)} at this step`}
+                        />
+                        <span className="w-4 shrink-0 text-right text-[11px] text-muted-foreground">
+                          {i + 1}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[13px]">
+                          {rowLabel(i, row)}
+                        </span>
+                        {row.path && (
+                          <span className="shrink-0 truncate font-mono text-[11px] text-muted-foreground/80">
+                            {row.path}
+                          </span>
+                        )}
+                        <span className="max-w-[160px] shrink-0 truncate font-mono text-[11px] text-muted-foreground/70">
+                          {oneLine(row.body ?? "")}
+                        </span>
+                        {row.check && (
+                          <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                            {row.check}
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {!loadingRows && stale.length > 0 && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-destructive">
+                    {stale.length} selected row{stale.length === 1 ? "" : "s"} no longer
+                    exist in this request.{" "}
+                    <button
+                      type="button"
+                      className="underline hover:no-underline"
+                      onClick={() =>
+                        setRowIds((current) =>
+                          (current ?? []).filter((id) => !stale.includes(id)),
+                        )
+                      }
+                    >
+                      Remove them
+                    </button>
+                  </p>
+                )}
+                {!loadingRows && rowIds !== null && rowIds.length === 0 && (
+                  <p className="mt-2 text-[11px] text-destructive">
+                    No rows selected — this step will fail without sending anything.
+                  </p>
+                )}
+              </Section>
+            )}
 
             <Section
               icon={<ArrowUpFromLine className="h-3.5 w-3.5" />}
@@ -317,12 +475,16 @@ function Section({
   title,
   subtitle,
   onAdd,
+  action,
   children,
 }: {
   icon: React.ReactNode;
   title: string;
   subtitle: string;
-  onAdd: () => void;
+  /** Omitted for a section whose rows come from somewhere else. */
+  onAdd?: () => void;
+  /** Shown in place of Add — for a section that acts on rows it doesn't own. */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -337,10 +499,13 @@ function Section({
             <p className="text-xs text-muted-foreground">{subtitle}</p>
           </div>
         </div>
-        <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5" onClick={onAdd}>
-          <Plus className="h-3.5 w-3.5" />
-          Add
-        </Button>
+        {onAdd && (
+          <Button variant="outline" size="sm" className="h-8 shrink-0 gap-1.5" onClick={onAdd}>
+            <Plus className="h-3.5 w-3.5" />
+            Add
+          </Button>
+        )}
+        {action}
       </div>
       {children}
     </section>
