@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
-use crate::db::models::{Flow, GraphData, GraphNode, GraphEdge};
+use crate::db::models::{Flow, GraphData, GraphNode, GraphEdge, TestCase};
 use crate::db::repositories::{FlowRepository, TestCaseRepository};
 use crate::error::AppError;
 
@@ -215,6 +215,25 @@ impl<'a> GraphValidator<'a> {
             }
         }
 
+        // 6b. Nodes set to run once per data row. The dataset lives on the test case, so
+        // this needs the test case itself rather than just its id.
+        for node in graph.nodes.iter().filter(|n| n.node_type == "testCase") {
+            let marked = node
+                .data
+                .get("config")
+                .and_then(|c| c.get("forEachRow"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !marked {
+                continue;
+            }
+            let test_case = match extract_test_case_id(&node.data) {
+                Some(id) => self.tc_repo.get_by_id(&id).await?,
+                None => None,
+            };
+            warnings.extend(fan_out_warnings(node, test_case.as_ref()));
+        }
+
         // 7. Check group node flow references
         let referenced_flow_ids: Vec<String> = graph.nodes.iter()
             .filter(|n| n.node_type == "group")
@@ -398,9 +417,204 @@ fn edge_type_is(edge: &GraphEdge, expected: &str) -> bool {
     edge.edge_type.as_ref().map(|t| t == expected).unwrap_or(false)
 }
 
+/// Problems with a node set to run once per data row — all findable before a run, and
+/// all otherwise discovered from a puzzling result. `test_case` is None when the
+/// reference is broken, which MISSING_TEST_CASE already reports.
+fn fan_out_warnings(node: &GraphNode, test_case: Option<&TestCase>) -> Vec<ValidationIssue> {
+    let config = node.data.get("config");
+    let marked = config
+        .and_then(|c| c.get("forEachRow"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !marked {
+        return Vec::new();
+    }
+
+    let mut issues = Vec::new();
+
+    // Rows are isolated clones, so nothing a row captures leaves the step. Left unsaid,
+    // the only symptom is {{name}} arriving literally at some later node.
+    let declared: Vec<&str> = config
+        .and_then(|c| c.get("outputVars"))
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r.get("name").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !declared.is_empty() {
+        issues.push(ValidationIssue::warning_with_node(
+            "FANOUT_DISCARDS_OUTPUT_VARS",
+            format!(
+                "This step runs once per data row, so its output variable(s) {} capture                  nothing — rows are isolated. Capture on a step that runs once",
+                declared.join(", ")
+            ),
+            &node.id,
+        ));
+    }
+
+    let Some(test_case) = test_case else {
+        return issues;
+    };
+    let rows = test_case.dataset.as_ref().map(|d| d.rows.as_slice()).unwrap_or(&[]);
+
+    if rows.is_empty() {
+        issues.push(ValidationIssue::warning_with_node(
+            "FANOUT_NO_ROWS",
+            format!(
+                "This step is set to run once per data row, but '{}' has no data rows — it                  will run once, as authored",
+                test_case.name
+            ),
+            &node.id,
+        ));
+        return issues;
+    }
+
+    // An absent list means every row; an empty one means none.
+    if let Some(chosen) = config.and_then(|c| c.get("rowIds")).and_then(|v| v.as_array()) {
+        if chosen.is_empty() {
+            issues.push(ValidationIssue::warning_with_node(
+                "FANOUT_NO_ROWS_SELECTED",
+                "No data rows are selected for this step, so it will fail without sending                  anything",
+                &node.id,
+            ));
+            return issues;
+        }
+        let missing: Vec<&str> = chosen
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|id| !rows.iter().any(|row| row.id == *id))
+            .collect();
+        if !missing.is_empty() {
+            issues.push(ValidationIssue::warning_with_node(
+                "FANOUT_STALE_ROWS",
+                format!(
+                    "{} data row(s) selected for this step are no longer in '{}' ({}) —                      nothing will run for them",
+                    missing.len(),
+                    test_case.name,
+                    missing.join(", ")
+                ),
+                &node.id,
+            ));
+        }
+    }
+
+    issues
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fan_out_node(config: serde_json::Value) -> GraphNode {
+        GraphNode {
+            id: "n1".to_string(),
+            node_type: "testCase".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({"testCaseId": "tc1", "config": config}),
+            width: None,
+            height: None,
+        }
+    }
+
+    fn test_case_with(rows: Vec<&str>) -> TestCase {
+        use crate::db::models::{DataRow, Dataset};
+        TestCase {
+            id: "tc1".to_string(),
+            project_id: "p1".to_string(),
+            group_id: None,
+            name: "Send SMS".to_string(),
+            given_condition: None,
+            when_action: None,
+            then_expected: None,
+            method: "POST".to_string(),
+            endpoint: "http://x/".to_string(),
+            headers: serde_json::json!({}),
+            payload: None,
+            exports: vec![],
+            assertion_script: None,
+            pre_test_script: None,
+            dataset: (!rows.is_empty()).then(|| Dataset {
+                rows: rows
+                    .into_iter()
+                    .map(|id| DataRow { id: id.to_string(), ..Default::default() })
+                    .collect(),
+            }),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn codes(issues: Vec<ValidationIssue>) -> Vec<String> {
+        issues.into_iter().map(|i| i.code).collect()
+    }
+
+    #[test]
+    fn a_node_not_set_to_run_per_row_is_never_warned_about() {
+        let tc = test_case_with(vec!["r0"]);
+        assert!(fan_out_warnings(&fan_out_node(serde_json::json!({})), Some(&tc)).is_empty());
+        assert!(fan_out_warnings(
+            &fan_out_node(serde_json::json!({"forEachRow": false, "rowIds": ["ghost"]})),
+            Some(&tc)
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn running_every_row_is_not_a_warning() {
+        let tc = test_case_with(vec!["r0", "r1"]);
+        let node = fan_out_node(serde_json::json!({"forEachRow": true}));
+        assert!(fan_out_warnings(&node, Some(&tc)).is_empty());
+    }
+
+    #[test]
+    fn a_per_row_node_on_a_request_without_rows_is_flagged_before_the_run() {
+        let tc = test_case_with(vec![]);
+        let node = fan_out_node(serde_json::json!({"forEachRow": true}));
+        assert_eq!(codes(fan_out_warnings(&node, Some(&tc))), vec!["FANOUT_NO_ROWS"]);
+    }
+
+    #[test]
+    fn output_variables_on_a_per_row_node_are_flagged() {
+        let tc = test_case_with(vec!["r0"]);
+        let node = fan_out_node(serde_json::json!({
+            "forEachRow": true,
+            "outputVars": [{"name": "token", "path": "$.token"}, {"name": "  ", "path": "$.x"}]
+        }));
+        let issues = fan_out_warnings(&node, Some(&tc));
+        assert_eq!(codes(issues.clone()), vec!["FANOUT_DISCARDS_OUTPUT_VARS"]);
+        // Names the variable, and ignores the half-filled row.
+        assert!(issues[0].message.contains("token"), "{}", issues[0].message);
+    }
+
+    #[test]
+    fn an_empty_and_a_stale_selection_are_told_apart() {
+        let tc = test_case_with(vec!["r0", "r1"]);
+
+        let empty = fan_out_node(serde_json::json!({"forEachRow": true, "rowIds": []}));
+        assert_eq!(codes(fan_out_warnings(&empty, Some(&tc))), vec!["FANOUT_NO_ROWS_SELECTED"]);
+
+        let stale = fan_out_node(serde_json::json!({
+            "forEachRow": true, "rowIds": ["r0", "ghost"]
+        }));
+        let issues = fan_out_warnings(&stale, Some(&tc));
+        assert_eq!(codes(issues.clone()), vec!["FANOUT_STALE_ROWS"]);
+        assert!(issues[0].message.contains("ghost"), "{}", issues[0].message);
+
+        // A selection that all still resolves says nothing.
+        let fine = fan_out_node(serde_json::json!({"forEachRow": true, "rowIds": ["r1"]}));
+        assert!(fan_out_warnings(&fine, Some(&tc)).is_empty());
+    }
+
+    #[test]
+    fn a_broken_test_case_reference_is_left_to_the_check_that_owns_it() {
+        // MISSING_TEST_CASE already reports it; saying it twice is noise.
+        let node = fan_out_node(serde_json::json!({"forEachRow": true}));
+        assert!(fan_out_warnings(&node, None).is_empty());
+    }
 
     #[test]
     fn test_find_reachable_nodes() {
