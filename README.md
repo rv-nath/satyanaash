@@ -26,6 +26,7 @@ exports for chaining, and Rhai scripting throughout.
 - [Pre-test scripts](#pre-test-scripts)
 - [Assertions (post-test)](#assertions-post-test)
 - [Data-driven testing](#data-driven-testing)
+  - [Running a dataset inside a flow](#running-a-dataset-inside-a-flow)
 - [Exports — chaining values](#exports--chaining-values)
 - [Script variables](#script-variables)
 - [Building a flow](#building-a-flow)
@@ -311,6 +312,7 @@ and the engine runs the request once per row.
 | Column | Meaning |
 |--------|---------|
 | **Case** | Label for the row, shown in the results. Optional — blank rows read as *Row 1*, *Row 2*, … |
+| **Path / query** | Appended to the request's endpoint for this row — `?org=acme`, `/acme/summary`. Joins with `&` if the endpoint already has a query. Blank uses it as authored. |
 | **Body** | The body this row sends. Blank falls back to the Request tab's body. |
 | **Expect** | What must be true for the row to pass. |
 
@@ -349,12 +351,15 @@ response.status == 201
 | Duplicate mobile | `{"company":"Acme","email":"{{$RandomEmail}}","mobile":"9180500001"}` | `409` |
 | Valid | `{"company":"Acme","email":"{{$RandomEmail}}","mobile":"{{$RandomPhone}}"}` | `response.status == 201 && response.json.userId != ()` |
 
-### Two ways to run
+### Three ways to run
 
 - **Run request** — runs the test case exactly as authored and **ignores the dataset
   entirely**. This is the primary test; nothing about it changes when you add rows.
 - **Run dataset (N)** — runs once per row and returns a matrix: a line per row with
   its status, clickable to drill into that row's request and response.
+- **In a flow, a node set to *Once per row*** — see
+  [Running a dataset inside a flow](#running-a-dataset-inside-a-flow). This is how rows
+  get preconditions: the row inherits whatever earlier steps produced.
 
 Every row runs, pass or fail — the run doesn't stop at the first failure. The
 overall verdict is the worst of the rows.
@@ -379,6 +384,60 @@ overall verdict is the worst of the rows.
 > A blank **Expect** means *any 2xx*, which is the right default for a happy-path row
 > and the wrong one for a negative case: a row meant to check a rejection will
 > **pass** on a 200. Give negative rows an explicit status.
+
+### Running a dataset inside a flow
+
+A dataset alone can't test a request that needs a precondition — "send SMS" needs a
+JWT, and the Data tab has no earlier steps. A flow does: `Login → Send SMS → cleanup`.
+
+Open **Configure Node** on the node and set **Data rows** to *Once per row*. It then
+sends one request per row **inside the flow**, so every row inherits what earlier nodes
+produced — the login's token, an id exported two steps back, anything a script set.
+
+```
+┌─────────┐   ┌──────────────────────┐   ┌──────────┐
+│ Login   │──▶│ Send SMS  [3 rows]   │──▶│ cleanup  │
+└─────────┘   └──────────────────────┘   └──────────┘
+                 3 requests, one node
+                 verdict = worst of the 3
+```
+
+**Pick the rows this scenario can satisfy.** A `402 — no balance` row is meaningless in
+a flow whose account has balance: it would get a 202 and fail correctly but uselessly.
+The checklist defaults to every row, and a row added to the dataset later is included
+automatically.
+
+**When the expected result depends on who is asking**, three mechanisms, and the choice
+is mechanical:
+
+| Reach for | When |
+|---|---|
+| a **literal** Expect on the row | the answer is the same for everyone — a contract fact |
+| a **variable** Expect on the row | same request, answer depends on the actor |
+| **unticking** the row at that node | the case is meaningless for this actor |
+
+So a listing whose count differs per actor states the shape once, on the row:
+
+```rhai
+response.status == 200 && response.json.items.len() == {{expected_count}}
+```
+
+and each node supplies the value as an **input variable** — `12` on the super-user
+node, `3` on the org-admin node. A row with no Expect of its own falls back to the
+**node's** Expect, which covers the simpler case where a whole actor's expectation
+differs: `200` on one node, `403` on another.
+
+Things to know:
+
+- **Nothing is carried forward from a fan-out node.** Rows are isolated, so output
+  variables on such a node capture nothing — you're told, in the run log, the panel and
+  the validator. Capture on a step that runs once.
+- **A row that couldn't run at all stops the flow** (a refused connection, a script that
+  won't parse). A row that merely *fails* doesn't — the rest still run. Cleanup runs
+  either way.
+- The console shows a line per row and the full request and response for any that
+  didn't pass.
+- A flow runs the **saved** dataset, not unsaved rows in the editor.
 
 ---
 
@@ -495,6 +554,9 @@ A flow is a graph you assemble on the canvas:
 - **Input variables** — values set on a node in **Configure Node** win over
   anything an earlier step exported or a script set, for that node only. That's how
   two nodes running one request use different credentials.
+- **Data rows** — set a node to run **once per row** of its test case's dataset, so the
+  rows inherit what earlier steps produced. See
+  [Running a dataset inside a flow](#running-a-dataset-inside-a-flow).
 - **Expect** — what must be true *at this point in this flow*. Blank means the test
   case's own assertion, as always; `402` is shorthand for
   `response.status == 402`; anything else is a Rhai expression. Use it when one

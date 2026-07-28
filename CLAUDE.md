@@ -134,12 +134,52 @@ exactly what the author already knows how to write.
   written for the single-request case can neither decide nor break a row's
   verdict. The pre-test script *does* run per row, and exports still run for a
   row that passed.
-- **Flows and "Run request" ignore the dataset entirely** — the test case as
-  authored is the primary test. Only `all_rows: true` iterates
-  (`execute_test_case_dataset`), which clones the base context per row (so
-  exports can't leak between rows), folds `SAT.env` writes forward, never aborts
-  on a failure, and returns one aggregate `NodeResult` whose `iterations` holds
-  the per-row results.
+- **"Run request" ignores the dataset, and so does a flow node unless it opts in.**
+  Rows iterate in exactly two places, both through `run_rows`: `all_rows: true` from
+  the editor, and a node with `config.forEachRow`. `run_rows` clones the base context
+  per row (so exports can't leak between rows), folds `SAT.env` writes forward, never
+  aborts on a failure, and returns one aggregate `NodeResult` whose `iterations` holds
+  the per-row results. **Sequential on purpose** — the `SAT.env` fold is
+  order-dependent and the Rhai engines share a thread-local `print()` sink.
+- **`DataRow.path`** is appended to the endpoint for that row (`resolve_endpoint`,
+  sibling to `resolve_body`), composed *before* interpolation so the result is what
+  `find_unresolved`, `placeholder_values` and `provenance` all see. A `?…` suffix joins
+  an endpoint that already has a query with `&`.
+
+## Running a dataset inside a flow (fan-out)
+
+`node.data.config` gains `forEachRow` and `rowIds`. A marked node runs one request per
+row against the **live** flow context, so every row inherits what earlier nodes
+produced — which is the whole point: a dataset can now be used for a request that needs
+a JWT.
+
+- **An absent `rowIds` means every row.** Not `[]`, not a sentinel: absence is how this
+  config already says "unset", and it means a row added later is included without
+  anyone reopening the node. An **empty** list means none, and the node fails saying so.
+- Results come out in **dataset order** whatever order they were selected in.
+- **Verdict** is worst-of. A failed aggregate routes normally; an **errored** row makes
+  the aggregate `Error`, which aborts traversal — a row that couldn't run at all is
+  systemic. Teardown still runs. Don't demote it for fan-out only: the fold is shared
+  with the editor path, and one loop would then have two verdict rules.
+- **A fan-out node exports nothing** (`extra_exports: &[]`) because rows are isolated
+  clones. Warned in the run log, in the panel, and by `FANOUT_DISCARDS_OUTPUT_VARS`.
+- `ExecutionStats` counts **nodes, not rows** — a 20-row fan-out contributes one
+  pass/fail, or `total` would mean two different things. The row count is on the
+  console line instead.
+- Expect cascade: **row's Expect → this node's Expect → post-test script → 2xx**. A
+  check is **interpolated**, like the URL/headers/body, so a row can state the shape
+  once (`response.json.items.len() == {{expected_count}}`) and each node supply the
+  actor's value.
+- `teardown_blocked` takes `extra_templates`, so a fan-out row's own body and path are
+  guarded too — otherwise a row could aim a delete at a leftover id and slip past.
+
+### Authoring patterns
+
+| Situation | Mechanism |
+|---|---|
+| The answer is the same for everyone | a **literal** Expect on the row |
+| Same request, answer depends on the actor (200 vs 403, 12 items vs 3) | a **variable** Expect, with the node supplying the value as an input variable |
+| The case is meaningless for this actor (`402 no balance` on a funded account) | **untick the row** at that node |
 - UI vocabulary, matching the buttons: **Run request** vs **Run dataset (N)**;
   columns are **Case | Body | Expect**.
 
@@ -155,6 +195,12 @@ exactly what the author already knows how to write.
   for pre-migration rows.
 - Interpolation is `\{\{(\$?[\w]+)…\}\}` — **no dots**, so `{{data.x}}` could
   never have worked.
+- `DataRow.id` is `#[serde(default)]`, so rows created through the API or predating the
+  editor can have `""` or duplicates. Selection by id can't address a blank one — the
+  engine warns and the panel disables its checkbox. Most likely silent drop in the
+  feature.
+- A flow runs the **saved** dataset; the editor's unsaved-row override is editor-only.
+- Flow **clone** keeps node config and shares test cases, so `rowIds` stay valid.
 
 ## Conventions
 - Commit messages: `feat:`, `fix:`, `chore:` prefixes
