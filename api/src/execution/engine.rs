@@ -13,7 +13,7 @@ use crate::db::models::{DataRow, ExportVariable, Flow, GraphNode, TestCase};
 use crate::db::repositories::TestCaseRepository;
 use crate::error::AppError;
 
-use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine};
+use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine, VarSource};
 use super::assertions::AssertionInput;
 use super::http::{RequestLog, ResponseLog};
 
@@ -116,6 +116,120 @@ fn parse_check(raw: Option<&str>) -> Check<'_> {
     }
 }
 
+/// A node marked "always run": teardown. Excluded from the normal path and run
+/// after it, however the run ended.
+fn is_teardown(node: &GraphNode) -> bool {
+    node.data
+        .get("config")
+        .and_then(|c| c.get("teardown"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Teardown nodes in the order their edges imply — "log in as admin, then delete"
+/// has to happen in that order, and the order they appear in the graph's node list
+/// is whatever the canvas happened to produce.
+fn teardown_sequence(flow: &Flow) -> Vec<&GraphNode> {
+    let marked: Vec<&GraphNode> = flow.graph_data.nodes.iter().filter(|n| is_teardown(n)).collect();
+    let leads_to = |from: &str, to: &str| {
+        flow.graph_data.edges.iter().any(|e| e.source == from && e.target == to)
+    };
+
+    // A chain starts at a marked node no other marked node points at.
+    let mut ordered: Vec<&GraphNode> = Vec::new();
+    let mut placed: Vec<&str> = Vec::new();
+    for start in marked.iter().filter(|n| {
+        !marked.iter().any(|other| other.id != n.id && leads_to(&other.id, &n.id))
+    }) {
+        let mut current = Some(*start);
+        while let Some(node) = current {
+            if placed.contains(&node.id.as_str()) {
+                break; // a cycle; whatever is left is appended below
+            }
+            placed.push(&node.id);
+            ordered.push(node);
+            current = marked
+                .iter()
+                .find(|next| next.id != node.id && leads_to(&node.id, &next.id))
+                .copied();
+        }
+    }
+    // Anything unreachable that way (a cycle, or two disconnected chains) still runs.
+    for node in marked {
+        if !placed.contains(&node.id.as_str()) {
+            ordered.push(node);
+        }
+    }
+    ordered
+}
+
+/// Names this flow declares as output variables. A teardown node using one of them
+/// must get its value from *this* run: `{{baseUrl}}` legitimately comes from the
+/// environment, `{{new_account_id}}` does not.
+fn flow_produced_names(flow: &Flow) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for node in &flow.graph_data.nodes {
+        let rows = node.data
+            .get("config")
+            .and_then(|c| c.get("outputVars"))
+            .and_then(|v| v.as_array());
+        for row in rows.into_iter().flatten() {
+            if let Some(name) = row.get("name").and_then(|v| v.as_str()) {
+                let name = name.trim();
+                if !name.is_empty() {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Why a teardown node must not be sent, if so.
+///
+/// Deleting is not something to attempt hopefully. Two ways a teardown request can
+/// be aimed at the wrong thing, and both end the same way — skip, and say why:
+///
+///  * a `{{name}}` that resolved to nothing would go out as a literal; a URL with a
+///    brace in it is never what anyone intended.
+///  * a name this flow produces, but whose value came from the environment, is a
+///    leftover from an earlier run — it names a real resource this run never
+///    created, and deleting it would be destroying a stranger's data.
+fn teardown_blocked(
+    test_case: &TestCase,
+    ctx: &ExecutionContext,
+    produced: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let mut templates: Vec<&str> = vec![test_case.endpoint.as_str()];
+    if let Some(map) = test_case.headers.as_object() {
+        templates.extend(map.values().filter_map(|v| v.as_str()));
+    }
+    if let Some(payload) = test_case.payload.as_deref() {
+        templates.push(payload);
+    }
+
+    for template in templates {
+        for (name, source, _) in ctx.provenance_all(template) {
+            match source {
+                None => {
+                    return Some(format!(
+                        "Not run: {{{{{}}}}} was never produced by this run, so this request                          would go out with a placeholder in it",
+                        name
+                    ))
+                }
+                Some(VarSource::Environment) if produced.contains(&name) => {
+                    return Some(format!(
+                        "Not run: {} came from environment/globals, not from this run — it is a                          leftover naming something this run never created",
+                        name
+                    ))
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 fn shared_script(test_case: &TestCase) -> Option<&str> {
     test_case
         .assertion_script
@@ -189,6 +303,10 @@ pub struct NodeResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub logs: Vec<String>,
+    /// Set on a node that runs as teardown, so a cleanup problem is never mistaken
+    /// for the scenario failing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teardown: Option<bool>,
     /// Index of the data row this result came from (iteration results only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_index: Option<usize>,
@@ -360,6 +478,33 @@ impl ExecutionEngine {
             &event_tx,
         ).await?;
 
+        // Teardown: runs however the path above ended — passed, failed, or stopped
+        // dead on an error. That is the whole point: an account created by a run
+        // that then broke still has to be cleaned up.
+        let produced = flow_produced_names(flow);
+        for node in teardown_sequence(flow) {
+            if node.node_type != "testCase" {
+                continue;
+            }
+            let mut result = self
+                .execute_test_case_node(node, tc_repo, &mut tc_cache, &mut ctx, &event_tx, Some(&produced))
+                .await;
+            result.teardown = Some(true);
+            match result.status {
+                NodeStatus::Passed => stats.passed += 1,
+                NodeStatus::Failed => stats.failed += 1,
+                NodeStatus::Error => stats.errors += 1,
+                NodeStatus::Skipped => stats.skipped += 1,
+            }
+            if let Some(tx) = &event_tx {
+                let _ = tx.send(ExecutionEvent::NodeCompleted {
+                    node_id: node.id.clone(),
+                    result: result.clone(),
+                }).await;
+            }
+            results.push(result);
+        }
+
         let duration_ms = start.elapsed().as_millis() as u64;
 
         // Emit completed event
@@ -419,7 +564,7 @@ impl ExecutionEngine {
             "testCase" => {
                 // Execute test case node
                 let result = self.execute_test_case_node(
-                    node, tc_repo, tc_cache, ctx, event_tx
+                    node, tc_repo, tc_cache, ctx, event_tx, None
                 ).await;
 
                 let status = result.status.clone();
@@ -491,6 +636,9 @@ impl ExecutionEngine {
         tc_cache: &mut HashMap<String, TestCase>,
         ctx: &mut ExecutionContext,
         event_tx: &Option<mpsc::Sender<ExecutionEvent>>,
+        // Set only for a teardown run: the names this flow produces, against which
+        // the request is checked before anything is sent.
+        teardown_guard: Option<&std::collections::HashSet<String>>,
     ) -> NodeResult {
         let start = std::time::Instant::now();
         let mut logs = Vec::new();
@@ -515,6 +663,7 @@ impl ExecutionEngine {
                 return NodeResult {
                     node_label: node_label.clone(),
                     node_id: node.id.clone(),
+                    teardown: None,
                     test_case_id: None,
                     test_case_name: None,
                     status: NodeStatus::Error,
@@ -545,6 +694,7 @@ impl ExecutionEngine {
                     return NodeResult {
                         node_label: node_label.clone(),
                         node_id: node.id.clone(),
+                        teardown: None,
                         test_case_id: Some(tc_id),
                         test_case_name: None,
                         status: NodeStatus::Error,
@@ -564,6 +714,7 @@ impl ExecutionEngine {
                     return NodeResult {
                         node_label: node_label.clone(),
                         node_id: node.id.clone(),
+                        teardown: None,
                         test_case_id: Some(tc_id),
                         test_case_name: None,
                         status: NodeStatus::Error,
@@ -620,6 +771,33 @@ impl ExecutionEngine {
             }
         }
         ctx.set_node_input_vars(node_input_vars);
+
+        // Teardown only: check what this request would be aimed at before sending
+        // it. Checked *after* node input vars are set, so a value supplied on the
+        // node counts as coming from the node.
+        if let Some(produced) = teardown_guard {
+            if let Some(reason) = teardown_blocked(&test_case, ctx, produced) {
+                logs.push(reason.clone());
+                return NodeResult {
+                    node_id: node.id.clone(),
+                    node_label,
+                    teardown: Some(true),
+                    test_case_id: Some(test_case.id.clone()),
+                    test_case_name: Some(test_case.name.clone()),
+                    status: NodeStatus::Skipped,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    request: None,
+                    response: None,
+                    exports: None,
+                    env: None,
+                    error_message: Some(reason),
+                    logs,
+                    row_index: None,
+                    row_label: None,
+                    iterations: None,
+                };
+            }
+        }
 
         // Accumulates SAT.env writes from pre-test + assertion scripts (persisted by the client)
         let mut env_writes: HashMap<String, Value> = HashMap::new();
@@ -774,7 +952,30 @@ impl ExecutionEngine {
     }
 
     /// Find the next node to execute based on edge type
+    /// The next node to run, stepping over any teardown node in the way.
+    ///
+    /// Teardown nodes are not part of the path — they run after it — but one may sit
+    /// anywhere in the chain the author drew. Simply refusing to walk into it would
+    /// end the traversal there and silently drop everything downstream, so the chain
+    /// closes over the gap instead.
     fn find_next_node(&self, flow: &Flow, current_id: &str, preferred_type: Option<&str>) -> Option<String> {
+        let is_marked = |id: &str| {
+            flow.graph_data.nodes.iter().any(|n| n.id == id && is_teardown(n))
+        };
+        let mut from = current_id.to_string();
+        // The node count bounds the walk: a cycle of teardown nodes can't spin here.
+        for _ in 0..=flow.graph_data.nodes.len() {
+            let target = self.pick_edge(flow, &from, preferred_type)?;
+            if !is_marked(&target) {
+                return Some(target);
+            }
+            from = target;
+        }
+        None
+    }
+
+    /// Which edge to take out of a node, ignoring what the target is.
+    fn pick_edge(&self, flow: &Flow, current_id: &str, preferred_type: Option<&str>) -> Option<String> {
         let edges: Vec<_> = flow.graph_data.edges.iter()
             .filter(|e| e.source == current_id)
             .collect();
@@ -838,6 +1039,7 @@ impl ExecutionEngine {
                 return NodeResult {
                     node_label: None,
                     node_id: opts.node_id.to_string(),
+                    teardown: None,
                     test_case_id: Some(test_case.id.clone()),
                     test_case_name: Some(test_case.name.clone()),
                     status: NodeStatus::Error,
@@ -1190,6 +1392,7 @@ impl ExecutionEngine {
         NodeResult {
             node_label: None,
             node_id: opts.node_id.to_string(),
+            teardown: None,
             test_case_id: Some(test_case.id.clone()),
             test_case_name: Some(test_case.name.clone()),
             status: if assertion_passed { NodeStatus::Passed } else { NodeStatus::Failed },
@@ -1295,6 +1498,7 @@ impl ExecutionEngine {
 
         NodeResult {
             node_id: "direct".to_string(),
+            teardown: None,
             // A dataset run is launched from the editor, not the canvas: no node.
             node_label: None,
             test_case_id: Some(test_case.id.clone()),
@@ -1834,6 +2038,168 @@ mod tests {
             }
         });
         format!("http://{}/sms", addr)
+    }
+
+    /// A teardown node may sit anywhere the author drew it. Marking one in the
+    /// middle of a chain must lift it out, not cut the chain: the first version of
+    /// this ended the traversal at the node before it and dropped the rest of the
+    /// flow without a word.
+    #[tokio::test]
+    async fn a_teardown_node_mid_chain_does_not_sever_the_flow() {
+        let engine = ExecutionEngine::new(false, None);
+        // A and C must actually pass, or the flow stops for an unrelated reason —
+        // a refused port is an *error*, which ends traversal by design.
+        let a = make_test_case("a", "A", &stub_once(200, "{}").await, "POST");
+        let c = make_test_case("c", "C", &stub_once(200, "{}").await, "POST");
+        let t = make_test_case("t", "Cleanup", "http://127.0.0.1:1/t", "DELETE");
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(a).with_test_case(t).with_test_case(c);
+        // start → A → [Cleanup, marked teardown] → C → end
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({"testCaseId": "a"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("c", "testCase", serde_json::json!({"testCaseId": "c"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "t", Some("success")),
+            make_edge("e3", "t", "c", Some("success")),
+            make_edge("e4", "c", "end", Some("success")),
+        ]);
+        let results = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await.unwrap().results;
+        let names: Vec<&str> = results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        // C still runs, and Cleanup runs at the end rather than in place.
+        assert_eq!(names, vec!["A", "C", "Cleanup"], "{:?}", names);
+    }
+
+    /// Teardown exists for the run that broke: an account created by a flow that
+    /// then failed still has to be deleted. And it must not fire blind — a DELETE
+    /// aimed at a leftover id would destroy something this run never created.
+    #[tokio::test]
+    async fn teardown_runs_after_a_failure_but_not_blind() {
+        /// A flow: signup (may fail) → send, then teardown: admin login → delete.
+        async fn run(
+            signup_url: &str,
+            environment: HashMap<String, Value>,
+        ) -> Vec<NodeResult> {
+            let engine = ExecutionEngine::new(false, None);
+            let mut signup = make_test_case("signup", "Signup", signup_url, "POST");
+            signup.assertion_script = Some("response.status == 201".to_string());
+            let login = make_test_case("login", "Admin login", "http://127.0.0.1:1/login", "POST");
+            let del = make_test_case(
+                "del",
+                "Delete User",
+                "http://127.0.0.1:1/accounts/{{new_account_id}}",
+                "DELETE",
+            );
+            let repo = MockTestCaseRepository::new()
+                .with_test_case(signup)
+                .with_test_case(login)
+                .with_test_case(del);
+
+            let flow = make_flow("flow1", vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("a", "testCase", serde_json::json!({
+                    "testCaseId": "signup",
+                    "config": {"outputVars": [{"name": "new_account_id", "path": "$.accountId"}]}
+                })),
+                // Teardown, in the order the edges give: login first, then delete.
+                make_node("t1", "testCase", serde_json::json!({
+                    "testCaseId": "login", "config": {"teardown": true}
+                })),
+                make_node("t2", "testCase", serde_json::json!({
+                    "testCaseId": "del", "config": {"teardown": true}
+                })),
+                make_node("end", "end", serde_json::json!({})),
+            ], vec![
+                make_edge("e1", "start", "a", None),
+                make_edge("e2", "a", "t1", Some("success")),
+                make_edge("e3", "t1", "t2", Some("success")),
+                make_edge("e4", "t2", "end", Some("success")),
+            ]);
+
+            engine
+                .execute_flow("exec1", &flow, &repo, environment, HashMap::new(), None)
+                .await
+                .unwrap()
+                .results
+        }
+
+        // Signup fails (connection refused → error, which used to stop the flow
+        // dead). Teardown still runs, in edge order, and is labelled as teardown.
+        let results = run("http://127.0.0.1:1/signup", HashMap::new()).await;
+        let names: Vec<&str> = results
+            .iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(names, vec!["Signup", "Admin login", "Delete User"], "{:?}", names);
+        assert_eq!(results[1].teardown, Some(true));
+        assert_eq!(results[2].teardown, Some(true));
+
+        // Guard 1: new_account_id was never produced, so the DELETE is not sent.
+        let del = &results[2];
+        assert_eq!(del.status, NodeStatus::Skipped);
+        assert!(del.request.is_none(), "nothing may be sent");
+        assert!(
+            del.error_message.as_deref().unwrap_or("").contains("never produced by this run"),
+            "{:?}",
+            del.error_message
+        );
+
+        // Guard 2: the dangerous one. A leftover new_account_id in the environment
+        // resolves cleanly and names a real account this run never created.
+        let mut env = HashMap::new();
+        env.insert(
+            "new_account_id".to_string(),
+            serde_json::json!("acct-from-a-previous-run"),
+        );
+        let results = run("http://127.0.0.1:1/signup", env).await;
+        let del = &results[2];
+        assert_eq!(del.status, NodeStatus::Skipped);
+        assert!(del.request.is_none(), "a stale id must never be deleted");
+        assert!(
+            del.error_message.as_deref().unwrap_or("").contains("environment/globals"),
+            "{:?}",
+            del.error_message
+        );
+    }
+
+    /// Marked nodes leave the normal path: otherwise they would also run inline,
+    /// on the happy path only, which is the opposite of always.
+    #[tokio::test]
+    async fn a_teardown_node_runs_once_not_twice() {
+        let engine = ExecutionEngine::new(false, None);
+        let a = make_test_case("a", "Step", "http://127.0.0.1:1/a", "POST");
+        let t = make_test_case("t", "Cleanup", "http://127.0.0.1:1/t", "DELETE");
+        let repo = MockTestCaseRepository::new().with_test_case(a).with_test_case(t);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({"testCaseId": "a"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "t", Some("success")),
+            make_edge("e3", "t", "end", Some("success")),
+        ]);
+
+        let results = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results;
+        assert_eq!(
+            results.iter().filter(|r| r.test_case_name.as_deref() == Some("Cleanup")).count(),
+            1
+        );
     }
 
     /// Debug mode has to answer "why did it send *that*?" — a value pulled from the

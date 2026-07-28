@@ -98,14 +98,27 @@ impl ExecutionContext {
     /// *that*?" when a name resolves to something plausible but wrong — the one
     /// failure a warning can't detect, because nothing about it looks wrong.
     pub fn provenance(&self, template: &str) -> Vec<(String, VarSource, String)> {
-        let mut found: Vec<(String, VarSource, String)> = Vec::new();
+        self.provenance_all(template)
+            .into_iter()
+            .filter_map(|(name, source, value)| source.map(|s| (name, s, value)))
+            .collect()
+    }
+
+    /// The same, keeping names that resolved to nothing (`None`). A caller deciding
+    /// whether a request is safe to send needs those too — they are the ones that
+    /// would go out as a literal `{{name}}`.
+    pub fn provenance_all(&self, template: &str) -> Vec<(String, Option<VarSource>, String)> {
+        let mut found: Vec<(String, Option<VarSource>, String)> = Vec::new();
         for name in template_names(template) {
             // Built-ins are generated per use; there is no tier to name.
             if name.starts_with('$') || found.iter().any(|(n, _, _)| n == &name) {
                 continue;
             }
-            if let Some((value, source)) = self.resolve_with_source(&name) {
-                found.push((name, source, preview(&value_to_string(value))));
+            match self.resolve_with_source(&name) {
+                Some((value, source)) => {
+                    found.push((name, Some(source), preview(&value_to_string(value))))
+                }
+                None => found.push((name, None, String::new())),
             }
         }
         found

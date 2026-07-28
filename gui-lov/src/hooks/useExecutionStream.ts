@@ -44,6 +44,7 @@ interface ExecutionEventNodeStarted {
 interface NodeResult {
   node_id: string;
   node_label?: string;
+  teardown?: boolean;
   test_case_id?: string;
   test_case_name?: string;
   status: 'passed' | 'failed' | 'error' | 'skipped';
@@ -327,6 +328,9 @@ function handleEvent(
       const statusIcon = result.status === 'passed' ? '✓' :
                         result.status === 'failed' ? '✗' :
                         result.status === 'error' ? '⚠' : '○';
+      // Teardown is cleanup, not the scenario. Say so on the line, so "1 failed"
+      // is never read as the test failing when it was the tidying up.
+      const suffix = result.teardown ? ' [teardown]' : '';
       const logType: ConsoleLog['type'] =
         result.status === 'passed' ? 'success' :
         result.status === 'error' || result.status === 'failed' ? 'error' : 'info';
@@ -366,7 +370,7 @@ function handleEvent(
         details.push({ label: 'Exports', value: JSON.stringify(result.exports, null, 2) });
       }
 
-      addLog(`${statusIcon} ${name}: ${result.status} (${result.duration_ms}ms)`, logType, details.length > 0 ? details : undefined);
+      addLog(`${statusIcon} ${name}${suffix}: ${result.status} (${result.duration_ms}ms)`, logType, details.length > 0 ? details : undefined);
       break;
     }
 

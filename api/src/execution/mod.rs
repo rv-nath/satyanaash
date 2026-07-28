@@ -14,7 +14,7 @@ mod pre_test_script;
 mod generators;
 mod script_log;
 
-pub use variables::ExecutionContext;
+pub use variables::{ExecutionContext, VarSource};
 pub use assertions::AssertionEngine;
 pub use http::HttpExecutor;
 pub use pre_test_script::PreTestScriptEngine;

@@ -14,7 +14,7 @@ interface TestCaseNodeData {
    *  different roles ("Login as new user" vs "Root login"); the alias is what
    *  distinguishes them. The test case name stays visible underneath. */
   alias?: string;
-  config?: { check?: string };
+  config?: { check?: string; teardown?: boolean };
 }
 
 interface TestCaseNodeProps {
@@ -45,6 +45,7 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
   // A node that overrides the expectation says so on the canvas: otherwise the
   // graph looks identical to one that doesn't, and a passing 402 reads as a bug.
   const check = data.config?.check?.trim();
+  const teardown = data.config?.teardown === true;
   const displayLabel = alias || testCaseName;
   const displayMethod = currentTestCase?.method || data.method;
   const displayEndpoint = currentTestCase?.endpoint || data.endpoint;
@@ -52,7 +53,13 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
   // Only the name sits on the node. Method and endpoint are one click away via the
   // info button — on hover they'd steal attention while you're reading the graph.
   return (
-    <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border-2 bg-card shadow-md min-w-[140px] max-w-[260px] hover:shadow-lg transition-shadow">
+    <div
+      className={`flex items-center gap-1.5 rounded-lg border-2 bg-card px-2.5 py-1.5 shadow-md transition-shadow min-w-[140px] max-w-[260px] hover:shadow-lg ${
+        // Dashed: this node is lifted out of the chain and runs after it, so it
+        // shouldn't read as another link in the sequence.
+        teardown ? "border-dashed border-muted-foreground/50" : ""
+      }`}
+    >
       {/* Input handles - top and left only */}
       <Handle id="target-top" type="target" position={Position.Top} className="!bg-primary" />
       <Handle id="target-left" type="target" position={Position.Left} className="!bg-primary" />
@@ -76,6 +83,13 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
               runs <span className="text-foreground">{testCaseName}</span>
             </p>
           )}
+          {teardown && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Runs <span className="text-foreground">after the flow</span>, whatever
+              happened — for cleanup. Skipped if the values it needs didn't come from
+              this run.
+            </p>
+          )}
           {check && (
             <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
               expects <span className="text-foreground">{check}</span>
@@ -96,6 +110,14 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
         </PopoverContent>
       </Popover>
 
+      {teardown && (
+        <span
+          className="shrink-0 rounded bg-muted px-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+          title="Runs at the end, after the flow — even if the flow failed"
+        >
+          cleanup
+        </span>
+      )}
       {check && (
         <span
           className="shrink-0 rounded border border-primary/40 bg-primary/10 px-1 font-mono text-[9px] font-semibold text-primary"

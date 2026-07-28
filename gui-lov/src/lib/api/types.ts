@@ -241,6 +241,9 @@ export interface TestCaseExecutionResult {
   node_id: string;
   /** The node's own name on the canvas, when the author gave it one. */
   node_label?: string;
+  /** Set when this node ran as teardown, so cleanup trouble reads as cleanup
+   *  trouble rather than as the scenario failing. */
+  teardown?: boolean;
   test_case_id?: string;
   test_case_name?: string;
   status: 'passed' | 'failed' | 'error' | 'skipped';

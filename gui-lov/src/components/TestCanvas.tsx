@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useRef, useMemo } from "react";
 import {
   ReactFlow,
   Background,
@@ -13,12 +13,14 @@ import {
   Node,
   ConnectionMode,
   Viewport,
+  ViewportPortal,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { TestCaseNode, StartNode, EndNode, GroupNode } from "./CustomNodes";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { NodeConfigPanel } from "./NodeConfigPanel";
+import { cleanupBandFor } from "@/lib/cleanupBand";
 import { EdgeTypeDialog } from "./EdgeTypeDialog";
 import { getLayoutedElements, type LayoutDirection, type LayoutSpacing } from "@/lib/layoutUtils";
 import { useReactFlow } from "@xyflow/react";
@@ -34,6 +36,8 @@ const nodeTypes = {
 const TestCanvasContent = () => {
   const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
+
+  const cleanupBand = useMemo(() => cleanupBandFor(nodes), [nodes]);
   const [edges, setEdgesState, onEdgesChange] = useEdgesState(contextEdges);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<string | null>(null);
@@ -464,6 +468,31 @@ const TestCanvasContent = () => {
         connectOnClick={false}
         connectionRadius={30}
       >
+        {/* A tinted region around the nodes marked "at the end", so that running
+            after the flow reads spatially and not only from a chip. Drawn *behind*
+            the nodes and it never moves them: the band follows wherever they were
+            placed, rather than the author's layout being rewritten to suit it. */}
+        {cleanupBand && (
+          <ViewportPortal>
+            <div
+              style={{
+                position: "absolute",
+                left: cleanupBand.x,
+                top: cleanupBand.y,
+                width: cleanupBand.width,
+                height: cleanupBand.height,
+                pointerEvents: "none",
+                zIndex: -1,
+              }}
+              className="rounded-2xl border border-dashed border-muted-foreground/40 bg-muted/40"
+            >
+              <span className="absolute left-3 top-2 select-none text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Cleanup · runs after the flow
+              </span>
+            </div>
+          </ViewportPortal>
+        )}
+
         <Background 
           variant={BackgroundVariant.Dots} 
           gap={16} 
