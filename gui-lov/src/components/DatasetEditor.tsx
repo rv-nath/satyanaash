@@ -49,6 +49,10 @@ interface CellProps {
   tone?: string;
   /** Shown under the field while editing only; it would break the row height otherwise. */
   hint?: ReactNode;
+  /** Muted, because this row isn't part of this run — see `needs_flow`. Applied to the
+   *  cell rather than the whole row so the red marker beside it stays vivid: CSS opacity
+   *  can't be undone by a child. */
+  dim?: boolean;
 }
 
 /**
@@ -66,11 +70,12 @@ function EditableCell({
   label,
   tone,
   hint,
+  dim,
 }: CellProps) {
   if (!editing) {
     const preview = oneLine(value);
     return (
-      <div className={`min-w-0 ${CELL}`}>
+      <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
         <button
           type="button"
           onClick={onEdit}
@@ -187,13 +192,19 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               const check = row.check ?? "";
               const badJson = looksLikeInvalidJson(body);
               const label = rowLabel(i, row);
+              // Muted where the marker is red: this row won't take part in a Run dataset.
+              const dim = row.needs_flow === true;
               return (
                 <div
                   key={row.id}
                   className="grid items-stretch border-t border-border first:border-t-0 hover:bg-muted/20"
                   style={{ gridTemplateColumns: GRID }}
                 >
-                  <span className={`pt-2 text-center text-xs text-muted-foreground ${CELL}`}>
+                  <span
+                    className={`pt-2 text-center text-xs text-muted-foreground ${CELL} ${
+                      dim ? "opacity-50" : ""
+                    }`}
+                  >
                     {i + 1}
                   </span>
 
@@ -211,15 +222,16 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                         : "Runs from Run dataset. Click if it needs a login or other setup first."
                     }
                     className={`flex h-9 items-center justify-center transition-colors ${CELL} ${
+                      // Red: this row is blocked here, not merely different.
                       row.needs_flow
-                        ? "text-primary"
+                        ? "text-destructive"
                         : "text-muted-foreground/25 hover:text-muted-foreground"
                     }`}
                   >
                     <Link2 className="h-3.5 w-3.5" />
                   </button>
 
-                  <div className={`min-w-0 ${CELL}`}>
+                  <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
                     <Input
                       value={row.name ?? ""}
                       placeholder={label}
@@ -229,7 +241,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     />
                   </div>
 
-                  <div className={`min-w-0 ${CELL}`}>
+                  <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
                     <Input
                       value={row.path ?? ""}
                       placeholder="?org=acme"
@@ -252,6 +264,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     onDone={() => setEditingBody((cur) => (cur === row.id ? null : cur))}
                     placeholder={"{\"email\": \"a@b.com\"}   — blank uses the Request tab’s body"}
                     label={`Body for ${label}`}
+                    dim={dim}
                     tone={badJson ? "text-warning" : undefined}
                     hint={
                       badJson ? (
@@ -270,6 +283,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     onDone={() => setEditingCheck((cur) => (cur === row.id ? null : cur))}
                     placeholder="400   — or an expression"
                     label={`Expected result for ${label}`}
+                    dim={dim}
                     hint={
                       <p className="text-[11px] text-muted-foreground">
                         {!check.trim()

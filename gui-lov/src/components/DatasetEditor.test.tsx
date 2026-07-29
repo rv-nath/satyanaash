@@ -123,6 +123,33 @@ describe("DatasetEditor", () => {
     expect(onChange.mock.calls[0][0].rows[0].needs_flow).toBe(false);
   });
 
+  it("shows a marked row as blocked and stepped back", async () => {
+    const d = seed();
+    const marked = setRowNeedsFlow(d, d.rows[0].id, true);
+    const { rerender } = render(<DatasetEditor dataset={marked} onChange={vi.fn()} />);
+
+    // Red on the marker: this row is blocked here, not merely different.
+    const flag = screen.getByRole("button", { name: /^run valid from run dataset$/i });
+    expect(flag.className).toContain("text-destructive");
+
+    // And its fields step back, because they take no part in a Run dataset.
+    expect(screen.getByLabelText(/^body for valid$/i).parentElement!.className).toContain(
+      "opacity-50",
+    );
+
+    // Editing is still full strength — you can't read what you're typing through a fade.
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
+    expect(screen.getByLabelText(/^body for valid$/i).parentElement!.className).not.toContain(
+      "opacity-50",
+    );
+
+    // An unmarked row is untouched.
+    rerender(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+    expect(
+      screen.getByRole("button", { name: /don't run valid from run dataset/i }).className,
+    ).not.toContain("text-destructive");
+  });
+
   it("duplicates a case", async () => {
     const onChange = vi.fn();
     render(<DatasetEditor dataset={seed()} onChange={onChange} />);
