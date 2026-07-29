@@ -49,6 +49,17 @@ npm run dev        # Starts on http://localhost:8080
 - **State:** TanStack Query for server state
 - **Graph Editor:** @xyflow/react for flow visualization
 - **UI:** shadcn/ui components with Tailwind CSS
+- **Execution state** lives in `TestProjectContext` (a hook owns it, the provider
+  spreads it — same shape as `useAutoSave`/`useAutoValidate`), because the canvas
+  decorates its nodes with it and each node's popover reports its own last run.
+  `useExecutionStream` keeps `nodeRuns[flowId][nodeId]`; before that the console
+  rendered each result into a line of text and dropped it
+- **Saying something about a node** on the canvas has exactly one mechanism: a class
+  on React Flow's wrapper (`styledNodes` in `TestCanvas.tsx`), matched by
+  `.react-flow__node.X > div` in `index.css`. The `exec-*` rules sit **after** the
+  `validation-*` ones — same specificity, so source order decides, and a run in
+  progress outranks standing advice. The mapping is `executionClassFor`
+  (`lib/executionDecor.ts`), kept pure so it can be tested without a graph
 
 ## Key Concepts
 
@@ -72,6 +83,33 @@ npm run dev        # Starts on http://localhost:8080
   one flow. Same two forms as a dataset row's Expect, through the same
   `parse_check`; when set, `assertion_script` does not run for that node. Verdict
   precedence in `run_once`: row Expect → node Expect → post-test script → 2xx
+- **Stepping** — `run_flow` takes an optional `mpsc::Receiver<StepCommand>` beside
+  `event_tx`: events out one per node, commands back one per node. `Stepper` holds
+  it and parks the next node; `Next` buys one node, `RunToEnd` clears `pausing` for
+  good, `Stop` abandons the traversal. **The first node goes without asking**
+  (`Stepper::first`) — "Run step-by-step" should run something, not sit waiting.
+  `execute_flow` is the thin no-stepping wrapper, which is why ~30 test call sites
+  never had to change. The `paused` event names the node being waited on: which
+  node is next depends on the last verdict and the teardown hop-over, so the canvas
+  must not re-derive it
+- **Teardown pauses but never abandons.** The teardown loop calls
+  `pause_before_next` and *discards* the answer. There is no version of cancel that
+  leaves the account behind — the same reason the loop is unconditional
+- **A run nobody is watching stops** at the next node boundary
+  (`RunState::client_gone`, i.e. `event_tx.is_closed()`), yielding status
+  `"stopped"`. A run paused when the tab closes learns it through the `select!` on
+  `tx.closed()` in `pause_before_next` — the boundary check can't help, that task
+  is parked inside `wait`. Teardown still runs in both cases. Don't "fix" the
+  bounded event channel by unbounding it: back-pressure is what keeps a stepped run
+  honest
+- **The step registry** (`StepRegistry` in `api/executions.rs`) holds one sender per
+  pausable run, keyed by `execution_id`. Inserted **before** the task is spawned so
+  a `Next` racing the first event has somewhere to land, and removed as the task's
+  **last act** on every path — dropping the entry drops the sender, which is how a
+  parked run learns nobody is left to press Next
+- **`debug_mode` is always true from the UI.** The menu is Run / Run step-by-step;
+  the old plain Run is gone. Provenance and per-node logs live behind the console's
+  collapsible details, so there is no reason to make the author ask twice
 - **Datasets** run one test case against many bodies — see below
 - **Project variables** stored in `project.settings.variables`, injected as environment into execution
 - **Variable interpolation:** `{{variableName}}` in URLs, headers, payloads — resolved from execution context

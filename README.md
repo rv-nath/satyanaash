@@ -269,8 +269,8 @@ response.status == 200 && response.json.ok == true   // combined
 
 ### Debugging a value that came from the wrong place
 
-Run a flow with **Debug** instead of Run and each node reports where every
-`{{name}}` it used was resolved from:
+Every run reports where each node resolved every `{{name}}` it used — open the
+node's line in the console and look under **Logs**:
 
 ```
 my_user_id   ← environment/globals = stale-uuid-from-a-previous-run
@@ -620,6 +620,25 @@ Add a `failure` edge from Sign up to an error/cleanup node to handle the sad pat
 
 Run from the canvas. Progress streams live (per-node pass/fail, request/response,
 logs) via SSE, and the final result reports totals plus the accumulated context.
+Each node keeps its own verdict afterwards: a ✓ or ✗ on the node, and its last
+status plus what it exported in the node's ⓘ popover.
+
+The caret beside Run offers **Run step-by-step**, which runs one node and then
+waits:
+
+```
+ ⏸  Next up  Delete User  ·  3 of 7 done
+    [ ▷ Next ]   [ ⏩ Run to end ]   [ ■ Stop ]
+```
+
+The node about to run carries a dashed ring, so you can see what you are about to
+authorise before you press Next — useful when the next step deletes something.
+**Run to end** finishes without pausing again. **Stop** abandons the flow, but
+cleanup steps still run: whatever the run already created still has to go.
+
+Closing the tab mid-run stops the run at the next node boundary, cleanup included.
+It used to carry on to the end server-side, sending every remaining request with
+nobody to read the results.
 
 ---
 
@@ -647,7 +666,8 @@ Base path: `http://127.0.0.1:3001/api/v1`
 | `GET/POST` | `/test-cases` | list / create test cases |
 | `POST` | `/test-cases/:id/execute` | run a single test case (accepts overrides + `environment`) |
 | `GET/POST` | `/flows` | list / create flows |
-| `POST` | `/flows/:id/execute` | run a flow (streams over SSE) |
+| `POST` | `/flows/:id/execute` | run a flow (streams over SSE; `step: true` pauses between nodes) |
+| `POST` | `/executions/:id/step` | drive a paused run — `{"command": "next" \| "run_to_end" \| "stop"}` |
 | `GET/POST` | `/groups` | list / create groups |
 
 ---
