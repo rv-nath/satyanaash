@@ -20,7 +20,7 @@ import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/compon
 import type { Dataset, TestCaseExecutionResult } from "@/lib/api/types";
 import { DatasetEditor } from "@/components/DatasetEditor";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { emptyDataset } from "@/lib/dataset";
+import { emptyDataset, runnableAlone } from "@/lib/dataset";
 
 interface TestCaseEditorProps {
   testCaseId?: string; // Optional - undefined means create mode
@@ -169,6 +169,8 @@ export const TestCaseEditor = ({
   const [preTestScript, setPreTestScript] = useState("");
   const [postTestScript, setPostTestScript] = useState("");
   const [dataset, setDataset] = useState<Dataset>(emptyDataset);
+  // Rows "Run dataset" will actually send; the rest are marked as needing a flow.
+  const runnableHere = runnableAlone(dataset).length;
   const [activeTab, setActiveTab] = useState(() => initialSubTab || "overview");
   // Report sub-tab changes upward so they survive close/reopen of the tab.
   useEffect(() => {

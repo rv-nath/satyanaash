@@ -43,6 +43,13 @@ export function setRowPath(d: Dataset, rowId: string, path: string): Dataset {
   return patchRow(d, rowId, { path });
 }
 
+export function setRowNeedsFlow(d: Dataset, rowId: string, needs_flow: boolean): Dataset {
+  return patchRow(d, rowId, { needs_flow });
+}
+
+/** The rows "Run dataset" will actually send — the rest need a flow to satisfy them. */
+export const runnableAlone = (d: Dataset): DataRow[] => d.rows.filter((r) => !r.needs_flow);
+
 /** How a row's suffix will join the request's endpoint — shown as a hint, and
  *  mirroring `resolve_endpoint` on the server. A row adding "?org=acme" to an
  *  endpoint that already has a query joins with "&", because "?limit=10?org=acme"

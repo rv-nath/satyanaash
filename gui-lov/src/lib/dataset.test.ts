@@ -7,6 +7,8 @@ import {
   joinEndpoint,
   looksLikeInvalidJson,
   oneLine,
+  runnableAlone,
+  setRowNeedsFlow,
   removeRow,
   rowLabel,
   setRowBody,
@@ -107,6 +109,19 @@ describe("dataset reducers", () => {
     // Blank leaves the endpoint alone.
     expect(joinEndpoint("http://x/c", "   ")).toBe("http://x/c");
     expect(joinEndpoint("http://x/c", "")).toBe("http://x/c");
+  });
+
+  it("counts only the rows Run dataset will send", () => {
+    let d = seed();
+    // Nothing marked: every row runs, which is how every existing dataset behaves.
+    expect(runnableAlone(d)).toHaveLength(d.rows.length);
+
+    d = setRowNeedsFlow(d, d.rows[0].id, true);
+    expect(runnableAlone(d).map((r) => r.id)).toEqual(d.rows.slice(1).map((r) => r.id));
+
+    // And it's a toggle, not a one-way door.
+    d = setRowNeedsFlow(d, d.rows[0].id, false);
+    expect(runnableAlone(d)).toHaveLength(d.rows.length);
   });
 
   it("labels rows like the server does", () => {

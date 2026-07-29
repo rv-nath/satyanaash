@@ -47,6 +47,10 @@ export interface DataRow {
    *  "/acme/summary" — so one request can be varied by URL as well as by body.
    *  Interpolated like the endpoint itself. Blank uses the endpoint as authored. */
   path?: string | null;
+  /** This row only means something after something else has happened — a login, a
+   *  top-up. "Run dataset" skips it; a flow node runs it, the flow being the
+   *  precondition. Says where a row can run, not why. */
+  needs_flow?: boolean;
 }
 
 /** A table of cases. "Run dataset" in the editor iterates them, and so does a flow

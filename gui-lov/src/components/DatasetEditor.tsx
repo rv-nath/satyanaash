@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Trash2, Copy, AlertTriangle } from "lucide-react";
+import { Plus, Trash2, Copy, AlertTriangle, Link2 } from "lucide-react";
 import type { Dataset } from "@/lib/api/types";
 import {
   addRow,
@@ -16,6 +16,7 @@ import {
   setRowBody,
   setRowCheck,
   setRowName,
+  setRowNeedsFlow,
   setRowPath,
 } from "@/lib/dataset";
 
@@ -26,8 +27,9 @@ interface DatasetEditorProps {
   sharedAssertion?: string;
 }
 
-// #, case, path, body, expect, duplicate, delete
-const GRID = "30px 150px minmax(110px,0.45fr) minmax(180px,1fr) minmax(150px,0.55fr) 34px 34px";
+// #, needs-flow, case, path, body, expect, duplicate, delete
+const GRID =
+  "30px 30px 150px minmax(110px,0.45fr) minmax(180px,1fr) minmax(150px,0.55fr) 34px 34px";
 
 /** Borders belong to the table, not to the fields — a field with its own border
  *  inside a bordered cell reads as a box in a box and wastes the width. */
@@ -154,7 +156,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
         </div>
       ) : (
         <div className="scrollbar-hairline overflow-x-auto">
-          <div className="min-w-[780px] overflow-hidden rounded-md border border-border">
+          <div className="min-w-[810px] overflow-hidden rounded-md border border-border">
             {/* Header band, tinted so it reads as a header rather than another row
                 of inputs. Its cells carry the same dividers as the rows below. */}
             <div
@@ -162,6 +164,12 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               style={{ gridTemplateColumns: GRID }}
             >
               <span className={CELL} />
+              <span
+                className={`flex items-center justify-center text-muted-foreground ${CELL}`}
+                title="Needs a flow — Run dataset skips these rows"
+              >
+                <Link2 className="h-3 w-3" />
+              </span>
               {["Case", "Path / query", "Body", "Expect"].map((h) => (
                 <span
                   key={h}
@@ -188,6 +196,28 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                   <span className={`pt-2 text-center text-xs text-muted-foreground ${CELL}`}>
                     {i + 1}
                   </span>
+
+                  {/* Needs a flow. Sits in its own narrow column rather than a fifth
+                      field, because it isn't part of the request — it says where the row
+                      can run. */}
+                  <button
+                    type="button"
+                    onClick={() => onChange(setRowNeedsFlow(dataset, row.id, !row.needs_flow))}
+                    aria-label={`${row.needs_flow ? "Run" : "Don't run"} ${label} from Run dataset`}
+                    aria-pressed={row.needs_flow === true}
+                    title={
+                      row.needs_flow
+                        ? "Needs a flow — Run dataset skips this row. Click to run it here too."
+                        : "Runs from Run dataset. Click if it needs a login or other setup first."
+                    }
+                    className={`flex h-9 items-center justify-center transition-colors ${CELL} ${
+                      row.needs_flow
+                        ? "text-primary"
+                        : "text-muted-foreground/25 hover:text-muted-foreground"
+                    }`}
+                  >
+                    <Link2 className="h-3.5 w-3.5" />
+                  </button>
 
                   <div className={`min-w-0 ${CELL}`}>
                     <Input
@@ -291,9 +321,11 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
           interpolated, so{" "}
           <code className="rounded bg-muted px-1 font-mono">{"{{baseUrl}}"}</code> and{" "}
           <code className="rounded bg-muted px-1 font-mono">{"{{$RandomEmail}}"}</code> work inside
-          them. <strong className="font-medium">Run request</strong> ignores these cases and runs
-          the request as authored — use <strong className="font-medium">Run dataset</strong> to
-          iterate, or set a flow node to run once per row.
+          them. The <Link2 className="inline h-3 w-3" /> column marks a row that only means
+          something after a login or other setup: <strong className="font-medium">Run
+          dataset</strong> skips those, and a flow node runs them — the flow being the
+          precondition. <strong className="font-medium">Run request</strong> ignores these
+          cases entirely and runs the request as authored.
         </p>
       )}
     </div>

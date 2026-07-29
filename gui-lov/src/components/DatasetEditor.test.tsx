@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DatasetEditor } from "@/components/DatasetEditor";
-import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName } from "@/lib/dataset";
+import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName, setRowNeedsFlow } from "@/lib/dataset";
 import type { Dataset } from "@/lib/api/types";
 
 function seed(): Dataset {
@@ -107,6 +107,20 @@ describe("DatasetEditor", () => {
     rerender(<DatasetEditor dataset={expr} onChange={vi.fn()} />);
     await userEvent.click(screen.getByLabelText(/expected result for valid/i));
     expect(screen.getByText(/rhai expression/i)).toBeInTheDocument();
+  });
+
+  it("marks a row as needing a flow, and back", async () => {
+    const onChange = vi.fn();
+    const d = seed();
+    const { rerender } = render(<DatasetEditor dataset={d} onChange={onChange} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /don't run valid from run dataset/i }));
+    expect(onChange.mock.calls[0][0].rows[0].needs_flow).toBe(true);
+
+    onChange.mockClear();
+    rerender(<DatasetEditor dataset={setRowNeedsFlow(d, d.rows[0].id, true)} onChange={onChange} />);
+    await userEvent.click(screen.getByRole("button", { name: /^run valid from run dataset$/i }));
+    expect(onChange.mock.calls[0][0].rows[0].needs_flow).toBe(false);
   });
 
   it("duplicates a case", async () => {
