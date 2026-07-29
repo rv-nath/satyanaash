@@ -75,14 +75,33 @@ describe("DatasetEditor", () => {
     expect(screen.getByLabelText(/case name for row 1/i)).toHaveFocus();
   });
 
-  it("shows the whole value as a tooltip on a cell that had to clip it", () => {
-    // The Case column was a plain input: no ellipsis, no tooltip, so a long name was
-    // simply cut with nothing to say more existed.
+  it("shows a long case name in full, wrapped — it is what identifies the row", () => {
+    // The complaint this exists for: the name is the important bit, and a name you have
+    // to hover to finish is not readable. It was a plain input before, so it clipped
+    // with no ellipsis and no tooltip either.
     const long = "missing 'msg' for a promo campaign with a long name";
     let d = seed();
     d = setRowName(d, d.rows[0].id, long);
     render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
-    expect(screen.getByLabelText(/case name for row 1/i)).toHaveAttribute("title", long);
+
+    const cell = screen.getByLabelText(/case name for row 1/i);
+    expect(cell).toHaveTextContent(long);
+    expect(cell.className).not.toContain("truncate");
+    expect(cell.className).toContain("break-words");
+    // Nothing is hidden, so a tooltip would only repeat what is on screen.
+    expect(cell).not.toHaveAttribute("title");
+  });
+
+  it("keeps a body to one line — a payload is reference, not identity", () => {
+    // Wrapping a fifteen-line body in a table cell would bury the names it sits beside.
+    let d = seed();
+    d = setRowBody(d, d.rows[0].id, `{"a":"${"x".repeat(300)}"}`);
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    const cell = screen.getByLabelText(/^body for valid$/i);
+    expect(cell.className).toContain("truncate");
+    // Clipped, so this one does need the tooltip.
+    expect(cell).toHaveAttribute("title", expect.stringContaining("xxx"));
   });
 
   it("closes on Escape but not on tabbing between its own fields", async () => {

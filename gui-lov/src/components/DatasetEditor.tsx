@@ -28,11 +28,11 @@ interface DatasetEditorProps {
 }
 
 // #, needs-flow, case, path, body, expect, duplicate, delete.
-// Every text column flexes now that none of them holds a field: Case was a fixed 150px
-// and Expect a fixed-ish 150px for a value that is usually three digits, which left the
-// body — the longest thing in any row — with the least room of the three.
+// Every text column flexes now that none of them holds a field, and Case gets the most
+// it can: it wraps rather than clipping, so width spent there is width spent on fewer
+// wrapped lines. Expect was a fixed 150px for a value that is usually three digits.
 const GRID =
-  "30px 30px minmax(140px,0.8fr) minmax(100px,0.4fr) minmax(200px,1.4fr) minmax(90px,0.4fr) 34px 34px";
+  "30px 30px minmax(180px,1.1fr) minmax(100px,0.4fr) minmax(180px,1.2fr) minmax(90px,0.4fr) 34px 34px";
 
 /** The column divider. Collapsed rows hold previews rather than fields now, so the
  *  old borderless-field rule went with them: the fields in the expanded panel are not
@@ -56,6 +56,15 @@ interface SummaryCellProps {
   dim?: boolean;
   /** Proportional rather than monospace — a case name is prose, not a payload. */
   prose?: boolean;
+  /**
+   * Show all of it, wrapping and growing the row, instead of clipping to one line.
+   *
+   * For the Case column only. A row's name is what identifies it — reading the matrix
+   * means reading the names, and a name you have to hover to finish is not readable.
+   * A payload is different: nobody reads a fifteen-line body out of a table cell, so
+   * those stay one line and open when you want them.
+   */
+  wrap?: boolean;
 }
 
 /**
@@ -66,7 +75,7 @@ interface SummaryCellProps {
  *
  * Clicking it opens the row and focuses this field, so editing still costs one click.
  */
-function SummaryCell({ value, onOpen, placeholder, label, tone, dim, prose }: SummaryCellProps) {
+function SummaryCell({ value, onOpen, placeholder, label, tone, dim, prose, wrap }: SummaryCellProps) {
   const preview = oneLine(value);
   return (
     <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
@@ -75,10 +84,14 @@ function SummaryCell({ value, onOpen, placeholder, label, tone, dim, prose }: Su
         onClick={onOpen}
         onFocus={onOpen}
         aria-label={label}
-        title={preview || undefined}
-        className={`block h-9 w-full truncate px-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
-          prose ? "text-[13px]" : "font-mono text-xs"
-        } ${preview ? (tone ?? "text-foreground") : "text-muted-foreground/70"}`}
+        // A wrapped cell shows everything, so a tooltip would only repeat what is
+        // already on screen.
+        title={!wrap && preview ? preview : undefined}
+        className={`block w-full px-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+          wrap ? "min-h-9 break-words py-2 leading-snug" : "h-9 truncate"
+        } ${prose ? "text-[13px]" : "font-mono text-xs"} ${
+          preview ? (tone ?? "text-foreground") : "text-muted-foreground/70"
+        }`}
       >
         {preview || placeholder}
       </button>
@@ -424,6 +437,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     label={`Case name for row ${i + 1}`}
                     dim={dim}
                     prose
+                    wrap
                   />
 
                   <SummaryCell
