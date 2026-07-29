@@ -1439,7 +1439,7 @@ export function DatasetResultView({
               <TableHead className="w-24 py-2">Result</TableHead>
               <TableHead className="w-20 py-2">HTTP</TableHead>
               <TableHead className="w-20 py-2">Time</TableHead>
-              <TableHead className="py-2">Message</TableHead>
+              <TableHead className="py-2">Expected / message</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -1481,8 +1481,11 @@ export function DatasetResultView({
                 <TableCell className="py-2 text-xs text-muted-foreground">
                   {row.duration_ms}ms
                 </TableCell>
+                {/* Why it failed, or — when it passed — what it required. The column
+                    was otherwise empty on a green run, and two rows with the same name
+                    but different expectations looked identical. */}
                 <TableCell className="max-w-0 truncate py-2 text-xs text-muted-foreground">
-                  {row.error_message ?? ""}
+                  {row.error_message ?? (row.expected ? `expected ${row.expected}` : "")}
                 </TableCell>
               </TableRow>
             ))}

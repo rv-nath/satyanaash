@@ -35,6 +35,48 @@ function aggregate(): TestCaseExecutionResult {
 }
 
 describe("DatasetResultView", () => {
+  it("says what a passing row required, where a failure shows its reason", () => {
+    // The column used to be empty on a green run, and two rows with the same name but
+    // different expectations were indistinguishable.
+    const passing: TestCaseExecutionResult = {
+      node_id: "direct",
+      status: "passed",
+      duration_ms: 21,
+      logs: [],
+      row_index: 0,
+      row_label: "email and password",
+      expected: "HTTP 401",
+      response: { status: 401, headers: {}, body: "{}" },
+    };
+    const failing: TestCaseExecutionResult = {
+      node_id: "direct",
+      status: "failed",
+      duration_ms: 7,
+      logs: [],
+      row_index: 1,
+      row_label: "email and password",
+      expected: "HTTP 200",
+      error_message: "Expected HTTP 200, got 401",
+      response: { status: 401, headers: {}, body: "{}" },
+    };
+    render(
+      <DatasetResultView
+        aggregate={{
+          node_id: "direct", status: "failed", duration_ms: 28, logs: [],
+          iterations: [passing, failing],
+        }}
+        selected={null} onSelect={vi.fn()}
+        wordWrap onRerun={vi.fn()} onClear={vi.fn()} running={false}
+        setWordWrap={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("expected HTTP 401")).toBeInTheDocument();
+    // A failing row keeps its reason — the requirement is implied by it.
+    expect(screen.getByText("Expected HTTP 200, got 401")).toBeInTheDocument();
+    expect(screen.queryByText("expected HTTP 200")).not.toBeInTheDocument();
+  });
+
   it("lists the rows", () => {
     render(
       <DatasetResultView

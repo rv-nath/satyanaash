@@ -468,6 +468,15 @@ pub struct NodeResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
     pub logs: Vec<String>,
+    /// What this run actually required, after interpolation — "400", a Rhai
+    /// expression, or "any 2xx" when nothing was stated.
+    ///
+    /// Recorded rather than looked up by the client, because the dataset it would read
+    /// may have been edited since the run: the matrix would then show a requirement
+    /// that wasn't the one applied. This is the text that decided the verdict, with
+    /// `{{expected_count}}` already resolved to the value used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
     /// Set on a node that runs as teardown, so a cleanup problem is never mistaken
     /// for the scenario failing.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -829,6 +838,7 @@ impl ExecutionEngine {
                     node_label: node_label.clone(),
                     node_id: node.id.clone(),
                     teardown: None,
+                    expected: None,
                     test_case_id: None,
                     test_case_name: None,
                     status: NodeStatus::Error,
@@ -860,6 +870,7 @@ impl ExecutionEngine {
                         node_label: node_label.clone(),
                         node_id: node.id.clone(),
                         teardown: None,
+                        expected: None,
                         test_case_id: Some(tc_id),
                         test_case_name: None,
                         status: NodeStatus::Error,
@@ -880,6 +891,7 @@ impl ExecutionEngine {
                         node_label: node_label.clone(),
                         node_id: node.id.clone(),
                         teardown: None,
+                        expected: None,
                         test_case_id: Some(tc_id),
                         test_case_name: None,
                         status: NodeStatus::Error,
@@ -960,6 +972,7 @@ impl ExecutionEngine {
                     node_id: node.id.clone(),
                     node_label,
                     teardown: Some(true),
+                    expected: None,
                     test_case_id: Some(test_case.id.clone()),
                     test_case_name: Some(test_case.name.clone()),
                     status: NodeStatus::Skipped,
@@ -1090,6 +1103,7 @@ impl ExecutionEngine {
                     node_id: node.id.clone(),
                     node_label: None,
                     teardown: None,
+                    expected: None,
                     test_case_id: Some(test_case.id.clone()),
                     test_case_name: Some(test_case.name.clone()),
                     // Failed, not Error: nothing broke, the step was mis-configured —
@@ -1285,6 +1299,7 @@ impl ExecutionEngine {
                     node_label: None,
                     node_id: opts.node_id.to_string(),
                     teardown: None,
+                    expected: None,
                     test_case_id: Some(test_case.id.clone()),
                     test_case_name: Some(test_case.name.clone()),
                     status: NodeStatus::Error,
@@ -1508,8 +1523,17 @@ impl ExecutionEngine {
             (raw.map(|text| ctx.interpolate(&text).unwrap_or(text)), what)
         });
 
+        // What was required, in the words the author would recognise. Kept beside the
+        // verdict so the two can't disagree.
+        let mut expected: Option<String> = None;
+
         let assertion_passed = match own_check {
             Some((ref raw, what)) => {
+                expected = Some(match parse_check(raw.as_deref()) {
+                    Check::Status(code) => format!("HTTP {}", code),
+                    Check::Expr(expr) => expr.to_string(),
+                    Check::Unstated => "any 2xx".to_string(),
+                });
                 let passed = match parse_check(raw.as_deref()) {
                     Check::Status(expected) => {
                         let ok = status_code == expected;
@@ -1616,6 +1640,13 @@ impl ExecutionEngine {
                     }
                 }
 
+                expected = Some(match script_verdict {
+                    // What the script's last expression asserted.
+                    Some(_) => last_expression(script.unwrap_or("")).to_string(),
+                    // A capture-only script leaves the verdict to the 2xx rule.
+                    None => "any 2xx".to_string(),
+                });
+
                 match script_verdict {
                     Some(verdict) => {
                         if !verdict {
@@ -1666,6 +1697,7 @@ impl ExecutionEngine {
             test_case_id: Some(test_case.id.clone()),
             test_case_name: Some(test_case.name.clone()),
             status: if assertion_passed { NodeStatus::Passed } else { NodeStatus::Failed },
+            expected,
             duration_ms: start.elapsed().as_millis() as u64,
             request: Some(http_result.request),
             response: Some(http_result.response),
@@ -1783,6 +1815,7 @@ impl ExecutionEngine {
             return NodeResult {
                 node_id: opts.node_id.to_string(),
                 teardown: None,
+                expected: None,
                 node_label: None,
                 test_case_id: Some(test_case.id.clone()),
                 test_case_name: Some(test_case.name.clone()),
@@ -1830,6 +1863,7 @@ impl ExecutionEngine {
         NodeResult {
             node_id: opts.node_id.to_string(),
             teardown: None,
+            expected: None,
             // Set by the flow path, which knows the node; a dataset run from the editor
             // has no node to name.
             node_label: None,
@@ -2432,6 +2466,70 @@ mod tests {
             .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
         // C still runs, and Cleanup runs at the end rather than in place.
         assert_eq!(names, vec!["A", "C", "Cleanup"], "{:?}", names);
+    }
+
+    /// Each result says what it required, so the matrix can show it without reading the
+    /// dataset — which may have been edited since the run.
+    #[tokio::test]
+    async fn a_result_records_what_it_required() {
+        async fn expected_of(check: Option<&str>, script: Option<&str>) -> Option<String> {
+            let engine = ExecutionEngine::new(false, None);
+            let mut tc = make_test_case("tc", "List", &stub_once(200, r#"{"n":3}"#).await, "GET");
+            tc.assertion_script = script.map(str::to_string);
+            tc.dataset = Some(dataset_of(vec![("row", None, check)]));
+            let repo = MockTestCaseRepository::new().with_test_case(tc);
+            let flow = one_node_flow("tc", serde_json::json!({
+                "forEachRow": true,
+                "inputVars": [{"key": "expected_count", "value": "3"}]
+            }));
+            engine
+                .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+                .await
+                .unwrap()
+                .results
+                .into_iter()
+                .find(|r| r.node_id == "b")
+                .unwrap()
+                .iterations
+                .unwrap()
+                .remove(0)
+                .expected
+        }
+
+        // A status shorthand reads as the status it required.
+        assert_eq!(expected_of(Some("200"), None).await.as_deref(), Some("HTTP 200"));
+        // A blank check says what it fell back to, rather than nothing.
+        assert_eq!(expected_of(None, None).await.as_deref(), Some("any 2xx"));
+        // An expression is recorded *interpolated* — the text that actually decided,
+        // not the template. Looking it up in the dataset would show "{{expected_count}}".
+        assert_eq!(
+            expected_of(Some("response.json.n == {{expected_count}}"), None).await.as_deref(),
+            Some("response.json.n == 3")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plain_run_records_what_its_script_asserted() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "List", &stub_once(200, "{}").await, "GET");
+        tc.assertion_script = Some("SAT.vars.x = 1;\nresponse.status == 200".to_string());
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let result = engine
+            .execute_flow(
+                "exec1",
+                &one_node_flow("tc", serde_json::json!({})),
+                &repo,
+                HashMap::new(),
+                HashMap::new(),
+                None,
+            )
+            .await
+            .unwrap()
+            .results
+            .remove(0);
+
+        assert_eq!(result.expected.as_deref(), Some("response.status == 200"));
     }
 
     // ===================== fan-out: a dataset inside a flow =====================

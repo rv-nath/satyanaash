@@ -252,6 +252,10 @@ export interface TestCaseExecutionResult {
   test_case_id?: string;
   test_case_name?: string;
   status: 'passed' | 'failed' | 'error' | 'skipped';
+  /** What this run required, after interpolation — "HTTP 400", a Rhai expression, or
+   *  "any 2xx". Recorded by the engine rather than looked up in the dataset, which may
+   *  have been edited since the run. */
+  expected?: string;
   duration_ms: number;
   request?: RequestLog;
   response?: ResponseLog;
