@@ -12,4 +12,5 @@
 [x] bug: Align horizontal centers is actually aligning left instead of center
 [x] Need ability to show selected nodes in a different color. It happens if we click a single node. but if v do multi-select it doesn't show visual clue.
 [ ] Support dragging of multiple selected nodes
-[ ] Show the debug toolbar right aligned instead of some arbitrary center.  Or what does it take to make this toolbar draggable, so user can place it at their will.
+[x] Show the step-by-step toolbar right aligned instead of some arbitrary center.
+[ ] Make the step-by-step toolbar draggable, so user can place it at their will.

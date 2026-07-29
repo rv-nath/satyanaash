@@ -1,9 +1,13 @@
 /**
  * The controls for a run the author is driving a node at a time.
  *
- * Floats over the top of the canvas rather than joining the toolbar: the toolbar
- * already squeezes its own buttons off the edge on a narrow window, and this belongs
- * next to the graph it is stepping through.
+ * Floats over the canvas rather than joining the toolbar: the toolbar already squeezes
+ * its own buttons off the edge on a narrow window, and this belongs next to the graph
+ * it is stepping through.
+ *
+ * Pinned to the **top right** — the only free corner, with `Controls` bottom-left and
+ * the `MiniMap` bottom-right. It started centred, which put it over the middle of the
+ * graph for no reason anyone could name.
  */
 import { StepForward, FastForward, Square, Pause, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -27,7 +31,7 @@ export function StepControls({ mode, nextNodeName, done, total, onStep }: StepCo
   const paused = mode === "paused";
 
   return (
-    <div className="absolute left-1/2 top-3 z-20 -translate-x-1/2">
+    <div className="absolute right-3 top-3 z-20 max-w-[calc(100%-1.5rem)]">
       <div className="flex items-center gap-3 rounded-lg border border-border bg-card/95 px-3 py-2 shadow-lg backdrop-blur">
         <div className="flex items-center gap-2 text-sm">
           {paused ? (
