@@ -141,6 +141,15 @@ exactly what the author already knows how to write.
   aborts on a failure, and returns one aggregate `NodeResult` whose `iterations` holds
   the per-row results. **Sequential on purpose** — the `SAT.env` fold is
   order-dependent and the Rhai engines share a thread-local `print()` sink.
+- **`DataRow.needs_flow`** marks a row the editor's run can't satisfy. `run_rows` reports
+  it as `Skipped` without sending, but **only** when `RowRunOptions.honour_needs_flow` is
+  set — true from `execute_test_case_dataset`, false from a flow node, because the flow is
+  the precondition. It says *where* a row can run, not *why*: a missing JWT is one row's
+  whole point and the next row's obstacle. Stored as the exception
+  (`skip_serializing_if = "is_not_set"`), so datasets written before it are untouched.
+  **A `Skipped` row is not a failure** — the fold counts only `Failed` and `Error`, so the
+  aggregate stays `Passed`; four frontend sites had to be taught the same
+  (`DatasetResultView`'s strip and status cell, `fanOutDetails`, `resultHeadline`).
 - **`DataRow.path`** is appended to the endpoint for that row (`resolve_endpoint`,
   sibling to `resolve_body`), composed *before* interpolation so the result is what
   `find_unresolved`, `placeholder_values` and `provenance` all see. A `?…` suffix joins

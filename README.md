@@ -26,6 +26,7 @@ exports for chaining, and Rhai scripting throughout.
 - [Pre-test scripts](#pre-test-scripts)
 - [Assertions (post-test)](#assertions-post-test)
 - [Data-driven testing](#data-driven-testing)
+  - [Rows that can't run cold](#rows-that-cant-run-cold)
   - [Running a dataset inside a flow](#running-a-dataset-inside-a-flow)
 - [Exports — chaining values](#exports--chaining-values)
 - [Script variables](#script-variables)
@@ -312,6 +313,7 @@ and the engine runs the request once per row.
 | Column | Meaning |
 |--------|---------|
 | **Case** | Label for the row, shown in the results. Optional — blank rows read as *Row 1*, *Row 2*, … |
+| **⛓** | Marks a row that needs a flow — see [Rows that can't run cold](#rows-that-cant-run-cold). Blank means it runs anywhere. |
 | **Path / query** | Appended to the request's endpoint for this row — `?org=acme`, `/acme/summary`. Joins with `&` if the endpoint already has a query. Blank uses it as authored. |
 | **Body** | The body this row sends. Blank falls back to the Request tab's body. |
 | **Expect** | What must be true for the row to pass. |
@@ -384,6 +386,30 @@ overall verdict is the worst of the rows.
 > A blank **Expect** means *any 2xx*, which is the right default for a happy-path row
 > and the wrong one for a negative case: a row meant to check a rejection will
 > **pass** on a 200. Give negative rows an explicit status.
+
+### Rows that can't run cold
+
+Some rows only mean something after something else has happened — a login, a top-up.
+Run **Run dataset** on those and they fail, which says nothing about the request: a red
+matrix with no bug in it. Noise that recurs on every run teaches you to ignore the
+colour.
+
+Mark them with the **⛓** column in the Data tab. **Run dataset** then skips them,
+reporting each as `skipped` with the reason, and the run stays green:
+
+```
+2 rows · 1 passed · 1 needs a flow
+1  empty payload no jwt   passed    401   expected HTTP 401
+2  proper payload         skipped     —   Needs a flow — Run dataset has no earlier steps
+```
+
+**A flow node runs them like any other row** — the flow *is* the precondition. So the
+mark says *where* a row can run, never *why*: a missing JWT is the whole point of
+`empty payload no jwt` and merely an obstacle to the row after it, and only you know
+which.
+
+The button counts what will actually run — `Run dataset (4)` on a six-row dataset with
+two marked — so it never promises more than the run delivers.
 
 ### Running a dataset inside a flow
 
