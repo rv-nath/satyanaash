@@ -44,10 +44,11 @@ import { cn } from "@/lib/utils";
 import { TestCaseEditor } from "@/components/TestCaseEditor";
 import type { TestCaseExecutionResult } from "@/lib/api/types";
 import type { LayoutSpacing } from "@/lib/layoutUtils";
-import { useProject, useFlows, useCreateFlow, useCloneFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useTestCases } from "@/hooks/useApi";
+import { useProject, useFlows, useCreateFlow, useCloneFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateTestCase, useTestCases } from "@/hooks/useApi";
 import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
+import { ApiClientError } from "@/lib/api/client";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Card } from "@/components/ui/card";
@@ -183,7 +184,10 @@ const ProjectDetailContent = () => {
       return { key: tabKey('flow', t.id), kind: 'flow', label: flow?.name || 'Flow' };
     }
     const key = tabKey('test', t.id);
-    if (t.id === '__new__') return { key, kind: 'test', label: 'New Test', method: 'NEW', dirty: dirtyTabs[key] };
+    // An unsaved New Test has no record to rename; its name belongs to the editor.
+    if (t.id === '__new__') {
+      return { key, kind: 'test', label: 'New Test', method: 'NEW', dirty: dirtyTabs[key], renameable: false };
+    }
     const tc = (apiTestCases || []).find((x) => x.id === t.id);
     return { key, kind: 'test', label: tc?.name || 'Test', method: (tc?.method as string) || '', dirty: dirtyTabs[key] };
   });
@@ -236,6 +240,51 @@ const ProjectDetailContent = () => {
 
   // API mutations for test cases
   const deleteTestCaseMutation = useDeleteTestCase();
+  const updateTestCaseMutation = useUpdateTestCase();
+
+  /**
+   * Rename whatever a tab points at, from a double-click on its label.
+   *
+   * Refused while the tab has unsaved edits: the write would land on the server and
+   * the refetch behind it could pull the record out from under an editor still holding
+   * other changes. Saving first costs one click and can't lose anything.
+   */
+  const handleRenameTab = async (key: string, name: string) => {
+    const tab = renderTabs.find((t) => t.key === key);
+    if (!tab) return;
+    if (dirtyTabs[key]) {
+      toast.error('Save this tab before renaming it');
+      return;
+    }
+    try {
+      if (tab.kind === 'flow') {
+        const flowId = key.slice('flow:'.length);
+        const flow = testGroups.find((g) => g.id === flowId);
+        await updateFlowMutation.mutateAsync({
+          id: flowId,
+          data: { name, version: flow?.version ?? 1 },
+          projectId: id || '',
+        });
+        // The rail and the tabs read the local copy, so it has to hear about it too.
+        updateTestGroup(flowId, { name });
+      } else {
+        await updateTestCaseMutation.mutateAsync({
+          id: key.slice('test:'.length),
+          data: { name },
+          projectId: id || '',
+        });
+      }
+    } catch (err) {
+      // A background flow tab can hold a stale version — someone saved that flow
+      // somewhere else since. Say that, rather than quoting the numbers at them.
+      if (err instanceof ApiClientError && err.code === 'VERSION_CONFLICT') {
+        toast.error(`"${tab.label}" changed elsewhere. Open its tab and try again.`);
+      } else {
+        const reason = err instanceof Error ? err.message : '';
+        toast.error(reason ? `Couldn't rename "${tab.label}": ${reason}` : `Couldn't rename "${tab.label}"`);
+      }
+    }
+  };
 
   // Which flow's console is on screen. It follows the canvas, but you can pin
   // another flow's log to compare two runs.
@@ -913,6 +962,7 @@ const ProjectDetailContent = () => {
               active={workspace.active}
               onActivate={activateTab}
               onClose={requestCloseTab}
+              onRename={handleRenameTab}
             />
             <div className="relative min-h-0 flex-1">
               {/* Every open test editor stays mounted (hidden unless active) so an

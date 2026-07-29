@@ -7,9 +7,20 @@ const API_VERSION = 'v1';
 
 export const API_URL = `${API_BASE_URL}/api/${API_VERSION}`;
 
+/**
+ * An error body from the API.
+ *
+ * The server calls the human-readable part **`error`** (see `ErrorResponse` in
+ * `api/src/error.rs`), not `message`. This said `message` for a long time, so every
+ * explanation the server sent — "Version conflict: expected 1, got 2", "Flow has no
+ * START node" — was read as undefined and reported to the author as "Unknown error".
+ * `message` is kept as a fallback only for a body that didn't come from our API, like
+ * a JSON error page from a proxy in front of it.
+ */
 export interface ApiError {
   code: string;
-  message: string;
+  error?: string;
+  message?: string;
   details?: unknown;
 }
 
@@ -33,13 +44,13 @@ async function handleResponse<T>(response: Response): Promise<T> {
     } catch {
       error = {
         code: 'UNKNOWN_ERROR',
-        message: response.statusText || 'Unknown error occurred',
+        error: response.statusText || 'Unknown error occurred',
       };
     }
     throw new ApiClientError(
       response.status,
       error.code || 'UNKNOWN_ERROR',
-      error.message || 'Unknown error',
+      error.error || error.message || 'Unknown error',
       error.details
     );
   }

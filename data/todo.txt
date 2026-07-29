@@ -8,9 +8,9 @@
 [ ] Building an API server for frontend tools to display reports
 [ ] Support looped execution of test cases for a given no. of times.
 [x] Support executing test cases with sets of data from a csv file.
-[ ] support change test / flow name by dbl-click on the tab.
+[x] support change test / flow name by dbl-click on the tab.
 [x] bug: Align horizontal centers is actually aligning left instead of center
 [x] Need ability to show selected nodes in a different color. It happens if we click a single node. but if v do multi-select it doesn't show visual clue.
-[ ] Support dragging of multiple selected nodes
+[x] Support dragging of multiple selected nodes
 [x] Show the step-by-step toolbar right aligned instead of some arbitrary center.
-[ ] Make the step-by-step toolbar draggable, so user can place it at their will.
+[ ] 
