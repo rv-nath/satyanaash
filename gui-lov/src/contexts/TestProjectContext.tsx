@@ -2,7 +2,7 @@ import { createContext, useContext, useState, ReactNode, useCallback, useEffect,
 import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import {
-  WorkspaceState, initialWorkspaceState,
+  WorkspaceState, initialWorkspaceState, MAX_TABS,
   openTest, openFlow, openSettings, closeTab as closeWsTab, setActive as setActiveWsTab,
 } from "@/lib/workspaceTabs";
 import { useHistory } from "@/hooks/useHistory";
@@ -278,7 +278,22 @@ export const TestProjectProvider = ({
 
   // Tabbed workspace: pinned canvas + open test-case tabs (persist across flow switches)
   const [workspace, setWorkspace] = useState<WorkspaceState>(initialWorkspaceState);
-  const openTestTab = useCallback((id: string) => setWorkspace((s) => openTest(s, id).state), []);
+  /**
+   * Open a test case as a tab, or bring its tab forward if it is already open.
+   *
+   * The "too many tabs" complaint lives here rather than at each call site: the reducer
+   * already reports it, and every way of opening a test — the sidebar, a deep link, a
+   * double-clicked node — owes the author the same answer. Computed outside the state
+   * updater so the toast fires once, not once per invocation React chooses to make.
+   */
+  const openTestTab = useCallback((id: string) => {
+    const { state, capped } = openTest(workspace, id);
+    if (capped) {
+      toast.warning(`Too many tabs open (max ${MAX_TABS}). Close one first.`);
+      return;
+    }
+    setWorkspace(state);
+  }, [workspace]);
   const openFlowTab = useCallback(
     (id: string, canReuseActive: boolean) => setWorkspace((s) => openFlow(s, id, { canReuseActive }).state),
     []

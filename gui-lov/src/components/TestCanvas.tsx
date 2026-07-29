@@ -17,6 +17,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useTestProject } from "@/contexts/TestProjectContext";
+import { useTestCases } from "@/hooks/useApi";
 import { TestCaseNode, StartNode, EndNode, GroupNode } from "./CustomNodes";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { NodeConfigPanel } from "./NodeConfigPanel";
@@ -36,8 +37,11 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNodes, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNodes, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId, openTestTab, projectId } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
+  // Cached by the nodes themselves already; used here only to spot a node pointing
+  // at a test case that has since been deleted.
+  const { data: testCases } = useTestCases(projectId || '');
 
   const cleanupBand = useMemo(() => cleanupBandFor(nodes), [nodes]);
   const [edges, setEdgesState, onEdgesChange] = useEdgesState(contextEdges);
@@ -347,6 +351,30 @@ const TestCanvasContent = () => {
     setShowConfigPanel(false);
   }, []);
 
+  /**
+   * Double-click a test node to open what it runs.
+   *
+   * The node shows a name and, through its ⓘ, a method and endpoint — the moment you
+   * want more than that, you want the test case itself, and hunting for it in the
+   * sidebar is a detour when you are already pointing at it.
+   */
+  const handleNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    // Group nodes open their own editor, and start/end have nothing behind them.
+    if (node.type !== 'testCase') return;
+    const testCaseId = (node.data as { testCaseId?: string } | undefined)?.testCaseId;
+    if (!testCaseId) {
+      toast.error('This node has no test case attached');
+      return;
+    }
+    // A node can outlive the test case it points at; validation flags the reference,
+    // but say so here too rather than opening a tab that can never load.
+    if (testCases && !testCases.some((tc: { id: string }) => tc.id === testCaseId)) {
+      toast.error('That test case no longer exists');
+      return;
+    }
+    openTestTab(testCaseId);
+  }, [testCases, openTestTab]);
+
   const handleEdgeClick = useCallback((_event: React.MouseEvent, edge: any) => {
     // Clicking an edge brings it to front by selecting it
     setSelectedEdge(edge.id);
@@ -487,6 +515,7 @@ const TestCanvasContent = () => {
         onConnectStart={onConnectStart}
         onConnectEnd={onConnectEnd}
         onNodeClick={handleNodeClick}
+        onNodeDoubleClick={handleNodeDoubleClick}
         onEdgeClick={handleEdgeClick}
         onEdgeMouseEnter={handleEdgeMouseEnter}
         onEdgeMouseLeave={handleEdgeMouseLeave}

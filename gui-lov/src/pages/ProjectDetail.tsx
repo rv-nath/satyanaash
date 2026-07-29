@@ -198,16 +198,9 @@ const ProjectDetailContent = () => {
     if (key.startsWith('flow:')) setActiveFlowId(key.slice('flow:'.length));
   };
 
-  // Open a test case as a workspace tab (undefined = create mode)
-  const openTestCaseEditor = (testCaseId?: string) => {
-    const tid = testCaseId ?? '__new__';
-    const alreadyOpen = workspace.tabs.some((t) => t.kind === 'test' && t.id === tid);
-    if (!alreadyOpen && atCap(workspace)) {
-      toast.warning(`Too many tabs open (max ${MAX_TABS}). Close one first.`);
-      return;
-    }
-    openTestTab(tid);
-  };
+  // Open a test case as a workspace tab (undefined = create mode). The tab cap and its
+  // complaint live in openTestTab, so every route to a test behaves the same.
+  const openTestCaseEditor = (testCaseId?: string) => openTestTab(testCaseId ?? '__new__');
 
   // Open a flow as a (reuse-if-unedited) workspace tab
   const handleOpenFlow = (flowId: string) => {

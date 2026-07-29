@@ -97,6 +97,9 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
             type="button"
             aria-label="Request details"
             onClick={(e) => e.stopPropagation()}
+            // Two quick clicks on the ⓘ mean "open, no, close again" — not "open the
+            // test case", which is what a double-click anywhere else on the node does.
+            onDoubleClick={(e) => e.stopPropagation()}
             className="nodrag shrink-0 rounded p-0.5 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
           >
             <Info className="h-3.5 w-3.5" />
