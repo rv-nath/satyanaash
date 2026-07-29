@@ -1,9 +1,11 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { Info } from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
+import { statusIcon } from "@/lib/consoleDetails";
+import { exportLines } from "@/lib/executionDecor";
 
 interface TestCaseNodeData {
   label: string;
@@ -18,8 +20,19 @@ interface TestCaseNodeData {
 }
 
 interface TestCaseNodeProps {
+  /** React Flow passes the node's own id, which is how a result is looked up. */
+  id: string;
   data: TestCaseNodeData;
 }
+
+/** Colour for a verdict badge. Skipped never ran, so it steps back rather than
+ *  claiming a colour. */
+const statusTone = (status: string) =>
+  status === "passed"
+    ? "text-success"
+    : status === "failed" || status === "error"
+      ? "text-destructive"
+      : "text-muted-foreground";
 
 const getMethodColor = (method: string) => {
   const colors: Record<string, string> = {
@@ -32,9 +45,15 @@ const getMethodColor = (method: string) => {
   return colors[method] || "bg-muted";
 };
 
-export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
-  const { projectId } = useTestProject();
+export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
+  const { projectId, activeFlowId, nodeRuns, activeNodeId } = useTestProject();
   const { data: testCases } = useTestCases(projectId || '');
+
+  // What this node did last time the flow ran, and whether it is running right now.
+  const lastRun = activeFlowId ? nodeRuns[activeFlowId]?.[id] : undefined;
+  const running = activeNodeId === id;
+  const exports = exportLines(lastRun?.exports);
+  const rows = lastRun?.iterations;
 
   // Resolve current name from test cases cache, fallback to stored label
   const currentTestCase = data.testCaseId
@@ -116,6 +135,42 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
               </span>
             )}
           </div>
+
+          {/* What happened last time. The full request and response stay in the
+              console, which already renders them per node — this is the verdict and
+              what the node handed on to the rest of the flow. */}
+          {(running || lastRun) && (
+            <div className="mt-2 grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1 border-t border-border pt-2 text-[11px]">
+              <span className="text-muted-foreground">Last run</span>
+              {running ? (
+                <span className="text-primary">running…</span>
+              ) : (
+                <span className={statusTone(lastRun!.status)}>
+                  {statusIcon(lastRun!.status)} {lastRun!.status}
+                  <span className="text-muted-foreground"> · {lastRun!.duration_ms}ms</span>
+                  {rows && (
+                    <span className="text-muted-foreground">
+                      {" · "}
+                      {rows.filter((r) => r.status === "passed").length}/
+                      {rows.filter((r) => r.status !== "skipped").length} rows passed
+                    </span>
+                  )}
+                </span>
+              )}
+              {exports.length > 0 && (
+                <>
+                  <span className="text-muted-foreground">Exported</span>
+                  <span className="min-w-0">
+                    {exports.map(({ name, value }) => (
+                      <span key={name} className="block break-all font-mono text-foreground">
+                        {name} = {value}
+                      </span>
+                    ))}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </PopoverContent>
       </Popover>
 
@@ -146,6 +201,22 @@ export const TestCaseNode = memo(({ data }: TestCaseNodeProps) => {
         >
           {/^\d+$/.test(check) ? check : "chk"}
         </span>
+      )}
+
+      {/* The verdict, as a glyph rather than only a ring colour — so it survives a
+          screenshot, a colour-blind reader, and the validation ring sitting on the
+          same node. */}
+      {running ? (
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" aria-label="running" />
+      ) : (
+        lastRun && (
+          <span
+            className={`shrink-0 text-[11px] font-semibold leading-none ${statusTone(lastRun.status)}`}
+            title={`Last run: ${lastRun.status} in ${lastRun.duration_ms}ms`}
+          >
+            {statusIcon(lastRun.status)}
+          </span>
+        )
       )}
 
       <span className="min-w-0 flex-1">

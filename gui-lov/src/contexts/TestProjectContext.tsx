@@ -8,6 +8,14 @@ import {
 import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
 import { useAutoValidate, ValidationStatus } from "@/hooks/useAutoValidate";
+import {
+  useExecutionStream,
+  type ConsoleLog,
+  type ExecuteFlowRequest,
+  type RunMode,
+  type StepCommand,
+} from "@/hooks/useExecutionStream";
+import type { TestCaseExecutionResult } from "@/lib/api/types";
 import { toast } from "sonner";
 import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
 import { generateUUID } from "@/lib/utils/uuid";
@@ -107,6 +115,21 @@ interface TestProjectContextType {
   validationWarnings: ValidationIssue[];
   validateFlow: () => Promise<void>;
   invalidNodeIds: Set<string>;
+  // Execution. Lives here rather than in the page because the canvas decorates its
+  // nodes with it and each node's popover reports its own last run.
+  logsByFlow: Record<string, ConsoleLog[]>;
+  executingFlowId: string | null;
+  isExecuting: boolean;
+  executeFlow: (flowId: string, options?: ExecuteFlowRequest) => Promise<void>;
+  clearLogs: (flowId: string) => void;
+  closeLogs: (flowId: string) => void;
+  /** Per flow, per node: what it did last time. Outlives the run. */
+  nodeRuns: Record<string, Record<string, TestCaseExecutionResult>>;
+  activeNodeId: string | null;
+  pausedNodeId: string | null;
+  runMode: RunMode;
+  totalNodes: number;
+  step: (command: StepCommand) => Promise<void>;
   addTestGroup: (group: Omit<TestGroup, "id" | "testCases" | "expanded">) => void;
   updateTestGroup: (id: string, updates: Partial<TestGroup>) => void;
   deleteTestGroup: (id: string) => void;
@@ -416,6 +439,23 @@ export const TestProjectProvider = ({
     debounceMs: 3000,
     enabled: !!activeFlowId,
   });
+
+  // SSE streaming for real-time execution. onEnvWrites: a flow run persists SAT.env
+  // writes to the active environment, the same as a standalone run.
+  const {
+    logsByFlow,
+    executingFlowId,
+    isExecuting,
+    execute: executeFlow,
+    clearLogs,
+    closeLogs,
+    nodeRuns,
+    activeNodeId,
+    pausedNodeId,
+    runMode,
+    totalNodes,
+    step,
+  } = useExecutionStream({ onEnvWrites: applyEnvWrites });
 
   const setNodes = useCallback((newNodes: Node[]) => {
     if (!activeFlowId) return;
@@ -868,6 +908,18 @@ export const TestProjectProvider = ({
         validationWarnings,
         validateFlow,
         invalidNodeIds,
+        logsByFlow,
+        executingFlowId,
+        isExecuting,
+        executeFlow,
+        clearLogs,
+        closeLogs,
+        nodeRuns,
+        activeNodeId,
+        pausedNodeId,
+        runMode,
+        totalNodes,
+        step,
         addTestGroup,
         updateTestGroup,
         deleteTestGroup,

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { generateUUID } from "@/lib/utils/uuid";
 import {
-  ArrowLeft, Play, Settings, CheckCircle2, Download, Bug, Loader2, AlertCircle,
+  ArrowLeft, Play, Settings, CheckCircle2, Download, Footprints, Loader2, AlertCircle,
   Undo2, Redo2, Cloud, CloudOff, Save, ChevronDown, Spline, Minus, ArrowRightToLine,
   AlignStartHorizontal, AlignStartVertical, AlignEndVertical, AlignEndHorizontal,
   AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil, Network, MoveVertical, MoveHorizontal,
@@ -50,7 +50,6 @@ import { SettingsPanel } from "@/components/SettingsPanel";
 import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { useExecutionStream } from "@/hooks/useExecutionStream";
 import { Card } from "@/components/ui/card";
 
 const ProjectDetailContent = () => {
@@ -102,8 +101,13 @@ const ProjectDetailContent = () => {
     activeEnv,
     selectEnv,
     effectiveEnvironment,
-    applyEnvWrites,
     requestAutoLayout,
+    logsByFlow,
+    executingFlowId,
+    isExecuting,
+    executeFlow,
+    clearLogs,
+    closeLogs,
   } = useTestProject();
 
   // Arrange density — remembered for the session and used by both the toolbar
@@ -233,20 +237,6 @@ const ProjectDetailContent = () => {
   // API mutations for test cases
   const deleteTestCaseMutation = useDeleteTestCase();
 
-  // SSE streaming for real-time execution logs
-  // onEnvWrites: a flow run persists SAT.env writes to the active environment,
-  // the same as a standalone run.
-  const {
-    logsByFlow,
-    executingFlowId,
-    isExecuting,
-    execute: executeFlow,
-    clearLogs,
-    closeLogs,
-  } = useExecutionStream({
-    onEnvWrites: applyEnvWrites,
-  });
-
   // Which flow's console is on screen. It follows the canvas, but you can pin
   // another flow's log to compare two runs.
   const [consoleFlowId, setConsoleFlowId] = useState<string | null>(null);
@@ -299,7 +289,7 @@ const ProjectDetailContent = () => {
     openSettingsTab();
   };
 
-  const handleExecute = async (mode: "run" | "debug" = "run") => {
+  const handleExecute = async (mode: "run" | "step" = "run") => {
     if (!activeFlowId) {
       toast.error("No flow selected to execute");
       return;
@@ -321,10 +311,15 @@ const ProjectDetailContent = () => {
     // Globals overlaid with the active environment (env wins).
     const env = effectiveEnvironment();
 
-    // Execute using SSE streaming - logs are handled by the hook
+    // Execute using SSE streaming - logs are handled by the hook.
+    // debug_mode is always on: it only adds variable provenance and the per-node
+    // request log, both of which sit behind the console's collapsible details. A run
+    // whose variables resolved from somewhere unexpected is the hard failure to
+    // diagnose, and there is no reason to have to ask for the evidence twice.
     await executeFlow(activeFlowId, {
-      debug_mode: mode === "debug",
+      debug_mode: true,
       environment: env,
+      step: mode === "step",
     });
   };
 
@@ -625,7 +620,7 @@ const ProjectDetailContent = () => {
           {activeIsFlow && activeFlow && (
             <>
               {/* Run — split button: the main area runs immediately, the caret
-                  offers the alternate (Debug). */}
+                  offers running it a node at a time. */}
               <div className="flex items-stretch">
                 <Button
                   variant="default"
@@ -656,8 +651,8 @@ const ProjectDetailContent = () => {
                     <DropdownMenuItem onClick={() => handleExecute("run")}>
                       <Play className="w-4 h-4 mr-2" /> Run
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => handleExecute("debug")}>
-                      <Bug className="w-4 h-4 mr-2" /> Debug
+                    <DropdownMenuItem onClick={() => handleExecute("step")}>
+                      <Footprints className="w-4 h-4 mr-2" /> Run step-by-step
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>

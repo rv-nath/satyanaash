@@ -55,6 +55,12 @@ interface ExecutionEventNodeCompleted {
   result: NodeResult;
 }
 
+/** Parked before this node, waiting for a press. */
+interface ExecutionEventPaused {
+  type: 'paused';
+  node_id: string;
+}
+
 interface ExecutionEventCompleted {
   type: 'completed';
   execution_id: string;
@@ -75,6 +81,7 @@ type ExecutionEvent =
   | ExecutionEventStarted
   | ExecutionEventNodeStarted
   | ExecutionEventNodeCompleted
+  | ExecutionEventPaused
   | ExecutionEventCompleted
   | ExecutionEventError;
 
@@ -93,7 +100,20 @@ export interface ExecuteFlowRequest {
   debug_mode?: boolean;
   environment?: Record<string, unknown>;
   variables?: Record<string, unknown>;
+  /** Run a node at a time, waiting for a press before each one after the first. */
+  step?: boolean;
 }
+
+/** What the author can press while a run is paused. Mirrors the server's StepCommand. */
+export type StepCommand = 'next' | 'run_to_end' | 'stop';
+
+/**
+ * Where a run has got to, from the controls' point of view.
+ *
+ * `finishing` is the state after Run to end or Stop: the run is still going but will
+ * not pause again, so there is nothing left to press.
+ */
+export type RunMode = 'idle' | 'running' | 'paused' | 'finishing';
 
 interface UseExecutionStreamOptions {
   /** Called once per run with the SAT.env writes made by any node, so a flow run
@@ -107,6 +127,20 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
   // buried the first.
   const [logsByFlow, setLogsByFlow] = useState<Record<string, ConsoleLog[]>>({});
   const [executingFlowId, setExecutingFlowId] = useState<string | null>(null);
+
+  // Every node's own result, kept per flow like the logs. The console has always
+  // rendered these into text and thrown the result away, which left the canvas with
+  // nothing to show and the node popover nothing to report.
+  const [nodeRuns, setNodeRuns] = useState<Record<string, Record<string, NodeResult>>>({});
+  // The node whose request is in flight, and the node a paused run is waiting to run.
+  // One run at a time, so these are single values rather than per flow.
+  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
+  const [pausedNodeId, setPausedNodeId] = useState<string | null>(null);
+  const [runMode, setRunMode] = useState<RunMode>('idle');
+  // The run's server-side id, learned from the started event. Without it there is no
+  // way to address the controls at a paused run.
+  const [executionId, setExecutionId] = useState<string | null>(null);
+  const [totalNodes, setTotalNodes] = useState(0);
 
   // Which flow the events arriving right now belong to. A ref because addLog is
   // called from the stream loop, long after the state that started it.
@@ -145,6 +179,42 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     });
   }, []);
 
+  /** Record what a node did, against the flow the events belong to. */
+  const recordResult = useCallback((nodeId: string, result: NodeResult) => {
+    const flowId = targetFlowRef.current;
+    if (!flowId) return;
+    setNodeRuns(prev => ({
+      ...prev,
+      [flowId]: { ...(prev[flowId] ?? {}), [nodeId]: result },
+    }));
+  }, []);
+
+  /**
+   * Press one of the paused run's controls.
+   *
+   * Optimistic on purpose: the button should stop looking pressable the instant it is
+   * clicked, not a round trip later. A 404 means the run finished while the author was
+   * deciding, which the completed event is about to explain anyway.
+   */
+  const step = useCallback(async (command: StepCommand) => {
+    const id = executionId;
+    if (!id) return;
+    setPausedNodeId(null);
+    setRunMode(command === 'next' ? 'running' : 'finishing');
+    try {
+      const response = await fetch(`${API_URL}/executions/${id}/step`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command }),
+      });
+      if (!response.ok && response.status !== 404) {
+        addLog(`Could not ${command.replace(/_/g, ' ')}: HTTP ${response.status}`, 'error');
+      }
+    } catch (error) {
+      addLog(`Could not ${command.replace(/_/g, ' ')}: ${error instanceof Error ? error.message : 'unknown error'}`, 'error');
+    }
+  }, [executionId, addLog]);
+
   const cancelExecution = useCallback(() => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -167,13 +237,32 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     // Everything logged from here belongs to this flow.
     targetFlowRef.current = flowId;
     setExecutingFlowId(flowId);
-    // A re-run replaces the previous one rather than appending to it.
+    // A re-run replaces the previous one rather than appending to it — the canvas
+    // decoration included, or last run's ticks would linger over this one.
     setLogsByFlow(prev => ({ ...prev, [flowId]: [] }));
-    addLog(`Starting ${options.debug_mode ? 'debug' : 'test'} execution...`, 'info');
+    setNodeRuns(prev => ({ ...prev, [flowId]: {} }));
+    setActiveNodeId(null);
+    setPausedNodeId(null);
+    setExecutionId(null);
+    setRunMode(options.step ? 'running' : 'finishing');
+    addLog(options.step ? 'Starting step-by-step execution...' : 'Starting execution...', 'info');
 
     // SAT.env writes from every node in this run. Collected as events stream in and
     // applied once at the end — one project update instead of one per node.
     const envWrites: Record<string, unknown> = {};
+
+    // Where the stream loop puts what it reads. Bundled rather than passed one
+    // parameter at a time: there are six of them now.
+    const sink: EventSink = {
+      addLog,
+      envWrites,
+      recordResult,
+      setActiveNodeId,
+      setPausedNodeId,
+      setRunMode,
+      setExecutionId,
+      setTotalNodes,
+    };
 
     try {
       const response = await fetch(`${API_URL}/flows/${flowId}/execute-stream`, {
@@ -183,6 +272,7 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
           debug_mode: options.debug_mode ?? false,
           environment: options.environment ?? {},
           variables: options.variables ?? {},
+          step: options.step ?? false,
         }),
         signal: abortController.signal,
       });
@@ -225,7 +315,7 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
             const jsonStr = line.slice(6); // Remove 'data: ' prefix
             try {
               const event: ExecutionEvent = JSON.parse(jsonStr);
-              handleEvent(event, addLog, options.debug_mode ?? false, envWrites);
+              handleEvent(event, sink);
             } catch (parseError) {
               console.warn('Failed to parse SSE event:', jsonStr, parseError);
             }
@@ -238,7 +328,7 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
         const jsonStr = buffer.slice(6);
         try {
           const event: ExecutionEvent = JSON.parse(jsonStr);
-          handleEvent(event, addLog, options.debug_mode ?? false, envWrites);
+          handleEvent(event, sink);
         } catch (parseError) {
           console.warn('Failed to parse final SSE event:', jsonStr, parseError);
         }
@@ -263,9 +353,16 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
       }
     } finally {
       setExecutingFlowId(null);
+      // The stream is over however it ended, so nothing is running and nothing is
+      // waiting to be pressed. The results stay: they are what the canvas and the
+      // node popovers report until the next run.
+      setActiveNodeId(null);
+      setPausedNodeId(null);
+      setRunMode('idle');
+      setExecutionId(null);
       abortControllerRef.current = null;
     }
-  }, [addLog]);
+  }, [addLog, recordResult]);
 
   return {
     logsByFlow,
@@ -276,22 +373,40 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     cancelExecution,
     clearLogs,
     closeLogs,
+    /** Per flow, per node: what it did last time. Outlives the run. */
+    nodeRuns,
+    activeNodeId,
+    pausedNodeId,
+    runMode,
+    totalNodes,
+    step,
   };
 }
 
+/** Where the stream loop puts what it reads. */
+interface EventSink {
+  addLog: (message: string, type: ConsoleLog['type'], details?: ConsoleLogDetail[]) => void;
+  envWrites: Record<string, unknown>;
+  recordResult: (nodeId: string, result: NodeResult) => void;
+  setActiveNodeId: (id: string | null) => void;
+  setPausedNodeId: (id: string | null) => void;
+  setRunMode: (next: RunMode | ((prev: RunMode) => RunMode)) => void;
+  setExecutionId: (id: string) => void;
+  setTotalNodes: (n: number) => void;
+}
+
 /** Handle individual execution events */
-function handleEvent(
-  event: ExecutionEvent,
-  addLog: (message: string, type: ConsoleLog['type'], details?: ConsoleLogDetail[]) => void,
-  debugMode: boolean,
-  envWrites?: Record<string, unknown>
-) {
+function handleEvent(event: ExecutionEvent, sink: EventSink) {
+  const { addLog, envWrites } = sink;
   switch (event.type) {
     case 'started':
+      sink.setExecutionId(event.execution_id);
+      sink.setTotalNodes(event.total_nodes);
       addLog(`Execution ${event.execution_id.slice(0, 8)}... started (${event.total_nodes} nodes)`, 'info');
       break;
 
     case 'node_started':
+      sink.setActiveNodeId(event.node_id);
       if (event.node_type === 'testCase') {
         addLog(`▶ Running: ${nodeName(event)}`, 'info');
       } else if (event.node_type !== 'start' && event.node_type !== 'end') {
@@ -299,8 +414,15 @@ function handleEvent(
       }
       break;
 
+    case 'paused':
+      sink.setPausedNodeId(event.node_id);
+      sink.setRunMode('paused');
+      break;
+
     case 'node_completed': {
       const { result } = event;
+      sink.setActiveNodeId(null);
+      sink.recordResult(event.node_id, result);
       // Collect SAT.env writes; the caller persists them once the run finishes.
       if (result.env && envWrites) {
         Object.assign(envWrites, result.env);

@@ -522,6 +522,13 @@ pub enum ExecutionEvent {
         node_id: String,
         result: NodeResult,
     },
+    /// Parked before this node, waiting for the author to say go on. Which node comes
+    /// next is the engine's to answer — it depends on the last verdict, and teardown
+    /// nodes are hopped over — so it is said here rather than worked out again by the
+    /// canvas from a copy of the routing rules.
+    Paused {
+        node_id: String,
+    },
     /// Execution completed
     Completed {
         execution_id: String,
@@ -603,16 +610,18 @@ impl Stepper {
         Self { rx, pausing: true, first: true }
     }
 
+    /// Whether the next node will actually be held up.
+    fn will_pause(&self) -> bool {
+        self.pausing && !self.first
+    }
+
     /// Wait for permission to run the next node.
     ///
     /// Once this has answered `Abandon` it stops pausing, so a caller that carries on
     /// regardless — the teardown loop does, on purpose — is not asked again.
     async fn wait(&mut self) -> Resume {
-        if !self.pausing {
-            return Resume::Go;
-        }
-        if self.first {
-            self.first = false;
+        if !self.will_pause() {
+            self.first = false; // the free node has been taken
             return Resume::Go;
         }
         match self.rx.recv().await {
@@ -665,10 +674,15 @@ impl RunState<'_> {
 
     /// Hold the run here until the author says to go on. Instant unless they are
     /// stepping.
-    async fn pause_before_next(&mut self) -> Resume {
+    async fn pause_before_next(&mut self, node_id: &str) -> Resume {
         let Some(stepper) = &mut self.stepper else {
             return Resume::Go;
         };
+        if stepper.will_pause() {
+            if let Some(tx) = self.event_tx {
+                let _ = tx.send(ExecutionEvent::Paused { node_id: node_id.to_string() }).await;
+            }
+        }
         match self.event_tx {
             // Watch the stream while waiting for the press. If the tab closes mid-pause
             // nobody will ever send Next, and the `client_gone` check at the top of the
@@ -808,7 +822,7 @@ impl ExecutionEngine {
             // *pausing*: the answer is deliberately discarded, so the remaining
             // teardown nodes run straight through rather than being abandoned. There
             // is no version of "cancel" that leaves the account behind.
-            let _ = state.pause_before_next().await;
+            let _ = state.pause_before_next(&node.id).await;
             let mut result = self
                 .execute_test_case_node(
                     node,
@@ -899,7 +913,7 @@ impl ExecutionEngine {
                 }
 
                 // Wait here when the author is driving. Instant otherwise.
-                if state.pause_before_next().await == Resume::Abandon {
+                if state.pause_before_next(&node.id).await == Resume::Abandon {
                     return Ok("stopped".to_string());
                 }
 
@@ -2717,6 +2731,66 @@ mod tests {
 
         assert_eq!(ran(&result), vec!["a", "b", "c"], "{:?}", ran(&result));
         assert_eq!(result.status, "completed");
+    }
+
+    /// While the author is deciding, the only thing worth pointing at on the canvas is
+    /// the node about to run — and which one that is depends on the last verdict and on
+    /// teardown nodes being hopped over. So the engine says it rather than leaving the
+    /// canvas to re-derive the routing rules.
+    #[tokio::test]
+    async fn a_pause_names_the_node_it_is_waiting_to_run() {
+        let engine = ExecutionEngine::new(false, None);
+        let a = make_test_case("a", "a", &stub_once(200, "{}").await, "POST");
+        let b = make_test_case("b", "b", &stub_once(200, "{}").await, "POST");
+        let t = make_test_case("t", "Cleanup", &stub_once(200, "{}").await, "DELETE");
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(a).with_test_case(b).with_test_case(t);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("na", "testCase", serde_json::json!({"testCaseId": "a"})),
+            make_node("nb", "testCase", serde_json::json!({"testCaseId": "b"})),
+            make_node("nt", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "na", None),
+            make_edge("e2", "na", "nb", Some("success")),
+            make_edge("e3", "nb", "end", Some("success")),
+        ]);
+
+        let (step_tx, step_rx) = mpsc::channel::<StepCommand>(8);
+        step_tx.send(StepCommand::Next).await.unwrap();
+        drop(step_tx);
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(100);
+
+        engine
+            .run_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), Some(tx), Some(step_rx))
+            .await
+            .unwrap();
+
+        // The stream is drained afterwards; nothing was reading it during the run, which
+        // is why the channel needs room for the whole flow.
+        let mut seen = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            seen.push(match event {
+                ExecutionEvent::Paused { node_id } => format!("paused:{}", node_id),
+                ExecutionEvent::NodeStarted { node_id, .. } => format!("started:{}", node_id),
+                ExecutionEvent::NodeCompleted { node_id, .. } => format!("completed:{}", node_id),
+                ExecutionEvent::Started { .. } => "run-started".to_string(),
+                ExecutionEvent::Completed { status, .. } => format!("run-{}", status),
+                ExecutionEvent::Error { .. } => "error".to_string(),
+            });
+        }
+
+        // The first node is not paused before; every later one is, cleanup included.
+        assert_eq!(seen, vec![
+            "run-started",
+            "started:na", "completed:na",
+            "paused:nb", "started:nb", "completed:nb",
+            "paused:nt", "started:nt", "completed:nt",
+            "run-completed",
+        ], "{:?}", seen);
     }
 
     /// The assertion that matters about Stop: it abandons the *flow*, not the cleanup.

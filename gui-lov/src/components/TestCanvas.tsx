@@ -21,6 +21,8 @@ import { TestCaseNode, StartNode, EndNode, GroupNode } from "./CustomNodes";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { cleanupBandFor } from "@/lib/cleanupBand";
+import { canvasNodeName, completedCount, executionClassFor } from "@/lib/executionDecor";
+import { StepControls } from "./StepControls";
 import { EdgeTypeDialog } from "./EdgeTypeDialog";
 import { getLayoutedElements, type LayoutDirection, type LayoutSpacing } from "@/lib/layoutUtils";
 import { useReactFlow } from "@xyflow/react";
@@ -34,7 +36,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
 
   const cleanupBand = useMemo(() => cleanupBandFor(nodes), [nodes]);
@@ -366,6 +368,14 @@ const TestCanvasContent = () => {
     setShowConfigPanel(false);
   }, []);
 
+  // What the current or last run left on this flow's nodes. Only this flow's own
+  // results decorate it — another flow's run is someone else's graph.
+  const executionView = useMemo(() => ({
+    activeNodeId: executingFlowId === activeFlowId ? activeNodeId : null,
+    pausedNodeId: executingFlowId === activeFlowId ? pausedNodeId : null,
+    runs: activeFlowId ? nodeRuns[activeFlowId] : undefined,
+  }), [executingFlowId, activeFlowId, activeNodeId, pausedNodeId, nodeRuns]);
+
   // Apply node styling for selection, validation highlighting, and edge styling based on type
   const styledNodes = nodes.map(node => {
     const hasValidationIssue = invalidNodeIds.has(node.id);
@@ -377,7 +387,10 @@ const TestCanvasContent = () => {
     return {
       ...node,
       selected: node.id === selectedNode?.id,
-      className: [node.className, validationClass].filter(Boolean).join(' '),
+      // Execution comes last, so it wins over validation on equal specificity: while
+      // a run is on screen, what just happened matters more than standing advice.
+      className: [node.className, validationClass, executionClassFor(node.id, executionView)]
+        .filter(Boolean).join(' '),
       style: {
         ...node.style,
         border: node.id === selectedNode?.id ? '2px solid hsl(var(--primary))' : undefined,
@@ -419,6 +432,19 @@ const TestCanvasContent = () => {
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {/* Controls for a run being driven a node at a time. Only shown for this
+          flow's own run — stepping one flow while looking at another would offer
+          buttons for a graph that isn't on screen. */}
+      {executingFlowId === activeFlowId && (
+        <StepControls
+          mode={runMode}
+          nextNodeName={pausedNodeId ? canvasNodeName(nodes, pausedNodeId) : null}
+          done={completedCount(activeFlowId ? nodeRuns[activeFlowId] : undefined)}
+          total={totalNodes}
+          onStep={step}
+        />
+      )}
+
       {/* Empty State */}
       {!hasAnyNodes && activeFlow && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">

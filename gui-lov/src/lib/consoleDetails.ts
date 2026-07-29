@@ -22,7 +22,9 @@ export function pretty(body: string): string {
   }
 }
 
-const icon = (status: TestCaseExecutionResult["status"]): string =>
+/** The one-character verdict. Shared with the canvas, so a node's badge and its
+ *  console line can never disagree. */
+export const statusIcon = (status: TestCaseExecutionResult["status"]): string =>
   status === "passed" ? "✓" : status === "failed" ? "✗" : status === "error" ? "⚠" : "○";
 
 /** Request, response, error, logs and exports for a single request. */
@@ -75,7 +77,7 @@ export function rowsSummary(rows: TestCaseExecutionResult[]): string {
       // none, so say so rather than overflowing the alignment with a word.
       const status = row.response ? String(row.response.status) : "—";
       const reason = row.error_message ? `  ${row.error_message}` : "";
-      return `${icon(row.status)} ${n}  ${label}  ${status.padStart(3)}  ${row.duration_ms}ms${reason}`;
+      return `${statusIcon(row.status)} ${n}  ${label}  ${status.padStart(3)}  ${row.duration_ms}ms${reason}`;
     })
     .join("\n");
 }
@@ -126,7 +128,7 @@ export function resultHeadline(result: TestCaseExecutionResult, name: string): s
     // so "3/3 rows passed (1 needed a flow)" reads with a ✓ instead of contradicting it.
     const ran = rows.length - skipped;
     const note = skipped > 0 ? ` (${skipped} needed a flow)` : "";
-    return `${icon(result.status)} ${name}${suffix}: ${passed}/${ran} rows passed${note} (${result.duration_ms}ms)`;
+    return `${statusIcon(result.status)} ${name}${suffix}: ${passed}/${ran} rows passed${note} (${result.duration_ms}ms)`;
   }
-  return `${icon(result.status)} ${name}${suffix}: ${result.status} (${result.duration_ms}ms)`;
+  return `${statusIcon(result.status)} ${name}${suffix}: ${result.status} (${result.duration_ms}ms)`;
 }

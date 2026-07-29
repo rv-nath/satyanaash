@@ -1,0 +1,99 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { TestCaseExecutionResult } from "@/lib/api/types";
+
+let nodeRuns: Record<string, Record<string, TestCaseExecutionResult>> = {};
+let activeNodeId: string | null = null;
+vi.mock("@/contexts/TestProjectContext", () => ({
+  useTestProject: () => ({ projectId: "p1", activeFlowId: "f1", nodeRuns, activeNodeId }),
+}));
+vi.mock("@/hooks/useApi", () => ({
+  useTestCases: () => ({
+    data: [{ id: "tc1", name: "Login", method: "POST", endpoint: "/login" }],
+  }),
+}));
+vi.mock("@xyflow/react", () => ({
+  Handle: () => null,
+  Position: { Top: "top", Bottom: "bottom", Left: "left", Right: "right" },
+}));
+
+import { TestCaseNode } from "@/components/TestCaseNode";
+
+const result = (over: Partial<TestCaseExecutionResult> = {}) =>
+  ({
+    node_id: "n1",
+    test_case_name: "Login",
+    status: "passed",
+    duration_ms: 107,
+    ...over,
+  }) as TestCaseExecutionResult;
+
+const renderNode = () =>
+  render(<TestCaseNode id="n1" data={{ label: "Login", method: "POST", testCaseId: "tc1" }} />);
+
+describe("TestCaseNode last run", () => {
+  beforeEach(() => {
+    nodeRuns = {};
+    activeNodeId = null;
+  });
+
+  it("says nothing about a run before there has been one", async () => {
+    renderNode();
+    await userEvent.click(screen.getByRole("button", { name: /request details/i }));
+    expect(screen.queryByText(/last run/i)).not.toBeInTheDocument();
+  });
+
+  it("reports the verdict and what the node handed on", async () => {
+    const jwt = "eyJhbGciOiJSUzI1".padEnd(2474, "x");
+    nodeRuns = { f1: { n1: result({ exports: { my_jwt: jwt } }) } };
+    renderNode();
+
+    // On the node itself, so it survives a screenshot and a colour-blind reader.
+    expect(screen.getByTitle(/last run: passed in 107ms/i)).toHaveTextContent("✓");
+
+    await userEvent.click(screen.getByRole("button", { name: /request details/i }));
+    expect(screen.getByText(/passed/)).toBeInTheDocument();
+    expect(screen.getByText(/107ms/)).toBeInTheDocument();
+    // Cut short rather than filling the popover with a 2.5KB token.
+    expect(screen.getByText(/my_jwt = eyJhbGciOiJSUzI1/)).toHaveTextContent("(2474 chars)");
+  });
+
+  it("shows a failure as a failure", async () => {
+    nodeRuns = { f1: { n1: result({ status: "failed" }) } };
+    renderNode();
+    expect(screen.getByTitle(/last run: failed/i)).toHaveTextContent("✗");
+  });
+
+  it("counts rows for a node that ran one request per row", async () => {
+    nodeRuns = {
+      f1: {
+        n1: result({
+          iterations: [
+            result({ status: "passed" }),
+            result({ status: "failed" }),
+            result({ status: "skipped" }),
+          ],
+        }),
+      },
+    };
+    renderNode();
+    await userEvent.click(screen.getByRole("button", { name: /request details/i }));
+    // Skipped rows are out of the denominator, not counted as failures.
+    expect(screen.getByText(/1\/2 rows passed/)).toBeInTheDocument();
+  });
+
+  it("shows a node in flight as running, not as its previous verdict", async () => {
+    nodeRuns = { f1: { n1: result({ status: "failed" }) } };
+    activeNodeId = "n1";
+    renderNode();
+    expect(screen.getByLabelText("running")).toBeInTheDocument();
+    expect(screen.queryByTitle(/last run: failed/i)).not.toBeInTheDocument();
+  });
+
+  it("ignores another flow's results", async () => {
+    nodeRuns = { f2: { n1: result() } };
+    renderNode();
+    expect(screen.queryByTitle(/last run/i)).not.toBeInTheDocument();
+  });
+});
