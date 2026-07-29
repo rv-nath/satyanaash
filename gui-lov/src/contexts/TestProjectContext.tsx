@@ -20,6 +20,7 @@ import { toast } from "sonner";
 import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
 import { generateUUID } from "@/lib/utils/uuid";
 import type { LayoutDirection, LayoutSpacing } from "@/lib/layoutUtils";
+import { alignedPositions, minimumNodes, type AlignDirection } from "@/lib/alignNodes";
 import {
   readGlobals, readEnvironments, effectiveEnv, mergeEnvWrites,
   getActiveEnvId, setActiveEnvId as persistActiveEnvId,
@@ -150,7 +151,7 @@ interface TestProjectContextType {
   updateGroupFlow: (groupId: string, nodes: Node[], edges: Edge[]) => void;
   deleteNodes: (nodeIds: string[]) => void;
   updateNodeConfig: (nodeId: string, config: any, alias?: string) => void;
-  alignNodes: (direction: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') => void;
+  alignNodes: (direction: AlignDirection) => void;
   // Auto-layout is performed by the canvas (it owns fitView), so the toolbar
   // raises a request and TestCanvas applies it.
   layoutRequest: { direction: LayoutDirection; spacing: LayoutSpacing; seq: number } | null;
@@ -703,13 +704,12 @@ export const TestProjectProvider = ({
     ));
   }, [activeFlowId, nodes, setNodes, testGroups, history]);
 
-  const alignNodes = useCallback((direction: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') => {
+  const alignNodes = useCallback((direction: AlignDirection) => {
     const selectedNodes = nodes.filter(n => n.selected);
-    const distributing = direction === 'distribute-h' || direction === 'distribute-v';
-    // Distributing needs a middle to move; aligning only needs two nodes.
-    if (selectedNodes.length < (distributing ? 3 : 2)) {
+    const needed = minimumNodes(direction);
+    if (selectedNodes.length < needed) {
       toast.error(
-        distributing
+        needed === 3
           ? 'Select at least 3 nodes to distribute'
           : 'Select at least 2 nodes to align'
       );
@@ -717,76 +717,9 @@ export const TestProjectProvider = ({
     }
 
     history.pushState(testGroups, `Align nodes: ${direction}`);
-    
-    const updatedNodes = [...nodes];
-    
-    if (direction === 'left') {
-      const minX = Math.min(...selectedNodes.map(n => n.position.x));
-      selectedNodes.forEach(node => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, x: minX } };
-      });
-    } else if (direction === 'right') {
-      const maxX = Math.max(...selectedNodes.map(n => n.position.x));
-      selectedNodes.forEach(node => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, x: maxX } };
-      });
-    } else if (direction === 'top') {
-      const minY = Math.min(...selectedNodes.map(n => n.position.y));
-      selectedNodes.forEach(node => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, y: minY } };
-      });
-    } else if (direction === 'bottom') {
-      const maxY = Math.max(...selectedNodes.map(n => n.position.y));
-      selectedNodes.forEach(node => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, y: maxY } };
-      });
-    } else if (direction === 'center-h') {
-      const avgX = selectedNodes.reduce((sum, n) => sum + n.position.x, 0) / selectedNodes.length;
-      selectedNodes.forEach(node => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, x: avgX } };
-      });
-    } else if (direction === 'center-v') {
-      const avgY = selectedNodes.reduce((sum, n) => sum + n.position.y, 0) / selectedNodes.length;
-      selectedNodes.forEach(node => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        updatedNodes[idx] = { ...updatedNodes[idx], position: { ...updatedNodes[idx].position, y: avgY } };
-      });
-    } else if (direction === 'distribute-h' || direction === 'distribute-v') {
-      // Equalise the *gaps between nodes*, not the gaps between their origins —
-      // nodes differ in size, so evenly spacing origins looks uneven.
-      const horizontal = direction === 'distribute-h';
-      const sizeOf = (n: Node) =>
-        (horizontal ? n.measured?.width : n.measured?.height) ?? (horizontal ? 180 : 40);
-      const posOf = (n: Node) => (horizontal ? n.position.x : n.position.y);
-
-      const sorted = [...selectedNodes].sort((a, b) => posOf(a) - posOf(b));
-      const last = sorted[sorted.length - 1];
-      const spanStart = posOf(sorted[0]);
-      const spanEnd = posOf(last) + sizeOf(last);
-      const occupied = sorted.reduce((sum, n) => sum + sizeOf(n), 0);
-      const gap = (spanEnd - spanStart - occupied) / (sorted.length - 1);
-
-      // First and last stay put; everything between is re-spaced evenly.
-      let cursor = spanStart;
-      sorted.forEach((node) => {
-        const idx = updatedNodes.findIndex(n => n.id === node.id);
-        const coord = Math.round(cursor);
-        updatedNodes[idx] = {
-          ...updatedNodes[idx],
-          position: horizontal
-            ? { ...updatedNodes[idx].position, x: coord }
-            : { ...updatedNodes[idx].position, y: coord },
-        };
-        cursor += sizeOf(node) + gap;
-      });
-    }
-    
-    setNodes(updatedNodes);
+    // The geometry lives in lib/alignNodes — edges and centres, not origins.
+    const moved = alignedPositions(selectedNodes, direction);
+    setNodes(nodes.map(n => (moved[n.id] ? { ...n, position: moved[n.id] } : n)));
     toast.success(`Aligned nodes: ${direction}`);
   }, [nodes, setNodes, testGroups, history]);
 
