@@ -560,6 +560,131 @@ pub struct ExecutionStats {
     pub skipped: usize,
 }
 
+/// What the author pressed while a run was paused.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepCommand {
+    /// Run the next node, then pause again.
+    Next,
+    /// Finish the flow without pausing again.
+    RunToEnd,
+    /// Abandon the run. Cleanup still happens.
+    Stop,
+}
+
+/// Permission to run the next node, when the author is driving.
+///
+/// The mirror image of `event_tx`: events go out one per node, commands come back
+/// one per node. Nothing else in the engine knows a run can be paused — a `Stepper`
+/// simply makes the next node wait.
+struct Stepper {
+    rx: mpsc::Receiver<StepCommand>,
+    /// Cleared by `RunToEnd`, and by anything that ends the pausing for good — after
+    /// that the run proceeds at full speed and never touches the channel again.
+    pausing: bool,
+    /// The first node of a run goes without asking. Pressing "Run step-by-step"
+    /// should *run a node* and then wait, not sit there waiting for a Next before
+    /// anything at all has happened.
+    first: bool,
+}
+
+/// What a `Stepper` decided about the node that is about to run.
+#[derive(Debug, PartialEq)]
+enum Resume {
+    /// Run it.
+    Go,
+    /// Abandon the traversal: the author pressed Stop, or the stream went away
+    /// while we were waiting.
+    Abandon,
+}
+
+impl Stepper {
+    fn new(rx: mpsc::Receiver<StepCommand>) -> Self {
+        Self { rx, pausing: true, first: true }
+    }
+
+    /// Wait for permission to run the next node.
+    ///
+    /// Once this has answered `Abandon` it stops pausing, so a caller that carries on
+    /// regardless — the teardown loop does, on purpose — is not asked again.
+    async fn wait(&mut self) -> Resume {
+        if !self.pausing {
+            return Resume::Go;
+        }
+        if self.first {
+            self.first = false;
+            return Resume::Go;
+        }
+        match self.rx.recv().await {
+            Some(StepCommand::Next) => Resume::Go,
+            Some(StepCommand::RunToEnd) => {
+                self.pausing = false;
+                Resume::Go
+            }
+            Some(StepCommand::Stop) => {
+                self.pausing = false;
+                Resume::Abandon
+            }
+            // The sender is gone, which means the stream it was registered against
+            // has been dropped. Nobody is left to press Next, so waiting again would
+            // hang this task for good.
+            None => {
+                self.pausing = false;
+                Resume::Abandon
+            }
+        }
+    }
+}
+
+/// What one flow run accumulates as it walks the graph.
+///
+/// Bundled because the traversal is recursive: five `&mut` parameters threaded
+/// through every `Box::pin` call is exactly where a mismatched argument order
+/// hides, and the list was about to grow again.
+struct RunState<'a> {
+    /// Test cases already fetched, so a node visited twice costs one query.
+    tc_cache: HashMap<String, TestCase>,
+    results: Vec<NodeResult>,
+    stats: ExecutionStats,
+    /// Borrowed rather than owned: `execute_flow` still sends Started and
+    /// Completed either side of the traversal.
+    event_tx: &'a Option<mpsc::Sender<ExecutionEvent>>,
+    /// Set when the author is running the flow a node at a time.
+    stepper: Option<Stepper>,
+}
+
+impl RunState<'_> {
+    /// True when the stream this run reports to has been dropped — the browser tab
+    /// closed, or the author navigated away.
+    ///
+    /// A run with no stream at all (the plain `POST /execute`) is never "gone": there
+    /// is a client blocked on the response, and no way to notice if there isn't.
+    fn client_gone(&self) -> bool {
+        self.event_tx.as_ref().is_some_and(|tx| tx.is_closed())
+    }
+
+    /// Hold the run here until the author says to go on. Instant unless they are
+    /// stepping.
+    async fn pause_before_next(&mut self) -> Resume {
+        let Some(stepper) = &mut self.stepper else {
+            return Resume::Go;
+        };
+        match self.event_tx {
+            // Watch the stream while waiting for the press. If the tab closes mid-pause
+            // nobody will ever send Next, and the `client_gone` check at the top of the
+            // node can't help — this task is parked inside `wait`, not between nodes.
+            Some(tx) => tokio::select! {
+                resume = stepper.wait() => resume,
+                _ = tx.closed() => {
+                    stepper.pausing = false;
+                    Resume::Abandon
+                }
+            },
+            None => stepper.wait().await,
+        }
+    }
+}
+
 /// Flow execution engine
 pub struct ExecutionEngine {
     http: HttpExecutor,
@@ -605,7 +730,7 @@ impl ExecutionEngine {
         }
     }
 
-    /// Execute a flow with optional event streaming
+    /// Execute a flow with optional event streaming, start to finish.
     pub async fn execute_flow(
         &self,
         execution_id: &str,
@@ -615,13 +740,29 @@ impl ExecutionEngine {
         execution_vars: HashMap<String, Value>,
         event_tx: Option<mpsc::Sender<ExecutionEvent>>,
     ) -> Result<FlowExecutionResult, AppError> {
+        self.run_flow(execution_id, flow, tc_repo, environment, execution_vars, event_tx, None)
+            .await
+    }
+
+    /// The flow loop proper.
+    ///
+    /// `resume_rx` is `Some` when the author is driving the run a node at a time: one
+    /// command per node, sent by `POST /executions/{id}/step`. See `Stepper`.
+    pub async fn run_flow(
+        &self,
+        execution_id: &str,
+        flow: &Flow,
+        tc_repo: &dyn TestCaseRepository,
+        environment: HashMap<String, Value>,
+        execution_vars: HashMap<String, Value>,
+        event_tx: Option<mpsc::Sender<ExecutionEvent>>,
+        resume_rx: Option<mpsc::Receiver<StepCommand>>,
+    ) -> Result<FlowExecutionResult, AppError> {
         let start = std::time::Instant::now();
         let flow_vars = flow.graph_data.variables.iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let mut ctx = ExecutionContext::new(execution_vars, environment, flow_vars);
-        let mut results: Vec<NodeResult> = Vec::new();
-        let mut stats = ExecutionStats::default();
 
         // Find START node
         let start_node = flow.graph_data.nodes.iter()
@@ -642,20 +783,18 @@ impl ExecutionEngine {
             }).await;
         }
 
-        // Cache for test cases to avoid repeated DB lookups
-        let mut tc_cache: HashMap<String, TestCase> = HashMap::new();
+        let mut state = RunState {
+            tc_cache: HashMap::new(),
+            results: Vec::new(),
+            stats: ExecutionStats::default(),
+            event_tx: &event_tx,
+            stepper: resume_rx.map(Stepper::new),
+        };
 
         // Execute graph starting from START node
-        let final_status = self.traverse_and_execute(
-            flow,
-            &start_node.id,
-            tc_repo,
-            &mut tc_cache,
-            &mut ctx,
-            &mut results,
-            &mut stats,
-            &event_tx,
-        ).await?;
+        let final_status = self
+            .traverse_and_execute(flow, &start_node.id, tc_repo, &mut ctx, &mut state)
+            .await?;
 
         // Teardown: runs however the path above ended — passed, failed, or stopped
         // dead on an error. That is the whole point: an account created by a run
@@ -665,15 +804,27 @@ impl ExecutionEngine {
             if node.node_type != "testCase" {
                 continue;
             }
+            // Cleanup is walked a node at a time too, but Stop here only stops the
+            // *pausing*: the answer is deliberately discarded, so the remaining
+            // teardown nodes run straight through rather than being abandoned. There
+            // is no version of "cancel" that leaves the account behind.
+            let _ = state.pause_before_next().await;
             let mut result = self
-                .execute_test_case_node(node, tc_repo, &mut tc_cache, &mut ctx, &event_tx, Some(&produced))
+                .execute_test_case_node(
+                    node,
+                    tc_repo,
+                    &mut state.tc_cache,
+                    &mut ctx,
+                    state.event_tx,
+                    Some(&produced),
+                )
                 .await;
             result.teardown = Some(true);
             match result.status {
-                NodeStatus::Passed => stats.passed += 1,
-                NodeStatus::Failed => stats.failed += 1,
-                NodeStatus::Error => stats.errors += 1,
-                NodeStatus::Skipped => stats.skipped += 1,
+                NodeStatus::Passed => state.stats.passed += 1,
+                NodeStatus::Failed => state.stats.failed += 1,
+                NodeStatus::Error => state.stats.errors += 1,
+                NodeStatus::Skipped => state.stats.skipped += 1,
             }
             if let Some(tx) = &event_tx {
                 let _ = tx.send(ExecutionEvent::NodeCompleted {
@@ -681,7 +832,7 @@ impl ExecutionEngine {
                     result: result.clone(),
                 }).await;
             }
-            results.push(result);
+            state.results.push(result);
         }
 
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -692,10 +843,10 @@ impl ExecutionEngine {
                 execution_id: execution_id.to_string(),
                 status: final_status.clone(),
                 duration_ms,
-                passed: stats.passed,
-                failed: stats.failed,
-                errors: stats.errors,
-                skipped: stats.skipped,
+                passed: state.stats.passed,
+                failed: state.stats.failed,
+                errors: state.stats.errors,
+                skipped: state.stats.skipped,
             }).await;
         }
 
@@ -704,9 +855,9 @@ impl ExecutionEngine {
             flow_id: flow.id.clone(),
             status: final_status,
             duration_ms,
-            results,
+            results: state.results,
             context: ctx.get_context().clone(),
-            stats,
+            stats: state.stats,
         })
     }
 
@@ -716,11 +867,8 @@ impl ExecutionEngine {
         flow: &Flow,
         current_node_id: &str,
         tc_repo: &dyn TestCaseRepository,
-        tc_cache: &mut HashMap<String, TestCase>,
         ctx: &mut ExecutionContext,
-        results: &mut Vec<NodeResult>,
-        stats: &mut ExecutionStats,
-        event_tx: &Option<mpsc::Sender<ExecutionEvent>>,
+        state: &mut RunState<'_>,
     ) -> Result<String, AppError> {
         let node = flow.graph_data.nodes.iter()
             .find(|n| n.id == current_node_id)
@@ -731,7 +879,7 @@ impl ExecutionEngine {
                 // Find outgoing edge and continue
                 if let Some(next_id) = self.find_next_node(flow, current_node_id, None) {
                     return Box::pin(self.traverse_and_execute(
-                        flow, &next_id, tc_repo, tc_cache, ctx, results, stats, event_tx
+                        flow, &next_id, tc_repo, ctx, state
                     )).await;
                 }
                 Ok("completed".to_string())
@@ -741,29 +889,43 @@ impl ExecutionEngine {
                 Ok("completed".to_string())
             }
             "testCase" => {
+                // Nobody is listening any more, so stop here instead of working through
+                // the rest of the flow unobserved. Those nodes would still create
+                // accounts, send messages and delete things, with every result going
+                // nowhere. Teardown below is deliberately *not* guarded this way:
+                // whatever this run already created still has to be cleaned up.
+                if state.client_gone() {
+                    return Ok("stopped".to_string());
+                }
+
+                // Wait here when the author is driving. Instant otherwise.
+                if state.pause_before_next().await == Resume::Abandon {
+                    return Ok("stopped".to_string());
+                }
+
                 // Execute test case node
                 let result = self.execute_test_case_node(
-                    node, tc_repo, tc_cache, ctx, event_tx, None
+                    node, tc_repo, &mut state.tc_cache, ctx, state.event_tx, None
                 ).await;
 
                 let status = result.status.clone();
-                stats.total += 1;
+                state.stats.total += 1;
                 match &status {
-                    NodeStatus::Passed => stats.passed += 1,
-                    NodeStatus::Failed => stats.failed += 1,
-                    NodeStatus::Error => stats.errors += 1,
-                    NodeStatus::Skipped => stats.skipped += 1,
+                    NodeStatus::Passed => state.stats.passed += 1,
+                    NodeStatus::Failed => state.stats.failed += 1,
+                    NodeStatus::Error => state.stats.errors += 1,
+                    NodeStatus::Skipped => state.stats.skipped += 1,
                 }
 
                 // Emit node completed event
-                if let Some(tx) = event_tx {
+                if let Some(tx) = state.event_tx {
                     let _ = tx.send(ExecutionEvent::NodeCompleted {
                         node_id: node.id.clone(),
                         result: result.clone(),
                     }).await;
                 }
 
-                results.push(result);
+                state.results.push(result);
 
                 // Determine next node based on status
                 let edge_type = match status {
@@ -775,7 +937,7 @@ impl ExecutionEngine {
 
                 if let Some(next_id) = self.find_next_node(flow, current_node_id, edge_type) {
                     return Box::pin(self.traverse_and_execute(
-                        flow, &next_id, tc_repo, tc_cache, ctx, results, stats, event_tx
+                        flow, &next_id, tc_repo, ctx, state
                     )).await;
                 }
 
@@ -790,7 +952,7 @@ impl ExecutionEngine {
                 // For now, skip group nodes
                 if let Some(next_id) = self.find_next_node(flow, current_node_id, Some("success")) {
                     return Box::pin(self.traverse_and_execute(
-                        flow, &next_id, tc_repo, tc_cache, ctx, results, stats, event_tx
+                        flow, &next_id, tc_repo, ctx, state
                     )).await;
                 }
                 Ok("completed".to_string())
@@ -799,7 +961,7 @@ impl ExecutionEngine {
                 // Unknown node type, try to continue
                 if let Some(next_id) = self.find_next_node(flow, current_node_id, None) {
                     return Box::pin(self.traverse_and_execute(
-                        flow, &next_id, tc_repo, tc_cache, ctx, results, stats, event_tx
+                        flow, &next_id, tc_repo, ctx, state
                     )).await;
                 }
                 Ok("completed".to_string())
@@ -2473,6 +2635,205 @@ mod tests {
             }
         });
         format!("http://{}/sms", addr)
+    }
+
+    /// A `start → … → end` chain whose nodes all answer 200, for the tests that care
+    /// about *which* nodes ran rather than what they did.
+    async fn stepping_flow(ids: &[&str]) -> (Flow, MockTestCaseRepository) {
+        let mut repo = MockTestCaseRepository::new();
+        let mut nodes = vec![make_node("start", "start", serde_json::json!({}))];
+        let mut edges = vec![make_edge("e-start", "start", ids[0], None)];
+        for (i, id) in ids.iter().enumerate() {
+            let url = stub_once(200, "{}").await;
+            repo = repo.with_test_case(make_test_case(id, id, &url, "POST"));
+            nodes.push(make_node(id, "testCase", serde_json::json!({"testCaseId": id})));
+            let next = ids.get(i + 1).copied().unwrap_or("end");
+            edges.push(make_edge(&format!("e-{}", id), id, next, Some("success")));
+        }
+        nodes.push(make_node("end", "end", serde_json::json!({})));
+        (make_flow("flow1", nodes, edges), repo)
+    }
+
+    /// The nodes a run actually got to, in order.
+    fn ran(result: &FlowExecutionResult) -> Vec<&str> {
+        result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or(""))
+            .collect()
+    }
+
+    /// Pressing "Run step-by-step" should *run a node* and then wait. Waiting for a
+    /// Next before anything at all has happened just looks broken.
+    #[tokio::test]
+    async fn the_first_node_of_a_stepped_run_goes_without_asking() {
+        let engine = ExecutionEngine::new(false, None);
+        let (flow, repo) = stepping_flow(&["a", "b"]).await;
+        let (tx, rx) = mpsc::channel::<StepCommand>(8);
+        drop(tx); // not one press
+
+        let result = engine
+            .run_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None, Some(rx))
+            .await
+            .unwrap();
+
+        assert_eq!(ran(&result), vec!["a"], "{:?}", ran(&result));
+        assert_eq!(result.status, "stopped");
+    }
+
+    /// One press buys exactly one node.
+    #[tokio::test]
+    async fn a_stepped_run_waits_for_each_next() {
+        let engine = ExecutionEngine::new(false, None);
+        let (flow, repo) = stepping_flow(&["a", "b", "c"]).await;
+        let (tx, rx) = mpsc::channel::<StepCommand>(8);
+        // The first node goes free, so this press buys the second — and nothing
+        // buys the third.
+        tx.send(StepCommand::Next).await.unwrap();
+        drop(tx);
+
+        let result = engine
+            .run_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None, Some(rx))
+            .await
+            .unwrap();
+
+        assert_eq!(ran(&result), vec!["a", "b"], "{:?}", ran(&result));
+        assert_eq!(result.status, "stopped");
+    }
+
+    /// "Run to end" is the way out of pressing Next eleven more times.
+    #[tokio::test]
+    async fn run_to_end_releases_the_brakes() {
+        let engine = ExecutionEngine::new(false, None);
+        let (flow, repo) = stepping_flow(&["a", "b", "c"]).await;
+        let (tx, rx) = mpsc::channel::<StepCommand>(8);
+        tx.send(StepCommand::RunToEnd).await.unwrap();
+        // Dropped straight after: the channel must never be consulted again, or the
+        // run would stop at c for want of a command.
+        drop(tx);
+
+        let result = engine
+            .run_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None, Some(rx))
+            .await
+            .unwrap();
+
+        assert_eq!(ran(&result), vec!["a", "b", "c"], "{:?}", ran(&result));
+        assert_eq!(result.status, "completed");
+    }
+
+    /// The assertion that matters about Stop: it abandons the *flow*, not the cleanup.
+    /// Whatever the run already created still has to go.
+    #[tokio::test]
+    async fn stop_abandons_the_run_but_teardown_still_runs() {
+        let engine = ExecutionEngine::new(false, None);
+        let a = make_test_case("a", "a", &stub_once(200, "{}").await, "POST");
+        let b = make_test_case("b", "b", &stub_once(200, "{}").await, "POST");
+        let t = make_test_case("t", "Cleanup", &stub_once(200, "{}").await, "DELETE");
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(a).with_test_case(b).with_test_case(t);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({"testCaseId": "a"})),
+            make_node("b", "testCase", serde_json::json!({"testCaseId": "b"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "b", Some("success")),
+            make_edge("e3", "b", "end", Some("success")),
+        ]);
+
+        let (tx, rx) = mpsc::channel::<StepCommand>(8);
+        tx.send(StepCommand::Stop).await.unwrap();
+        drop(tx);
+
+        let result = engine
+            .run_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None, Some(rx))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, "stopped");
+        // b never ran; Cleanup did, and without asking for another press.
+        assert_eq!(ran(&result), vec!["a", "Cleanup"], "{:?}", ran(&result));
+        assert_eq!(result.results[1].teardown, Some(true));
+    }
+
+    /// A stub that answers only once its cue fires, so a test can make something
+    /// happen *while* a request is in flight without resorting to a sleep.
+    async fn stub_on_cue(cue: tokio::sync::oneshot::Receiver<()>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await; // drain the request
+                let _ = cue.await; // the test does its work here
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                    .await;
+                let _ = socket.flush().await;
+            }
+        });
+        format!("http://{}/a", addr)
+    }
+
+    /// Closing the browser tab used to leave the flow running to the end, server side:
+    /// the task was detached, its result discarded, and every failed `send` ignored. So
+    /// a run you walked away from still created the account, still sent the message and
+    /// still issued the deletes — with nobody to see any of it.
+    ///
+    /// Cleanup is the deliberate exception. Whatever the abandoned run already created
+    /// still has to go.
+    #[tokio::test]
+    async fn a_run_whose_client_vanished_stops_at_the_next_node() {
+        let engine = ExecutionEngine::new(false, None);
+        let (cue, wait_for_cue) = tokio::sync::oneshot::channel();
+        let a = make_test_case("a", "A", &stub_on_cue(wait_for_cue).await, "POST");
+        // B and Cleanup point at a refused port. B must never be attempted at all;
+        // Cleanup may fail, so long as it is tried.
+        let b = make_test_case("b", "B", "http://127.0.0.1:1/b", "POST");
+        let t = make_test_case("t", "Cleanup", "http://127.0.0.1:1/t", "DELETE");
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(a).with_test_case(b).with_test_case(t);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({"testCaseId": "a"})),
+            make_node("b", "testCase", serde_json::json!({"testCaseId": "b"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "b", Some("success")),
+            make_edge("e3", "b", "end", Some("success")),
+        ]);
+
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(100);
+        tokio::spawn(async move {
+            // Watch until A is under way, then walk away — what closing the tab does.
+            while let Some(event) = rx.recv().await {
+                if matches!(event, ExecutionEvent::NodeStarted { .. }) {
+                    break;
+                }
+            }
+            drop(rx);
+            // A is still blocked waiting to answer, so the stream is provably gone
+            // before the engine can reach the node after it.
+            let _ = cue.send(());
+        });
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), Some(tx))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, "stopped");
+        let ran: Vec<&str> = result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        assert_eq!(ran, vec!["A", "Cleanup"], "{:?}", ran);
+        assert_eq!(result.results[1].teardown, Some(true));
     }
 
     /// A teardown node may sit anywhere the author drew it. Marking one in the

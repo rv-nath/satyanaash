@@ -18,4 +18,4 @@ pub use variables::{ExecutionContext, VarSource};
 pub use assertions::AssertionEngine;
 pub use http::HttpExecutor;
 pub use pre_test_script::PreTestScriptEngine;
-pub use engine::{ExecutionEngine, NodeResult, ExecutionEvent, FlowExecutionResult};
+pub use engine::{ExecutionEngine, NodeResult, ExecutionEvent, FlowExecutionResult, StepCommand};

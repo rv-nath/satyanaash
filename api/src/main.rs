@@ -99,11 +99,13 @@ async fn main() -> anyhow::Result<()> {
         flow_repo,
         tc_repo: test_case_repo.clone(),
         project_repo: project_repo.clone(),
+        steps: Default::default(),
     };
     let execution_routes = Router::new()
         .route("/api/v1/flows/{id}/validate", post(executions::validate_flow))
         .route("/api/v1/flows/{id}/execute", post(executions::execute_flow))
         .route("/api/v1/flows/{id}/execute-stream", post(executions::execute_flow_stream))
+        .route("/api/v1/executions/{id}/step", post(executions::step_execution))
         .route("/api/v1/test-cases/{id}/execute", post(executions::execute_test_case))
         .with_state(execution_state);
 
