@@ -44,7 +44,7 @@ describe("DatasetEditor", () => {
     expect(onChange.mock.calls.at(-1)![0].rows[0].check).toBe("");
   });
 
-  it("keeps every row one line tall until one is opened", async () => {
+  it("keeps a body to one line until you are in it", async () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
 
     // Collapsed: a clipped one-line preview, not an editable field.
@@ -55,14 +55,22 @@ describe("DatasetEditor", () => {
     await userEvent.click(collapsed);
     const editor = screen.getByLabelText(/^body for valid$/i);
     expect(editor.tagName).toBe("TEXTAREA");
-    // Across the table rather than inside a 180px column, which is the whole point:
-    // a JSON payload in a table cell is miserable clipped or not.
-    expect(editor.className).toContain("w-full");
-    expect(editor.className).toContain("h-[200px]");
+    // Grows into something you can actually read a payload in.
+    expect(editor.className).toContain("h-[220px]");
   });
 
-  it("opens the row with the field you clicked already focused", async () => {
-    // Otherwise the roomier editor would cost a click that the cramped one didn't.
+  it("gives the case name a roomy field too, wrapping rather than scrolling sideways", async () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByLabelText(/case name for row 1/i));
+    const editor = screen.getByLabelText(/case name for row 1/i);
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor.className).toContain("h-[72px]");
+    // Prose wraps; a body keeps its authored line breaks instead.
+    expect(editor.className).toContain("whitespace-normal");
+  });
+
+  it("puts the caret in the cell you clicked", async () => {
+    // Otherwise the roomier editor would cost a click the cramped one didn't.
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
 
     await userEvent.click(screen.getByLabelText(/^body for valid$/i));
@@ -104,52 +112,24 @@ describe("DatasetEditor", () => {
     expect(cell).toHaveAttribute("title", expect.stringContaining("xxx"));
   });
 
-  it("closes on Escape but not on tabbing between its own fields", async () => {
+  it("collapses the cell when focus leaves it", async () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
     await userEvent.click(screen.getByLabelText(/^body for valid$/i));
     expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("TEXTAREA");
 
-    // Moving between Case, Path, Body and Expect must not collapse the panel.
     await userEvent.tab();
-    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("TEXTAREA");
-
-    await userEvent.keyboard("{Escape}");
     expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("BUTTON");
   });
 
-  it("collapses from the chevron too", async () => {
+  it("expands one cell at a time, so the matrix stays a matrix", async () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
-    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
-    await userEvent.click(screen.getByRole("button", { name: /collapse valid/i }));
-    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("BUTTON");
-  });
-
-  it("opens one row at a time, so the matrix stays a matrix", async () => {
-    const d = addRow(seed());
-    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
 
     await userEvent.click(screen.getByLabelText(/^body for valid$/i));
     expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("TEXTAREA");
 
-    await userEvent.click(screen.getByLabelText(/^body for row 2$/i));
-    expect(screen.getByLabelText(/^body for row 2$/i).tagName).toBe("TEXTAREA");
+    await userEvent.click(screen.getByLabelText(/expected result for valid/i));
+    expect(screen.getByLabelText(/expected result for valid/i).tagName).toBe("TEXTAREA");
     expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("BUTTON");
-  });
-
-  it("keeps the row's own actions reachable while it is open", async () => {
-    const onChange = vi.fn();
-    render(<DatasetEditor dataset={seed()} onChange={onChange} />);
-    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
-
-    // Collapsing a row just to flag, copy or bin it would be daft.
-    await userEvent.click(screen.getByRole("button", { name: /don't run valid from run dataset/i }));
-    expect(onChange.mock.calls.at(-1)![0].rows[0].needs_flow).toBe(true);
-
-    await userEvent.click(screen.getByRole("button", { name: /duplicate valid/i }));
-    expect(onChange.mock.calls.at(-1)![0].rows).toHaveLength(2);
-
-    await userEvent.click(screen.getByRole("button", { name: /remove valid/i }));
-    expect(onChange.mock.calls.at(-1)![0].rows).toHaveLength(0);
   });
 
   it("shows a minified body so the preview isn't a lone brace", async () => {
