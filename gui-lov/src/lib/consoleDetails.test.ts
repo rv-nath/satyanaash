@@ -5,6 +5,8 @@ import {
   resultDetails,
   resultHeadline,
   rowsSummary,
+  worthFolding,
+  detailSummary,
 } from "@/lib/consoleDetails";
 import type { TestCaseExecutionResult } from "@/lib/api/types";
 
@@ -166,5 +168,29 @@ describe("resultHeadline", () => {
       node_id: "t", status: "skipped", duration_ms: 0, logs: [], teardown: true,
     };
     expect(resultHeadline(single, "Delete User")).toBe("○ Delete User [teardown]: skipped (0ms)");
+  });
+});
+
+describe("folding a big detail", () => {
+  it("leaves a short value where the author can already see it", () => {
+    // Opening an entry shouldn't turn into a second round of clicking.
+    expect(worthFolding("400")).toBe(false);
+    expect(worthFolding('{\n  "ok": true\n}')).toBe(false);
+    // A ten-line log is the diagnosis, not the noise.
+    expect(worthFolding(Array.from({ length: 10 }, (_, i) => `line ${i}`).join("\n"))).toBe(false);
+  });
+
+  it("folds the monsters — a bearer token, a whole payload, a fanned-out row", () => {
+    // One enormous line: the case that prompted this.
+    expect(worthFolding(`Authorization: Bearer ${"e".repeat(2400)}`)).toBe(true);
+    // Or many short ones.
+    expect(worthFolding(Array.from({ length: 11 }, (_, i) => `"k${i}": ${i},`).join("\n"))).toBe(true);
+  });
+
+  it("says enough about a folded value to judge it unopened", () => {
+    expect(detailSummary("e".repeat(2400))).toBe("2.3 KB");
+    expect(detailSummary("a\nb\nc")).toBe("3 lines · 5 chars");
+    // A single line reports only its size — "1 lines" reads like a bug.
+    expect(detailSummary("just one line")).toBe("13 chars");
   });
 });

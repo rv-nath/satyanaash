@@ -117,6 +117,33 @@ export function fanOutDetails(aggregate: TestCaseExecutionResult): ConsoleLogDet
   return details;
 }
 
+/**
+ * Whether a detail is big enough to arrive folded.
+ *
+ * The thresholds are deliberately generous. What makes an expanded entry unreadable is
+ * a handful of monsters — a bearer token in the headers, a whole campaign payload, a
+ * fanned-out row's complete request and response — not a ten-line log. Fold those and
+ * leave everything else where the author can already see it, so opening an entry does
+ * not turn into a second round of clicking.
+ */
+const FOLD_CHARS = 600;
+const FOLD_LINES = 10;
+
+export function worthFolding(value: string): boolean {
+  return value.length > FOLD_CHARS || value.split("\n").length > FOLD_LINES;
+}
+
+/** What a folded detail says about itself, so it can be judged unopened. */
+export function detailSummary(value: string): string {
+  const lines = value.split("\n").length;
+  const size = value.length < 1024
+    ? `${value.length} chars`
+    : `${(value.length / 1024).toFixed(1)} KB`;
+  // One enormous line (a JWT) and forty short ones are both worth folding, but for
+  // different reasons — say whichever one this is.
+  return lines > 1 ? `${lines} lines · ${size}` : size;
+}
+
 /** The console's headline for a result — "6/8 rows passed" when it fanned out. */
 export function resultHeadline(result: TestCaseExecutionResult, name: string): string {
   const suffix = result.teardown ? " [teardown]" : "";

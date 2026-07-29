@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Terminal, X, Trash2, ChevronRight, ChevronDown, Copy } from "lucide-react";
+import { Terminal, X, Trash2, ChevronRight, ChevronDown, ChevronsDownUp, ChevronsUpDown, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
 import { formatLog, formatLogs, formatTimestamp } from "@/lib/consoleText";
+import { detailSummary, worthFolding } from "@/lib/consoleDetails";
 import type { ConsoleLog, ConsoleLogDetail } from "@/hooks/useExecutionStream";
 
 /** One console per flow. The tab names whose run you are reading. */
@@ -65,6 +66,16 @@ const ConsolePanel = ({
       toast.error("Couldn't reach the clipboard. Select the text and copy manually.");
     }
   };
+
+  // Which entries could be opened at all, and whether any is. Drives one button that
+  // does whichever of the two is useful right now, rather than two that are each dead
+  // half the time.
+  const expandable = logs.reduce<number[]>((acc, log, i) => {
+    if (log.details && log.details.length > 0) acc.push(i);
+    return acc;
+  }, []);
+  const anyExpanded = expandedRows.size > 0;
+  const toggleAll = () => setExpandedRows(anyExpanded ? new Set() : new Set(expandable));
 
   const toggleRow = (index: number) => {
     setExpandedRows(prev => {
@@ -139,6 +150,17 @@ const ConsolePanel = ({
           </div>
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            disabled={expandable.length === 0}
+            onClick={toggleAll}
+            title={anyExpanded ? "Collapse every entry" : "Expand every entry"}
+            aria-label={anyExpanded ? "Collapse all entries" : "Expand all entries"}
+          >
+            {anyExpanded ? <ChevronsDownUp className="w-3 h-3" /> : <ChevronsUpDown className="w-3 h-3" />}
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -225,19 +247,44 @@ const ConsolePanel = ({
 };
 
 const DetailRow = ({ detail }: { detail: ConsoleLogDetail }) => {
+  const foldable = worthFolding(detail.value);
+  const [open, setOpen] = useState(!foldable);
   const isMultiline = detail.value.includes('\n');
   const colorClass = detail.type === 'error' ? 'text-destructive' : 'text-console-text';
+
+  const body = (
+    <pre className={`${colorClass} mt-1 whitespace-pre-wrap break-all bg-muted/10 rounded px-2 py-1`}>
+      {detail.value}
+    </pre>
+  );
+
+  // Big enough to bury everything under it: arrives folded, with enough of a summary
+  // to decide whether to open it. Copying an entry still takes the whole value —
+  // folding is about reading, not about what you keep.
+  if (foldable) {
+    return (
+      <div className="py-0.5">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          className="flex w-full items-center gap-1 rounded text-left hover:bg-muted/10"
+        >
+          {open ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+          <span className={detail.type === 'error' ? 'text-destructive' : 'text-muted-foreground'}>
+            {detail.label}
+          </span>
+          <span className="text-muted-foreground/60">{detailSummary(detail.value)}</span>
+        </button>
+        {open && body}
+      </div>
+    );
+  }
 
   return (
     <div className="py-0.5">
       <span className="text-muted-foreground">{detail.label}: </span>
-      {isMultiline ? (
-        <pre className={`${colorClass} mt-1 whitespace-pre-wrap break-all bg-muted/10 rounded px-2 py-1`}>
-          {detail.value}
-        </pre>
-      ) : (
-        <span className={colorClass}>{detail.value}</span>
-      )}
+      {isMultiline ? body : <span className={colorClass}>{detail.value}</span>}
     </div>
   );
 };
