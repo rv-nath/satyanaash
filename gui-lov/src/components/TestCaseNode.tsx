@@ -25,14 +25,19 @@ interface TestCaseNodeProps {
   data: TestCaseNodeData;
 }
 
-/** Colour for a verdict badge. Skipped never ran, so it steps back rather than
- *  claiming a colour. */
+/**
+ * Fill for the verdict pip on the node's corner.
+ *
+ * Solid, with the token's own foreground. Hollow — a tick coloured on the card
+ * background — read as a stray mark next to the node's coloured ring rather than as a
+ * status. Skipped never ran, so it stays grey instead of claiming a verdict colour.
+ */
 const statusTone = (status: string) =>
   status === "passed"
-    ? "text-success"
+    ? "bg-success text-success-foreground"
     : status === "failed" || status === "error"
-      ? "text-destructive"
-      : "text-muted-foreground";
+      ? "bg-destructive text-destructive-foreground"
+      : "bg-muted-foreground text-background";
 
 const getMethodColor = (method: string) => {
   const colors: Record<string, string> = {
@@ -213,8 +218,10 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
           moment it ran. Nothing about a run may change a node's size. */}
       {(running || lastRun) && (
         <span
-          className={`absolute -right-2 -top-2 flex h-4 w-4 items-center justify-center rounded-full border border-border bg-card text-[10px] font-semibold leading-none shadow-sm ${
-            running ? "text-primary" : statusTone(lastRun!.status)
+          className={`absolute -right-2 -top-2 flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 border-card text-[10px] font-bold leading-none shadow-sm ${
+            // The ring is the card colour, not a border colour: it separates the pip
+            // from the node's own ring underneath rather than adding a third outline.
+            running ? "bg-primary text-primary-foreground" : statusTone(lastRun!.status)
           }`}
           title={running ? "Running" : `Last run: ${lastRun!.status} in ${lastRun!.duration_ms}ms`}
           aria-label={running ? "running" : `last run ${lastRun!.status}`}
