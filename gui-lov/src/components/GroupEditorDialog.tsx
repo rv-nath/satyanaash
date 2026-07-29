@@ -86,7 +86,6 @@ const GroupEditorContent = ({ groupId, groupName, onOpenChange }: Omit<GroupEdit
     (connection: Connection) => {
       const newEdge = {
         ...connection,
-        animated: true,
         data: { type: 'success' },
         label: 'Success',
         style: { stroke: 'hsl(var(--success))' },

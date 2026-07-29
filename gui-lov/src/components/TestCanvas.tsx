@@ -206,14 +206,15 @@ const TestCanvasContent = () => {
       console.log('handleEdgeTypeSelect triggered:', type, pendingConnection);
       if (!pendingConnection) return;
       
+      // No `animated` and no `style`: an edge drawn now must look exactly like the same
+      // edge after a reload. Neither is persisted by `edgesToApi`, so setting them here
+      // made a fresh edge a marching dashed line until the next load — a difference that
+      // encoded nothing, and didn't even mean "unsaved" (autosave lands it seconds
+      // later, still dashed). Colour and label are applied centrally from `data.type`.
       const newEdge = {
         ...pendingConnection,
-        animated: true,
         data: { type },
         label: type === 'success' ? 'Success' : 'Failure',
-        style: { 
-          stroke: type === 'success' ? 'hsl(var(--success))' : 'hsl(var(--destructive))' 
-        },
       };
       const newEdges = addEdge(newEdge, edges);
       console.log('Edge created, new edges:', newEdges);
