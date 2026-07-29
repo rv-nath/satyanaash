@@ -230,13 +230,17 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
         </span>
       )}
 
+      {/* The name wraps rather than being cut off once the node reaches its width
+          limit, so the node grows downwards instead of hiding what it runs. `break-words`
+          keeps whole words together and only splits something with no spaces to break
+          at — an endpoint pasted in as a name, say. */}
       <span className="min-w-0 flex-1">
-        <span className="block truncate font-mono text-xs font-medium text-foreground">
+        <span className="block break-words font-mono text-xs font-medium leading-snug text-foreground">
           {displayLabel}
         </span>
         {/* Only when renamed — otherwise this would repeat the title. */}
         {alias && (
-          <span className="block truncate font-mono text-[10px] leading-tight text-muted-foreground">
+          <span className="block break-words font-mono text-[10px] leading-tight text-muted-foreground">
             {testCaseName}
           </span>
         )}

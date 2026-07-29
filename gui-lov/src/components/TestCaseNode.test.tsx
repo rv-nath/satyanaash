@@ -106,6 +106,16 @@ describe("TestCaseNode last run", () => {
     expect(screen.queryByTitle(/last run: failed/i)).not.toBeInTheDocument();
   });
 
+  it("wraps a long name instead of hiding the end of it", () => {
+    // The node is capped at a max width; past that the name used to be cut off with an
+    // ellipsis, so two nodes running different tests could read identically on the
+    // canvas. It grows downwards now.
+    renderNode();
+    const label = screen.getByText("Login");
+    expect(label.className).toContain("break-words");
+    expect(label.className).not.toContain("truncate");
+  });
+
   it("ignores another flow's results", async () => {
     nodeRuns = { f2: { n1: result() } };
     renderNode();
