@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Trash2, Copy, AlertTriangle, Link2 } from "lucide-react";
+import { Plus, Trash2, Copy, AlertTriangle, Link2, ChevronUp } from "lucide-react";
 import type { Dataset } from "@/lib/api/types";
 import {
   addRow,
@@ -27,91 +27,260 @@ interface DatasetEditorProps {
   sharedAssertion?: string;
 }
 
-// #, needs-flow, case, path, body, expect, duplicate, delete
+// #, needs-flow, case, path, body, expect, duplicate, delete.
+// Every text column flexes now that none of them holds a field: Case was a fixed 150px
+// and Expect a fixed-ish 150px for a value that is usually three digits, which left the
+// body — the longest thing in any row — with the least room of the three.
 const GRID =
-  "30px 30px 150px minmax(110px,0.45fr) minmax(180px,1fr) minmax(150px,0.55fr) 34px 34px";
+  "30px 30px minmax(140px,0.8fr) minmax(100px,0.4fr) minmax(200px,1.4fr) minmax(90px,0.4fr) 34px 34px";
 
-/** Borders belong to the table, not to the fields — a field with its own border
- *  inside a bordered cell reads as a box in a box and wastes the width. */
+/** The column divider. Collapsed rows hold previews rather than fields now, so the
+ *  old borderless-field rule went with them: the fields in the expanded panel are not
+ *  inside cells and wear their own borders like any other form. */
 const CELL = "border-r border-border";
-const FIELD =
-  "rounded-none border-0 bg-transparent shadow-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0";
 
-interface CellProps {
+/** Which field a click was aimed at, so opening the row can focus it. */
+type Field = "name" | "path" | "body" | "check";
+
+interface SummaryCellProps {
   value: string;
-  onChange: (value: string) => void;
-  editing: boolean;
-  onEdit: () => void;
-  onDone: () => void;
+  /** Opens the row with this field focused. */
+  onOpen: () => void;
   placeholder: string;
   label: string;
-  /** Colour for the collapsed preview — used to flag a body that isn't JSON. */
+  /** Colour for the preview — used to flag a body that isn't JSON. */
   tone?: string;
-  /** Shown under the field while editing only; it would break the row height otherwise. */
-  hint?: ReactNode;
   /** Muted, because this row isn't part of this run — see `needs_flow`. Applied to the
    *  cell rather than the whole row so the red marker beside it stays vivid: CSS opacity
    *  can't be undone by a child. */
   dim?: boolean;
+  /** Proportional rather than monospace — a case name is prose, not a payload. */
+  prose?: boolean;
 }
 
 /**
- * One row tall until it's being edited, so a long matrix stays scannable.
- * Collapsed it's a button showing a minified preview clipped with an ellipsis —
- * a textarea can't do that, and a pretty-printed body would show as a lone "{".
+ * One cell of a collapsed row: a minified preview, clipped with an ellipsis, carrying
+ * the whole value as its tooltip. Read-only on purpose — a live `<input>` cannot show
+ * an ellipsis, which is exactly how the Case column came to cut names off with no cue
+ * that anything was missing.
+ *
+ * Clicking it opens the row and focuses this field, so editing still costs one click.
  */
-function EditableCell({
-  value,
-  onChange,
-  editing,
-  onEdit,
-  onDone,
-  placeholder,
-  label,
-  tone,
-  hint,
-  dim,
-}: CellProps) {
-  if (!editing) {
-    const preview = oneLine(value);
-    return (
-      <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
+function SummaryCell({ value, onOpen, placeholder, label, tone, dim, prose }: SummaryCellProps) {
+  const preview = oneLine(value);
+  return (
+    <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
+      <button
+        type="button"
+        onClick={onOpen}
+        onFocus={onOpen}
+        aria-label={label}
+        title={preview || undefined}
+        className={`block h-9 w-full truncate px-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
+          prose ? "text-[13px]" : "font-mono text-xs"
+        } ${preview ? (tone ?? "text-foreground") : "text-muted-foreground/70"}`}
+      >
+        {preview || placeholder}
+      </button>
+    </div>
+  );
+}
+
+/** A labelled field in the expanded row. */
+function Labelled({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block min-w-0">
+      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+interface ExpandedRowProps {
+  dataset: Dataset;
+  onChange: (dataset: Dataset) => void;
+  rowId: string;
+  index: number;
+  /** Focused on open, so clicking a cell in the collapsed row costs one click. */
+  focus: Field | null;
+  onClose: () => void;
+  hasShared: boolean;
+}
+
+/**
+ * The row being edited, across the table's whole width.
+ *
+ * Replaces that row's grid line rather than appearing beneath it, so the row is not on
+ * screen twice. Everything the collapsed row offered stays reachable — the ⛓ flag,
+ * duplicate, delete — because collapsing a row just to delete it would be daft.
+ */
+function ExpandedRow({ dataset, onChange, rowId, index, focus, onClose, hasShared }: ExpandedRowProps) {
+  const row = dataset.rows.find((r) => r.id === rowId);
+  if (!row) return null;
+
+  const body = row.body ?? "";
+  const check = row.check ?? "";
+  const label = rowLabel(index, row);
+  const badJson = looksLikeInvalidJson(body);
+
+  return (
+    <div
+      className="border-t border-border bg-muted/20 first:border-t-0"
+      // Escape gets you out. Blur deliberately does not: tabbing from Case to Body
+      // would otherwise collapse the panel out from under you.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+    >
+      <div className="flex items-center gap-2 px-2 py-1.5">
+        <span className="w-[26px] shrink-0 text-center text-xs text-muted-foreground">
+          {index + 1}
+        </span>
         <button
           type="button"
-          onClick={onEdit}
-          onFocus={onEdit}
-          aria-label={label}
-          title={preview || undefined}
-          className={`block h-9 w-full truncate px-2 text-left font-mono text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
-            preview ? (tone ?? "text-foreground") : "text-muted-foreground/70"
+          onClick={() => onChange(setRowNeedsFlow(dataset, row.id, !row.needs_flow))}
+          aria-label={`${row.needs_flow ? "Run" : "Don't run"} ${label} from Run dataset`}
+          aria-pressed={row.needs_flow === true}
+          title={
+            row.needs_flow
+              ? "Needs a flow — Run dataset skips this row. Click to run it here too."
+              : "Runs from Run dataset. Click if it needs a login or other setup first."
+          }
+          className={`shrink-0 rounded p-1 transition-colors ${
+            row.needs_flow ? "text-destructive" : "text-muted-foreground/40 hover:text-muted-foreground"
           }`}
         >
-          {preview || placeholder}
+          <Link2 className="h-3.5 w-3.5" />
         </button>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{label}</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={() => onChange(duplicateRow(dataset, row.id))}
+          aria-label={`Duplicate ${label}`}
+          title="Duplicate this case"
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-destructive"
+          onClick={() => {
+            onChange(removeRow(dataset, row.id));
+            onClose();
+          }}
+          aria-label={`Remove ${label}`}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
+          onClick={onClose}
+          aria-label={`Collapse ${label}`}
+          title="Collapse this case (Esc)"
+        >
+          <ChevronUp className="h-4 w-4" />
+        </Button>
       </div>
-    );
-  }
-  return (
-    <div className={`min-w-0 ${CELL}`}>
-      <Textarea
-        // eslint-disable-next-line jsx-a11y/no-autofocus -- the click that opened
-        // this cell was aimed at the field it replaces.
-        autoFocus
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onDone}
-        placeholder={placeholder}
-        aria-label={label}
-        className={`scrollbar-hairline h-[132px] min-h-0 w-full resize-none whitespace-pre px-2 py-1.5 font-mono text-xs ${FIELD}`}
-      />
-      {hint && <div className="px-2 pb-1.5">{hint}</div>}
+
+      <div className="space-y-3 px-3 pb-3">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Labelled label="Case">
+            <Input
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- the click that opened
+              // this row was aimed at this field.
+              autoFocus={focus === "name"}
+              value={row.name ?? ""}
+              placeholder={label}
+              onChange={(e) => onChange(setRowName(dataset, row.id, e.target.value))}
+              className="h-8 text-[13px]"
+              aria-label={`Case name for row ${index + 1}`}
+            />
+          </Labelled>
+          <Labelled label="Path / query">
+            <Input
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- see above
+              autoFocus={focus === "path"}
+              value={row.path ?? ""}
+              placeholder="?org=acme"
+              onChange={(e) => onChange(setRowPath(dataset, row.id, e.target.value))}
+              className="h-8 font-mono text-[13px]"
+              aria-label={`Path or query for ${label}`}
+              title={
+                row.path?.trim()
+                  ? `Appended to the request's endpoint: …${joinEndpoint("", row.path)}`
+                  : "Appended to the request's endpoint — leave blank to use it as authored"
+              }
+            />
+          </Labelled>
+        </div>
+
+        <Labelled label="Body">
+          <Textarea
+            // eslint-disable-next-line jsx-a11y/no-autofocus -- see above
+            autoFocus={focus === "body"}
+            value={body}
+            onChange={(e) => onChange(setRowBody(dataset, row.id, e.target.value))}
+            placeholder={"{\"email\": \"a@b.com\"}   — blank uses the Request tab’s body"}
+            aria-label={`Body for ${label}`}
+            className="scrollbar-hairline h-[200px] min-h-0 w-full resize-y whitespace-pre font-mono text-xs"
+          />
+          {badJson && (
+            <span className="mt-1 flex items-center gap-1 text-[11px] text-warning">
+              <AlertTriangle className="h-3 w-3" /> Not valid JSON — sent as-is
+            </span>
+          )}
+        </Labelled>
+
+        <div className="grid items-start gap-3 sm:grid-cols-[220px_1fr]">
+          <Labelled label="Expect">
+            <Textarea
+              // eslint-disable-next-line jsx-a11y/no-autofocus -- see above
+              autoFocus={focus === "check"}
+              value={check}
+              onChange={(e) => onChange(setRowCheck(dataset, row.id, e.target.value))}
+              placeholder="400   — or an expression"
+              aria-label={`Expected result for ${label}`}
+              className="scrollbar-hairline h-[64px] min-h-0 w-full resize-y whitespace-pre font-mono text-xs"
+            />
+          </Labelled>
+          <p className="text-[11px] text-muted-foreground sm:mt-[22px]">
+            {!check.trim()
+              ? hasShared
+                ? "Blank — this row passes on any 2xx (the Scripts tab is not used for rows)."
+                : "Blank — this row passes on any 2xx."
+              : isStatusShorthand(check)
+                ? `Shorthand for response.status == ${check.trim()}`
+                : "Rhai expression — must end in something true or false."}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
 
 export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEditorProps) {
-  const [editingBody, setEditingBody] = useState<string | null>(null);
-  const [editingCheck, setEditingCheck] = useState<string | null>(null);
+  // One row open at a time, and which of its fields the click was aimed at. A matrix is
+  // for comparing rows; two of them expanded at once stops being one.
+  const [openRow, setOpenRow] = useState<string | null>(null);
+  const [focusField, setFocusField] = useState<Field | null>(null);
+  const open = (rowId: string, field: Field | null) => {
+    setOpenRow(rowId);
+    setFocusField(field);
+  };
+  const close = () => {
+    setOpenRow(null);
+    setFocusField(null);
+  };
   const { rows } = dataset;
   const hasShared = !!sharedAssertion?.trim();
 
@@ -124,7 +293,8 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
           </p>
           <p className="mt-0.5 max-w-2xl text-[13px] text-muted-foreground">
             One row per case. Each row sends its own body and says what should come back —
-            useful for negative and edge cases without building a flow.
+            useful for negative and edge cases without building a flow. Click a row to
+            open it with room to edit.
           </p>
         </div>
         <Button variant="outline" size="sm" className="shrink-0 gap-1.5" onClick={() => onChange(addRow(dataset))}>
@@ -194,6 +364,22 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               const label = rowLabel(i, row);
               // Muted where the marker is red: this row won't take part in a Run dataset.
               const dim = row.needs_flow === true;
+
+              if (openRow === row.id) {
+                return (
+                  <ExpandedRow
+                    key={row.id}
+                    dataset={dataset}
+                    onChange={onChange}
+                    rowId={row.id}
+                    index={i}
+                    focus={focusField}
+                    onClose={close}
+                    hasShared={hasShared}
+                  />
+                );
+              }
+
               return (
                 <div
                   key={row.id}
@@ -231,70 +417,38 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     <Link2 className="h-3.5 w-3.5" />
                   </button>
 
-                  <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
-                    <Input
-                      value={row.name ?? ""}
-                      placeholder={label}
-                      onChange={(e) => onChange(setRowName(dataset, row.id, e.target.value))}
-                      className={`h-9 px-2 text-[13px] ${FIELD}`}
-                      aria-label={`Case name for row ${i + 1}`}
-                    />
-                  </div>
+                  <SummaryCell
+                    value={row.name ?? ""}
+                    onOpen={() => open(row.id, "name")}
+                    placeholder={label}
+                    label={`Case name for row ${i + 1}`}
+                    dim={dim}
+                    prose
+                  />
 
-                  <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
-                    <Input
-                      value={row.path ?? ""}
-                      placeholder="?org=acme"
-                      onChange={(e) => onChange(setRowPath(dataset, row.id, e.target.value))}
-                      className={`h-9 px-2 font-mono text-[13px] ${FIELD}`}
-                      aria-label={`Path or query for ${label}`}
-                      title={
-                        row.path?.trim()
-                          ? `Appended to the request's endpoint: …${joinEndpoint("", row.path)}`
-                          : "Appended to the request's endpoint — leave blank to use it as authored"
-                      }
-                    />
-                  </div>
+                  <SummaryCell
+                    value={row.path ?? ""}
+                    onOpen={() => open(row.id, "path")}
+                    placeholder="?org=acme"
+                    label={`Path or query for ${label}`}
+                    dim={dim}
+                  />
 
-                  <EditableCell
+                  <SummaryCell
                     value={body}
-                    onChange={(v) => onChange(setRowBody(dataset, row.id, v))}
-                    editing={editingBody === row.id}
-                    onEdit={() => setEditingBody(row.id)}
-                    onDone={() => setEditingBody((cur) => (cur === row.id ? null : cur))}
+                    onOpen={() => open(row.id, "body")}
                     placeholder={"{\"email\": \"a@b.com\"}   — blank uses the Request tab’s body"}
                     label={`Body for ${label}`}
                     dim={dim}
                     tone={badJson ? "text-warning" : undefined}
-                    hint={
-                      badJson ? (
-                        <span className="flex items-center gap-1 text-[11px] text-warning">
-                          <AlertTriangle className="h-3 w-3" /> Not valid JSON — sent as-is
-                        </span>
-                      ) : undefined
-                    }
                   />
 
-                  <EditableCell
+                  <SummaryCell
                     value={check}
-                    onChange={(v) => onChange(setRowCheck(dataset, row.id, v))}
-                    editing={editingCheck === row.id}
-                    onEdit={() => setEditingCheck(row.id)}
-                    onDone={() => setEditingCheck((cur) => (cur === row.id ? null : cur))}
+                    onOpen={() => open(row.id, "check")}
                     placeholder="400   — or an expression"
                     label={`Expected result for ${label}`}
                     dim={dim}
-                    hint={
-                      <p className="text-[11px] text-muted-foreground">
-                        {!check.trim()
-                          ? hasShared
-                            ? "Blank — this row passes on any 2xx (the Scripts tab is not used for rows)."
-                            : "Blank — this row passes on any 2xx."
-                          : isStatusShorthand(check)
-                            ? `Shorthand for response.status == ${check.trim()}`
-                            : "Rhai expression — must end in something true or false."}
-                      </p>
-                    }
                   />
 
                   <div className={CELL}>

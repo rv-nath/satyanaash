@@ -44,7 +44,7 @@ describe("DatasetEditor", () => {
     expect(onChange.mock.calls.at(-1)![0].rows[0].check).toBe("");
   });
 
-  it("keeps the body one row tall until it is focused", async () => {
+  it("keeps every row one line tall until one is opened", async () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
 
     // Collapsed: a clipped one-line preview, not an editable field.
@@ -55,7 +55,82 @@ describe("DatasetEditor", () => {
     await userEvent.click(collapsed);
     const editor = screen.getByLabelText(/^body for valid$/i);
     expect(editor.tagName).toBe("TEXTAREA");
-    expect(editor.className).toContain("h-[132px]");
+    // Across the table rather than inside a 180px column, which is the whole point:
+    // a JSON payload in a table cell is miserable clipped or not.
+    expect(editor.className).toContain("w-full");
+    expect(editor.className).toContain("h-[200px]");
+  });
+
+  it("opens the row with the field you clicked already focused", async () => {
+    // Otherwise the roomier editor would cost a click that the cramped one didn't.
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
+    expect(screen.getByLabelText(/^body for valid$/i)).toHaveFocus();
+  });
+
+  it("focuses the case name when that is what was clicked", async () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByLabelText(/case name for row 1/i));
+    expect(screen.getByLabelText(/case name for row 1/i)).toHaveFocus();
+  });
+
+  it("shows the whole value as a tooltip on a cell that had to clip it", () => {
+    // The Case column was a plain input: no ellipsis, no tooltip, so a long name was
+    // simply cut with nothing to say more existed.
+    const long = "missing 'msg' for a promo campaign with a long name";
+    let d = seed();
+    d = setRowName(d, d.rows[0].id, long);
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+    expect(screen.getByLabelText(/case name for row 1/i)).toHaveAttribute("title", long);
+  });
+
+  it("closes on Escape but not on tabbing between its own fields", async () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
+    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("TEXTAREA");
+
+    // Moving between Case, Path, Body and Expect must not collapse the panel.
+    await userEvent.tab();
+    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("TEXTAREA");
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("BUTTON");
+  });
+
+  it("collapses from the chevron too", async () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
+    await userEvent.click(screen.getByRole("button", { name: /collapse valid/i }));
+    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("BUTTON");
+  });
+
+  it("opens one row at a time, so the matrix stays a matrix", async () => {
+    const d = addRow(seed());
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
+    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("TEXTAREA");
+
+    await userEvent.click(screen.getByLabelText(/^body for row 2$/i));
+    expect(screen.getByLabelText(/^body for row 2$/i).tagName).toBe("TEXTAREA");
+    expect(screen.getByLabelText(/^body for valid$/i).tagName).toBe("BUTTON");
+  });
+
+  it("keeps the row's own actions reachable while it is open", async () => {
+    const onChange = vi.fn();
+    render(<DatasetEditor dataset={seed()} onChange={onChange} />);
+    await userEvent.click(screen.getByLabelText(/^body for valid$/i));
+
+    // Collapsing a row just to flag, copy or bin it would be daft.
+    await userEvent.click(screen.getByRole("button", { name: /don't run valid from run dataset/i }));
+    expect(onChange.mock.calls.at(-1)![0].rows[0].needs_flow).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: /duplicate valid/i }));
+    expect(onChange.mock.calls.at(-1)![0].rows).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole("button", { name: /remove valid/i }));
+    expect(onChange.mock.calls.at(-1)![0].rows).toHaveLength(0);
   });
 
   it("shows a minified body so the preview isn't a lone brace", async () => {
