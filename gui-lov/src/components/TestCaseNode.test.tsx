@@ -59,6 +59,21 @@ describe("TestCaseNode last run", () => {
     expect(screen.getByText(/my_jwt = eyJhbGciOiJSUzI1/)).toHaveTextContent("(2474 chars)");
   });
 
+  it("keeps the verdict out of the layout, so a run can't resize the node", async () => {
+    // It used to sit in the node's flex row, which widened it — and only the nodes
+    // below max-width, so a column the author had centred came out staggered the
+    // moment it ran. jsdom does no layout, so this pins the mechanism: the badge is
+    // absolutely positioned, and the node's own classes are unchanged by a result.
+    const { container, unmount } = renderNode();
+    const before = (container.firstElementChild as HTMLElement).className;
+    unmount();
+
+    nodeRuns = { f1: { n1: result() } };
+    const after = renderNode();
+    expect((after.container.firstElementChild as HTMLElement).className).toBe(before);
+    expect(screen.getByTitle(/last run: passed/i).className).toContain("absolute");
+  });
+
   it("shows a failure as a failure", async () => {
     nodeRuns = { f1: { n1: result({ status: "failed" }) } };
     renderNode();

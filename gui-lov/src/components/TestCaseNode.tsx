@@ -75,7 +75,7 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
   // info button — on hover they'd steal attention while you're reading the graph.
   return (
     <div
-      className={`flex items-center gap-1.5 rounded-lg border-2 bg-card px-2.5 py-1.5 shadow-md transition-shadow min-w-[140px] max-w-[260px] hover:shadow-lg ${
+      className={`relative flex items-center gap-1.5 rounded-lg border-2 bg-card px-2.5 py-1.5 shadow-md transition-shadow min-w-[140px] max-w-[260px] hover:shadow-lg ${
         // Dashed: this node is lifted out of the chain and runs after it, so it
         // shouldn't read as another link in the sequence.
         teardown ? "border-dashed border-muted-foreground/50" : ""
@@ -205,18 +205,22 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
 
       {/* The verdict, as a glyph rather than only a ring colour — so it survives a
           screenshot, a colour-blind reader, and the validation ring sitting on the
-          same node. */}
-      {running ? (
-        <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" aria-label="running" />
-      ) : (
-        lastRun && (
-          <span
-            className={`shrink-0 text-[11px] font-semibold leading-none ${statusTone(lastRun.status)}`}
-            title={`Last run: ${lastRun.status} in ${lastRun.duration_ms}ms`}
-          >
-            {statusIcon(lastRun.status)}
-          </span>
-        )
+          same node.
+
+          Overlaid on the corner, deliberately *outside* the flex row. In the row it
+          widened the node, and only the nodes below max-width: those at their limit
+          didn't move, so a column the author had centred came out staggered the
+          moment it ran. Nothing about a run may change a node's size. */}
+      {(running || lastRun) && (
+        <span
+          className={`absolute -right-2 -top-2 flex h-4 w-4 items-center justify-center rounded-full border border-border bg-card text-[10px] font-semibold leading-none shadow-sm ${
+            running ? "text-primary" : statusTone(lastRun!.status)
+          }`}
+          title={running ? "Running" : `Last run: ${lastRun!.status} in ${lastRun!.duration_ms}ms`}
+          aria-label={running ? "running" : `last run ${lastRun!.status}`}
+        >
+          {running ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : statusIcon(lastRun!.status)}
+        </span>
       )}
 
       <span className="min-w-0 flex-1">
