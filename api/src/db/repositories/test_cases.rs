@@ -324,6 +324,7 @@ mod tests {
         input.dataset = Some(Dataset {
             rows: vec![DataRow {
                 path: None,
+                needs_flow: false,
                 id: "r1".into(),
                 name: Some("missing email".into()),
                 body: Some(r#"{"mobile":"9876500001"}"#.into()),

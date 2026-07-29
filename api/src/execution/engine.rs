@@ -420,6 +420,11 @@ struct RowRunOptions<'a> {
     extra_exports: &'a [ExportVariable],
     /// This node's Expect, applied to any row that hasn't stated one of its own.
     node_check: Option<&'a str>,
+    /// True only for the editor's "Run dataset", which has no earlier steps: a row
+    /// marked `needs_flow` is reported as skipped instead of being sent, because
+    /// running it there produces a failure that says nothing about the request. A flow
+    /// node passes false — the flow is the precondition.
+    honour_needs_flow: bool,
 }
 
 /// Result status for a node execution
@@ -1089,6 +1094,9 @@ impl ExecutionEngine {
                         node_id: &node.id,
                         extra_exports: &[],
                         node_check,
+                        // A flow node runs every row it selected: the flow is what
+                        // satisfies them.
+                        honour_needs_flow: false,
                     },
                     logs,
                     &mut env_writes,
@@ -1738,7 +1746,12 @@ impl ExecutionEngine {
             test_case,
             &rows,
             &mut base_ctx,
-            RowRunOptions { node_id: "direct", extra_exports: &[], node_check: None },
+            RowRunOptions {
+                node_id: "direct",
+                extra_exports: &[],
+                node_check: None,
+                honour_needs_flow: true,
+            },
             Vec::new(),
             &mut env_writes,
             start,
@@ -1778,6 +1791,35 @@ impl ExecutionEngine {
 
         for (index, row) in rows {
             let label = crate::db::models::Dataset::label_for(*index, row);
+
+            if opts.honour_needs_flow && row.needs_flow {
+                // Not sent, and not a failure: there is nothing here to satisfy it.
+                // Reported all the same — a row you didn't run is a row you should be
+                // able to see you didn't run.
+                let reason = "Needs a flow — \"Run dataset\" has no earlier steps to                               satisfy it. Run it from a flow node instead"
+                    .to_string();
+                iterations.push(NodeResult {
+                    node_id: opts.node_id.to_string(),
+                    node_label: None,
+                    teardown: None,
+                    expected: None,
+                    test_case_id: Some(test_case.id.clone()),
+                    test_case_name: Some(test_case.name.clone()),
+                    status: NodeStatus::Skipped,
+                    duration_ms: 0,
+                    request: None,
+                    response: None,
+                    exports: None,
+                    env: None,
+                    error_message: Some(reason.clone()),
+                    logs: vec![reason],
+                    row_index: Some(*index),
+                    row_label: Some(label),
+                    iterations: None,
+                });
+                continue;
+            }
+
             let mut row_ctx = base_ctx.clone();
             let mut row_env: HashMap<String, Value> = HashMap::new();
 
@@ -1845,11 +1887,13 @@ impl ExecutionEngine {
         let not_passed = failed + errored;
         let error_message = (not_passed > 0)
             .then(|| format!("{} of {} rows did not pass", not_passed, iterations.len()));
+        let skipped = iterations.iter().filter(|r| r.status == NodeStatus::Skipped).count();
         info!(
-            "\"{}\" finished: {} of {} rows passed ({}ms)",
+            "\"{}\" finished: {} of {} rows passed{} ({}ms)",
             test_case.name,
-            iterations.len() - not_passed,
+            iterations.len() - not_passed - skipped,
             iterations.len(),
+            if skipped > 0 { format!(", {} needed a flow", skipped) } else { String::new() },
             start.elapsed().as_millis()
         );
 
@@ -1941,6 +1985,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, (name, body, status))| DataRow {
                     path: None,
+                    needs_flow: false,
                     id: format!("r{}", i),
                     name: Some(name.to_string()),
                     body: body.map(str::to_string),
@@ -2530,6 +2575,104 @@ mod tests {
             .remove(0);
 
         assert_eq!(result.expected.as_deref(), Some("response.status == 200"));
+    }
+
+    // ============ rows that can't run cold ("Run dataset" skips them) ============
+
+    fn dataset_with_a_row_needing_a_flow() -> crate::db::models::Dataset {
+        let mut d = dataset_of(vec![
+            ("runs cold", Some("{}"), Some("401")),
+            ("needs a login", Some("{}"), Some("202")),
+        ]);
+        d.rows[1].needs_flow = true;
+        d
+    }
+
+    /// The point of the feature: the editor's run leaves the marked row alone and stays
+    /// green, instead of reporting a failure that says nothing about the request.
+    #[tokio::test]
+    async fn a_row_that_needs_a_flow_is_skipped_by_the_editors_run() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", &stub_once(401, "{}").await, "POST");
+        tc.dataset = Some(dataset_with_a_row_needing_a_flow());
+
+        let aggregate = engine
+            .execute_test_case_dataset(&tc, HashMap::new(), HashMap::new())
+            .await;
+        let rows = aggregate.iterations.as_ref().unwrap();
+
+        assert_eq!(rows.len(), 2, "the skipped row is still reported");
+        assert_eq!(rows[0].status, NodeStatus::Passed);
+
+        let skipped = &rows[1];
+        assert_eq!(skipped.status, NodeStatus::Skipped);
+        assert!(skipped.request.is_none(), "nothing may be sent");
+        assert_eq!(skipped.row_index, Some(1));
+        assert_eq!(skipped.row_label.as_deref(), Some("needs a login"));
+        assert!(
+            skipped.error_message.as_deref().unwrap_or("").contains("Needs a flow"),
+            "{:?}",
+            skipped.error_message
+        );
+
+        // And the run is not a failure. Without this the feature would swap one kind of
+        // false red for another.
+        assert_eq!(aggregate.status, NodeStatus::Passed);
+        assert!(aggregate.error_message.is_none(), "{:?}", aggregate.error_message);
+    }
+
+    /// The flag says *where* a row can run, so a flow — which is the precondition —
+    /// runs it like any other row.
+    #[tokio::test]
+    async fn a_flow_node_runs_a_row_that_needs_a_flow() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", &stub_times(202, "{}", 2).await, "POST");
+        let mut dataset = dataset_with_a_row_needing_a_flow();
+        dataset.rows[0].check = Some("202".to_string()); // both pass against the stub
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let rows = engine
+            .execute_flow(
+                "exec1",
+                &one_node_flow("tc", serde_json::json!({"forEachRow": true})),
+                &repo,
+                HashMap::new(),
+                HashMap::new(),
+                None,
+            )
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+            .iterations
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter().all(|r| r.status == NodeStatus::Passed),
+            "{:?}",
+            rows.iter().map(|r| (&r.row_label, &r.status)).collect::<Vec<_>>()
+        );
+        assert!(rows.iter().all(|r| r.request.is_some()), "both rows were sent");
+    }
+
+    #[test]
+    fn an_ordinary_row_stores_nothing_for_the_flag() {
+        // Every dataset written before the flag existed must behave as it did, which
+        // means the default is "runs anywhere" and it isn't serialised.
+        let row = DataRow { id: "r0".into(), ..Default::default() };
+        assert!(!row.needs_flow);
+        let json = serde_json::to_string(&row).unwrap();
+        assert!(!json.contains("needs_flow"), "{}", json);
+
+        // And it round-trips when it is set.
+        let marked = DataRow { id: "r1".into(), needs_flow: true, ..Default::default() };
+        let json = serde_json::to_string(&marked).unwrap();
+        assert!(json.contains("\"needs_flow\":true"), "{}", json);
+        assert!(serde_json::from_str::<DataRow>(&json).unwrap().needs_flow);
     }
 
     // ===================== fan-out: a dataset inside a flow =====================

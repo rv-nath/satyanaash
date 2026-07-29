@@ -259,6 +259,25 @@ pub struct DataRow {
     /// reason `body` is a single field: there is no template model to learn first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Set on a row that only means something once something else has happened —
+    /// logged in, funded, seeded. **"Run dataset" in the editor skips it**, because
+    /// there is nothing there to satisfy it; a flow node runs it like any other row,
+    /// since the flow *is* the precondition.
+    ///
+    /// An instruction to one runner, not a claim about the row. A missing JWT is the
+    /// whole point of "empty payload, no jwt" and merely an obstacle to the row after
+    /// it, and only the author knows which — so this says where a row can run, never
+    /// why.
+    ///
+    /// Stored as the exception, so every dataset written before it behaves exactly as
+    /// it did with no migration and no re-save.
+    #[serde(default, skip_serializing_if = "is_not_set")]
+    pub needs_flow: bool,
+}
+
+/// Keeps `needs_flow: false` out of the stored JSON — an ordinary row says nothing.
+fn is_not_set(flag: &bool) -> bool {
+    !*flag
 }
 
 impl Dataset {
