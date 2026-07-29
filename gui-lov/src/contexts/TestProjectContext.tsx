@@ -148,7 +148,7 @@ interface TestProjectContextType {
   syncNodeToSidebar: (nodeId: string, data: any) => void;
   addNodeToCanvas: (nodeType: NodeType, data: any, position: { x: number; y: number }) => void;
   updateGroupFlow: (groupId: string, nodes: Node[], edges: Edge[]) => void;
-  deleteNode: (nodeId: string) => void;
+  deleteNodes: (nodeIds: string[]) => void;
   updateNodeConfig: (nodeId: string, config: any, alias?: string) => void;
   alignNodes: (direction: 'left' | 'right' | 'top' | 'bottom' | 'center-h' | 'center-v' | 'distribute-h' | 'distribute-v') => void;
   // Auto-layout is performed by the canvas (it owns fitView), so the toolbar
@@ -667,14 +667,26 @@ export const TestProjectProvider = ({
     });
   };
 
-  const deleteNode = useCallback((nodeId: string) => {
-    if (!activeFlowId) return;
-    const node = nodes.find(n => n.id === nodeId);
-    history.pushState(testGroups, `Delete node: ${node?.data?.label || nodeId}`);
-    // Remove node from canvas
-    setNodes(nodes.filter(n => n.id !== nodeId));
-    // Remove all connected edges
-    setEdges(edges.filter(e => e.source !== nodeId && e.target !== nodeId));
+  /**
+   * Delete nodes and every edge touching them.
+   *
+   * Takes a list rather than one id because deleting a selection has to be one
+   * update: this closes over `nodes`, so calling a single-node version in a loop
+   * would hand each call the same stale array and only the last would survive.
+   * One history entry too — undo puts the whole selection back.
+   */
+  const deleteNodes = useCallback((nodeIds: string[]) => {
+    if (!activeFlowId || nodeIds.length === 0) return;
+    const doomed = new Set(nodeIds);
+    const only = nodeIds.length === 1 ? nodes.find(n => n.id === nodeIds[0]) : null;
+    history.pushState(
+      testGroups,
+      only
+        ? `Delete node: ${only.data?.label || nodeIds[0]}`
+        : `Delete ${nodeIds.length} nodes`,
+    );
+    setNodes(nodes.filter(n => !doomed.has(n.id)));
+    setEdges(edges.filter(e => !doomed.has(e.source) && !doomed.has(e.target)));
   }, [activeFlowId, nodes, edges, setNodes, setEdges, testGroups, history]);
 
   const updateNodeConfig = useCallback((nodeId: string, config: any, alias?: string) => {
@@ -938,7 +950,7 @@ export const TestProjectProvider = ({
         syncNodeToSidebar,
         addNodeToCanvas,
         updateGroupFlow,
-        deleteNode,
+        deleteNodes,
         updateNodeConfig,
         alignNodes,
         layoutRequest,

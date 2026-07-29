@@ -36,7 +36,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNode, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNodes, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
 
   const cleanupBand = useMemo(() => cleanupBandFor(nodes), [nodes]);
@@ -322,8 +322,11 @@ const TestCanvasContent = () => {
 
       if (isDelete || isBackspace) {
         event.preventDefault();
-        if (selectedNode) {
-          deleteNode(selectedNode.id);
+        // Everything selected goes, not just the last node clicked — now that a
+        // multi-selection is visible, deleting one of three would be a surprise.
+        const selectedIds = nodes.filter(n => n.selected).map(n => n.id);
+        if (selectedIds.length > 0) {
+          deleteNodes(selectedIds);
           setSelectedNode(null);
         } else if (selectedEdge) {
           const updatedEdges = edges.filter(e => e.id !== selectedEdge);
@@ -336,7 +339,7 @@ const TestCanvasContent = () => {
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedNode, selectedEdge, deleteNode, edges, setEdges, setEdgesState, undo, redo]);
+  }, [selectedNode, selectedEdge, deleteNodes, nodes, edges, setEdges, setEdgesState, undo, redo]);
 
   const handleNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
     setSelectedNode(node);
@@ -386,15 +389,18 @@ const TestCanvasContent = () => {
 
     return {
       ...node,
-      selected: node.id === selectedNode?.id,
+      // `selected` is React Flow's own, and it is left alone. Overwriting it with
+      // "is this the last node clicked" un-selected every other member of a
+      // multi-selection before it could be drawn — and told React Flow the same,
+      // so dragging a selection moved one node out of it.
       // Execution comes last, so it wins over validation on equal specificity: while
       // a run is on screen, what just happened matters more than standing advice.
       className: [node.className, validationClass, executionClassFor(node.id, executionView)]
         .filter(Boolean).join(' '),
       style: {
         ...node.style,
-        border: node.id === selectedNode?.id ? '2px solid hsl(var(--primary))' : undefined,
-        boxShadow: node.id === selectedNode?.id ? '0 0 0 2px hsl(var(--primary) / 0.2)' : undefined,
+        border: node.selected ? '2px solid hsl(var(--primary))' : undefined,
+        boxShadow: node.selected ? '0 0 0 2px hsl(var(--primary) / 0.2)' : undefined,
       },
     };
   });
