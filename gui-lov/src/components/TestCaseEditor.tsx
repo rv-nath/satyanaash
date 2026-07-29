@@ -1341,7 +1341,12 @@ export function DatasetResultView({
 }) {
   const rows = aggregate.iterations ?? [];
   const passed = rows.filter((r) => r.status === "passed").length;
-  const allPassed = passed === rows.length;
+  // A row skipped because it needs a flow is neither a pass nor a problem. Counting it
+  // as "not passed" turned the whole strip red on a run where nothing failed — the
+  // false red this flag exists to remove.
+  const skipped = rows.filter((r) => r.status === "skipped").length;
+  const notPassed = rows.length - passed - skipped;
+  const allPassed = notPassed === 0;
 
   // Drilled into one row: breadcrumb + the standard single-result view.
   if (selected !== null && rows[selected]) {
@@ -1410,7 +1415,9 @@ export function DatasetResultView({
             {rows.length} {rows.length === 1 ? "row" : "rows"}
           </span>
           <span className="text-sm text-muted-foreground">
-            {passed} passed{passed < rows.length ? ` · ${rows.length - passed} not passed` : ""}
+            {passed} passed
+            {notPassed > 0 ? ` · ${notPassed} not passed` : ""}
+            {skipped > 0 ? ` · ${skipped} need${skipped === 1 ? "s" : ""} a flow` : ""}
           </span>
           <span className="text-sm text-muted-foreground">{aggregate.duration_ms}ms</span>
         </div>
@@ -1455,9 +1462,15 @@ export function DatasetResultView({
                   {row.row_label ?? `Row ${i + 1}`}
                 </TableCell>
                 <TableCell className="py-2">
+                  {/* Three outcomes, not two: a skipped row is muted, because nothing
+                      about it went wrong. */}
                   <span
                     className={`text-xs font-medium ${
-                      row.status === "passed" ? "text-success" : "text-destructive"
+                      row.status === "passed"
+                        ? "text-success"
+                        : row.status === "skipped"
+                          ? "text-muted-foreground"
+                          : "text-destructive"
                     }`}
                   >
                     {row.status}

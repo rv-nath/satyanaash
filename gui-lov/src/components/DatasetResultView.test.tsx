@@ -77,6 +77,39 @@ describe("DatasetResultView", () => {
     expect(screen.queryByText("expected HTTP 200")).not.toBeInTheDocument();
   });
 
+  it("stays green when a row was skipped for needing a flow", () => {
+    // The false red this flag exists to remove: nothing failed, so nothing is red.
+    render(
+      <DatasetResultView
+        aggregate={{
+          node_id: "direct", status: "passed", duration_ms: 28, logs: [],
+          iterations: [
+            {
+              node_id: "direct", status: "passed", duration_ms: 21, logs: [],
+              row_index: 0, row_label: "runs cold", expected: "HTTP 401",
+              response: { status: 401, headers: {}, body: "{}" },
+            },
+            {
+              node_id: "direct", status: "skipped", duration_ms: 0, logs: [],
+              row_index: 1, row_label: "needs a login",
+              error_message: "Needs a flow — \"Run dataset\" has no earlier steps",
+            },
+          ],
+        }}
+        selected={null} onSelect={vi.fn()}
+        wordWrap onRerun={vi.fn()} onClear={vi.fn()} running={false}
+        setWordWrap={vi.fn()}
+      />,
+    );
+
+    // Counted apart from both passes and failures.
+    expect(screen.getByText(/1 passed · 1 needs a flow/)).toBeInTheDocument();
+    expect(screen.queryByText(/not passed/)).not.toBeInTheDocument();
+
+    // And the row itself reads as muted, not as a failure.
+    expect(screen.getByText("skipped").className).toContain("text-muted-foreground");
+  });
+
   it("lists the rows", () => {
     render(
       <DatasetResultView

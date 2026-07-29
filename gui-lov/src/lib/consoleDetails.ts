@@ -71,7 +71,9 @@ export function rowsSummary(rows: TestCaseExecutionResult[]): string {
     .map((row) => {
       const n = String((row.row_index ?? 0) + 1).padStart(2);
       const label = (row.row_label ?? "").padEnd(width);
-      const status = row.response ? String(row.response.status) : row.status;
+      // The status column is sized for an HTTP code; a request that never went out has
+      // none, so say so rather than overflowing the alignment with a word.
+      const status = row.response ? String(row.response.status) : "—";
       const reason = row.error_message ? `  ${row.error_message}` : "";
       return `${icon(row.status)} ${n}  ${label}  ${status.padStart(3)}  ${row.duration_ms}ms${reason}`;
     })
@@ -90,7 +92,10 @@ export function fanOutDetails(aggregate: TestCaseExecutionResult): ConsoleLogDet
   const details: ConsoleLogDetail[] = [{ label: "Rows", value: rowsSummary(rows) }];
 
   for (const row of rows) {
-    if (row.status === "passed") continue;
+    // A skipped row was never sent, so a block would hold nothing — and colouring it
+    // as an error would say something went wrong when nothing did. Its summary line
+    // already carries the reason.
+    if (row.status === "passed" || row.status === "skipped") continue;
     const label = `Row ${(row.row_index ?? 0) + 1} · ${row.row_label ?? ""}`.trim();
     // Reuse the single-request details, minus the per-row logs — the aggregate already
     // carries every row's logs, prefixed, so repeating them here would double them up.
@@ -116,7 +121,12 @@ export function resultHeadline(result: TestCaseExecutionResult, name: string): s
   const rows = result.iterations;
   if (rows) {
     const passed = rows.filter((r) => r.status === "passed").length;
-    return `${icon(result.status)} ${name}${suffix}: ${passed}/${rows.length} rows passed (${result.duration_ms}ms)`;
+    const skipped = rows.filter((r) => r.status === "skipped").length;
+    // Skipped rows are excluded from the denominator rather than counted as failures,
+    // so "3/3 rows passed (1 needed a flow)" reads with a ✓ instead of contradicting it.
+    const ran = rows.length - skipped;
+    const note = skipped > 0 ? ` (${skipped} needed a flow)` : "";
+    return `${icon(result.status)} ${name}${suffix}: ${passed}/${ran} rows passed${note} (${result.duration_ms}ms)`;
   }
   return `${icon(result.status)} ${name}${suffix}: ${result.status} (${result.duration_ms}ms)`;
 }

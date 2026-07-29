@@ -109,6 +109,49 @@ describe("fanOutDetails", () => {
   });
 });
 
+describe("a skipped row", () => {
+  const skipped: TestCaseExecutionResult = {
+    node_id: "direct",
+    status: "skipped",
+    duration_ms: 0,
+    logs: ["Needs a flow — \"Run dataset\" has no earlier steps to satisfy it"],
+    row_index: 1,
+    row_label: "needs a login",
+    error_message: 'Needs a flow — "Run dataset" has no earlier steps to satisfy it',
+  };
+
+  it("gets no block of its own, having sent nothing", () => {
+    // Colouring an empty block red would say something went wrong when nothing did.
+    const details = fanOutDetails({
+      node_id: "direct", status: "passed", duration_ms: 40, logs: [],
+      iterations: [row(0, "runs cold", "passed", 401), skipped],
+    });
+    expect(details.filter((d) => d.label.startsWith("Row "))).toHaveLength(0);
+    // It is still visible in the summary, with its reason.
+    expect(details[0].value).toContain("needs a login");
+    expect(details[0].value).toContain("Needs a flow");
+  });
+
+  it("shows a dash where an HTTP code would be, keeping the columns aligned", () => {
+    const lines = rowsSummary([row(0, "runs cold", "passed", 401), skipped]).split("\n");
+    expect(lines[1]).toContain("—");
+    expect(lines[1]).not.toMatch(/skipped\s+0ms/);
+  });
+
+  it("is left out of the headline's denominator, not counted as a failure", () => {
+    const line = resultHeadline(
+      {
+        node_id: "direct", status: "passed", duration_ms: 40, logs: [],
+        iterations: [row(0, "runs cold", "passed", 401), skipped],
+      },
+      "Login",
+    );
+    // Not "1/2 rows passed" beside a ✓, which contradicts itself.
+    expect(line).toContain("1/1 rows passed (1 needed a flow)");
+    expect(line.startsWith("✓")).toBe(true);
+  });
+});
+
 describe("resultHeadline", () => {
   it("counts rows when a node fanned out", () => {
     const line = resultHeadline(
