@@ -1997,6 +1997,17 @@ impl ExecutionEngine {
             }
 
             let mut row_ctx = base_ctx.clone();
+            // This row's own values for the request's `{{names}}`. Set on the clone, so
+            // one row's channel cannot reach the next — the same reason the clone exists.
+            if !row.vars.is_empty() {
+                row_ctx.set_row_vars(
+                    row.vars
+                        .iter()
+                        .filter(|(name, value)| !name.trim().is_empty() && !value.trim().is_empty())
+                        .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                        .collect(),
+                );
+            }
             let mut row_env: HashMap<String, Value> = HashMap::new();
 
             let result = self
@@ -2162,6 +2173,7 @@ mod tests {
                 .map(|(i, (name, body, status))| DataRow {
                     path: None,
                     needs_flow: false,
+                    vars: Default::default(),
                     id: format!("r{}", i),
                     name: Some(name.to_string()),
                     body: body.map(str::to_string),
@@ -2830,6 +2842,117 @@ mod tests {
         // b never ran; Cleanup did, and without asking for another press.
         assert_eq!(ran(&result), vec!["a", "Cleanup"], "{:?}", ran(&result));
         assert_eq!(result.results[1].teardown, Some(true));
+    }
+
+    /// A row fills in the path parameters the endpoint already declares, so the endpoint
+    /// stays the URL it documents instead of being chopped down to a prefix the rows can
+    /// append to.
+    #[tokio::test]
+    async fn a_row_supplies_the_endpoints_own_placeholders() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 3).await;
+        let mut tc = make_test_case(
+            "tc",
+            "Pause",
+            &format!("{}campaigns/{{{{channel}}}}/pause/{{{{campaignID}}}}", url),
+            "POST",
+        );
+        let mut dataset = dataset_of(vec![("sms", None, None), ("email", None, None)]);
+        dataset.rows[0].vars = [("channel", "sms"), ("campaignID", "c-123")]
+            .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        dataset.rows[1].vars = [("channel", "email"), ("campaignID", "c-456")]
+            .iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({"forEachRow": true}));
+
+        let rows = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+            .iterations
+            .unwrap();
+
+        assert!(rows[0].request.as_ref().unwrap().url.ends_with("campaigns/sms/pause/c-123"),
+            "{}", rows[0].request.as_ref().unwrap().url);
+        assert!(rows[1].request.as_ref().unwrap().url.ends_with("campaigns/email/pause/c-456"),
+            "{}", rows[1].request.as_ref().unwrap().url);
+    }
+
+    /// A row is more specific than the node it runs in: the node says what is true for
+    /// the whole set, the row says what changes per iteration. And a value one row sets
+    /// must not leak into the next, which is what its own context clone is for.
+    #[tokio::test]
+    async fn a_rows_value_beats_the_nodes_and_does_not_reach_the_next_row() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 3).await;
+        let mut tc = make_test_case("tc", "Pause", &format!("{}{{{{channel}}}}", url), "POST");
+        let mut dataset = dataset_of(vec![
+            ("sets it", None, None),
+            ("leaves it", None, None),
+        ]);
+        dataset.rows[0].vars =
+            [("channel".to_string(), "sms".to_string())].into_iter().collect();
+        // Row 2 sets nothing, so it must fall through to the node's value — not inherit
+        // row 1's.
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true,
+            "inputVars": [{"key": "channel", "value": "from-the-node"}]
+        }));
+
+        let rows = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+            .iterations
+            .unwrap();
+
+        assert!(rows[0].request.as_ref().unwrap().url.ends_with("/sms"),
+            "{}", rows[0].request.as_ref().unwrap().url);
+        assert!(rows[1].request.as_ref().unwrap().url.ends_with("/from-the-node"),
+            "{}", rows[1].request.as_ref().unwrap().url);
+    }
+
+    /// A blank value is not a value: it must fall through rather than send an empty
+    /// path segment, which would quietly produce a different URL.
+    #[tokio::test]
+    async fn a_blank_row_value_falls_through() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 2).await;
+        let mut tc = make_test_case("tc", "Pause", &format!("{}{{{{channel}}}}", url), "POST");
+        let mut dataset = dataset_of(vec![("blank", None, None)]);
+        dataset.rows[0].vars =
+            [("channel".to_string(), "   ".to_string())].into_iter().collect();
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true,
+            "inputVars": [{"key": "channel", "value": "fallback"}]
+        }));
+
+        let rows = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+            .iterations
+            .unwrap();
+
+        assert!(rows[0].request.as_ref().unwrap().url.ends_with("/fallback"),
+            "{}", rows[0].request.as_ref().unwrap().url);
     }
 
     /// A stub that answers only once its cue fires, so a test can make something

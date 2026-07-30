@@ -6,6 +6,9 @@ import {
   isEmptyDataset,
   joinEndpoint,
   looksLikeInvalidJson,
+  pathVariables,
+  rowVar,
+  setRowVar,
   oneLine,
   runnableAlone,
   setRowNeedsFlow,
@@ -129,5 +132,68 @@ describe("dataset reducers", () => {
     expect(rowLabel(0, d.rows[0])).toBe("valid");
     expect(rowLabel(1, { ...d.rows[1], name: "  " })).toBe("Row 2");
     expect(rowLabel(2, { ...d.rows[1], name: null })).toBe("Row 3");
+  });
+});
+
+describe("pathVariables", () => {
+  it("finds the parameters a row can fill in", () => {
+    expect(
+      pathVariables("{{baseUrl}}/api/v1/campaigns/{{channel}}/pause/{{campaignID}}/{{recurrenceID}}"),
+    ).toEqual(["channel", "campaignID", "recurrenceID"]);
+  });
+
+  it("leaves out the leading placeholder, which is the base URL", () => {
+    // Nearly every endpoint starts {{baseUrl}}/… — a column for it in every dataset
+    // would be noise, and it is not a parameter of the request.
+    expect(pathVariables("{{baseUrl}}/signup")).toEqual([]);
+    // Anywhere else it is a parameter like any other.
+    expect(pathVariables("/api/{{version}}/signup")).toEqual(["version"]);
+  });
+
+  it("leaves out built-ins, which are generated per use", () => {
+    expect(pathVariables("{{baseUrl}}/users/{{$UUID}}/{{orgId}}")).toEqual(["orgId"]);
+  });
+
+  it("collapses a name used twice into one column", () => {
+    expect(pathVariables("{{baseUrl}}/orgs/{{id}}/children/{{id}}")).toEqual(["id"]);
+  });
+
+  it("has nothing to say about an endpoint without parameters", () => {
+    expect(pathVariables("")).toEqual([]);
+    expect(pathVariables(undefined)).toEqual([]);
+    expect(pathVariables("https://api.example.com/signup")).toEqual([]);
+    // Single braces are not interpolation — the server sends them literally.
+    expect(pathVariables("{{baseUrl}}/campaigns/{channel}/pause")).toEqual([]);
+  });
+});
+
+describe("setRowVar", () => {
+  const seeded = () => {
+    const d = addRow(emptyDataset());
+    return { d, id: d.rows[0].id };
+  };
+
+  it("sets and reads a value", () => {
+    const { d, id } = seeded();
+    const next = setRowVar(d, id, "channel", "sms");
+    expect(next.rows[0].vars).toEqual({ channel: "sms" });
+    expect(rowVar(next.rows[0], "channel")).toBe("sms");
+    expect(rowVar(next.rows[0], "campaignID")).toBe("");
+  });
+
+  it("clears the name when blanked, rather than sending an empty segment", () => {
+    const { d, id } = seeded();
+    let next = setRowVar(d, id, "channel", "sms");
+    next = setRowVar(next, id, "channel", "  ");
+    expect(next.rows[0].vars).toEqual({});
+  });
+
+  it("leaves other rows and other names alone", () => {
+    let d = addRow(addRow(emptyDataset()));
+    d = setRowVar(d, d.rows[0].id, "channel", "sms");
+    d = setRowVar(d, d.rows[0].id, "campaignID", "c-1");
+    d = setRowVar(d, d.rows[1].id, "channel", "email");
+    expect(d.rows[0].vars).toEqual({ channel: "sms", campaignID: "c-1" });
+    expect(d.rows[1].vars).toEqual({ channel: "email" });
   });
 });

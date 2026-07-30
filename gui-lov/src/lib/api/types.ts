@@ -51,6 +51,11 @@ export interface DataRow {
    *  top-up. "Run dataset" skips it; a flow node runs it, the flow being the
    *  precondition. Says where a row can run, not why. */
   needs_flow?: boolean;
+  /** Values for the `{{names}}` the request already declares — the path parameters in
+   *  `/campaigns/{{channel}}/pause/{{campaignID}}`. The editor reads the names off the
+   *  endpoint, so there is nothing to define. A name left out isn't set by this row and
+   *  resolves from wherever it would have anyway. */
+  vars?: Record<string, string>;
 }
 
 /** A table of cases. "Run dataset" in the editor iterates them, and so does a flow

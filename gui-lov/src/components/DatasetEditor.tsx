@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,7 +10,9 @@ import {
   joinEndpoint,
   looksLikeInvalidJson,
   oneLine,
+  pathVariables,
   removeRow,
+  rowVar,
   rowLabel,
   isStatusShorthand,
   setRowBody,
@@ -18,6 +20,7 @@ import {
   setRowName,
   setRowNeedsFlow,
   setRowPath,
+  setRowVar,
 } from "@/lib/dataset";
 
 interface DatasetEditorProps {
@@ -25,14 +28,34 @@ interface DatasetEditorProps {
   onChange: (dataset: Dataset) => void;
   /** Used only to explain what a row with no check of its own falls back to. */
   sharedAssertion?: string;
+  /** The request's endpoint. Its `{{names}}` become a column each, so a row can be the
+   *  SMS case and the next the email one without the endpoint being cut down to a
+   *  prefix for rows to append to. */
+  endpoint?: string;
 }
 
-// #, needs-flow, case, path, body, expect, duplicate, delete.
+// #, needs-flow, case, …one per endpoint parameter…, path, body, expect, duplicate, delete.
 // Every text column flexes now that none of them holds a field, and Case gets the most
 // it can: it wraps rather than clipping, so width spent there is width spent on fewer
 // wrapped lines. Expect was a fixed 150px for a value that is usually three digits.
-const GRID =
+const FIXED_GRID =
   "30px 30px minmax(180px,1.1fr) minmax(100px,0.4fr) minmax(180px,1.2fr) minmax(90px,0.4fr) 34px 34px";
+
+/**
+ * The grid, with a column per endpoint parameter inserted after Case.
+ *
+ * Parameters hold ids and enum values rather than prose, so they get narrow flexible
+ * columns; when there are enough of them to overrun the pane, the table scrolls rather
+ * than squeezing the body. Each stays comparable down its own column, which is what a
+ * matrix is for.
+ */
+const gridFor = (params: string[]): string => {
+  if (params.length === 0) return FIXED_GRID;
+  const cols = FIXED_GRID.split(" ");
+  const paramCols = params.map(() => "minmax(90px,0.5fr)").join(" ");
+  // After #, needs-flow and Case.
+  return [...cols.slice(0, 3), paramCols, ...cols.slice(3)].join(" ");
+};
 
 /** Borders belong to the table, not to the fields — a field with its own border
  *  inside a bordered cell reads as a box in a box and wastes the width. */
@@ -140,7 +163,7 @@ function EditableCell({
   );
 }
 
-export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEditorProps) {
+export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: DatasetEditorProps) {
   // One cell at a time: which row, and which of its fields. A matrix is for comparing
   // rows, and several rows swollen at once stops being one.
   const [editing, setEditing] = useState<{ rowId: string; field: Field } | null>(null);
@@ -151,6 +174,9 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
     setEditing((cur) => (cur?.rowId === rowId && cur.field === field ? null : cur));
   const { rows } = dataset;
   const hasShared = !!sharedAssertion?.trim();
+  // Read off the endpoint rather than declared: you already named them in the URL.
+  const params = useMemo(() => pathVariables(endpoint), [endpoint]);
+  const grid = gridFor(params);
 
   return (
     <div className="space-y-4">
@@ -204,7 +230,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                 of inputs. Its cells carry the same dividers as the rows below. */}
             <div
               className="grid items-center border-b border-border bg-muted/40"
-              style={{ gridTemplateColumns: GRID }}
+              style={{ gridTemplateColumns: grid }}
             >
               <span className={CELL} />
               <span
@@ -213,14 +239,25 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
               >
                 <Link2 className="h-3 w-3" />
               </span>
-              {["Case", "Path / query", "Body", "Expect"].map((h) => (
-                <span
-                  key={h}
-                  className={`px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground ${CELL}`}
-                >
-                  {h}
-                </span>
-              ))}
+              {["Case", ...params, "Path / query", "Body", "Expect"].map((h, hi) => {
+                // A parameter's heading is its name from the URL, so it keeps the
+                // author's casing and takes the primary tint that marks it as something
+                // the endpoint asked for rather than a fixed column. One casing class or
+                // the other, never both: two of them in the same string are settled by
+                // stylesheet order, not by which was written last.
+                const param = hi > 0 && hi <= params.length;
+                return (
+                  <span
+                    key={h}
+                    className={`truncate px-2 py-1.5 text-[10px] font-semibold tracking-wider ${CELL} ${
+                      param ? "font-mono normal-case text-primary" : "uppercase text-muted-foreground"
+                    }`}
+                    title={param ? `{{${h}}} in the endpoint — each row's value for it` : undefined}
+                  >
+                    {h}
+                  </span>
+                );
+              })}
               <span className={CELL} />
               <span />
             </div>
@@ -237,7 +274,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                 <div
                   key={row.id}
                   className="grid items-stretch border-t border-border first:border-t-0 hover:bg-muted/20"
-                  style={{ gridTemplateColumns: GRID }}
+                  style={{ gridTemplateColumns: grid }}
                 >
                   <span
                     className={`pt-2 text-center text-xs text-muted-foreground ${CELL} ${
@@ -285,6 +322,23 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion }: DatasetEdi
                     wrap
                     editorHeight="h-[72px]"
                   />
+
+                  {/* One per `{{name}}` in the endpoint. Live fields: an id or an enum
+                      value is short, and these are the columns you scan down to see what
+                      this matrix actually varies. Blank means this row doesn't set it,
+                      so it resolves from wherever it would have anyway. */}
+                  {params.map((name) => (
+                    <div key={name} className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
+                      <Input
+                        value={rowVar(row, name)}
+                        placeholder="—"
+                        onChange={(e) => onChange(setRowVar(dataset, row.id, name, e.target.value))}
+                        className={`h-9 px-2 font-mono text-[13px] ${FIELD}`}
+                        aria-label={`${name} for ${label}`}
+                        title={`{{${name}}} for this row — blank falls back to the environment or an earlier step`}
+                      />
+                    </div>
+                  ))}
 
                   {/* Short by nature — a live field, no expanding needed. */}
                   <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>

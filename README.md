@@ -164,13 +164,18 @@ value. Resolution walks these tiers **top-to-bottom and stops at the first match
 
 | Priority | Tier | Where it comes from |
 |:--:|------|---------------------|
-| 1 | **Data row** | the current row's cells in a data-driven run (see below) |
-| 2 | **Execution vars** | one-off values passed into a run |
-| 3 | **Context** | exports from earlier test cases + `SAT.vars` from scripts (this run) |
-| 4 | Node input vars | per-node overrides set on the flow canvas |
+| 1 | **Execution vars** | one-off values passed into a run |
+| 2 | **Data row** | this row's value for a name the request declares (see below) |
+| 3 | Node input vars | per-node overrides set on the flow canvas |
+| 4 | **Context** | exports from earlier test cases + `SAT.vars` from scripts (this run) |
 | 5 | Flow vars | variables scoped to a flow |
 | 6 | **Environment** | active Environment layered over Globals (env wins); `SAT.env` writes land here |
 | 7 | **Built-ins** | generated values (below) |
+
+Each tier is more specific than the one below it. A node's override beats an earlier
+step's export, because it's what you typed on *this* node rather than whatever the run
+left lying around; a row's value beats the node's, because the node says what holds for
+the whole set and the row says what changes per iteration.
 
 ### Built-in variables
 
@@ -314,9 +319,41 @@ and the engine runs the request once per row.
 |--------|---------|
 | **Case** | Label for the row, shown in the results. Optional — blank rows read as *Row 1*, *Row 2*, … |
 | **⛓** | Marks a row that needs a flow — see [Rows that can't run cold](#rows-that-cant-run-cold). Blank means it runs anywhere. |
+| *(one per `{{name}}` in the endpoint)* | This row's value for that placeholder — see below. Blank means the row doesn't set it. |
 | **Path / query** | Appended to the request's endpoint for this row — `?org=acme`, `/acme/summary`. Joins with `&` if the endpoint already has a query. Blank uses it as authored. |
 | **Body** | The body this row sends. Blank falls back to the Request tab's body. |
 | **Expect** | What must be true for the row to pass. |
+
+### Varying the path, not just the body
+
+An endpoint with placeholders in it gets a column per placeholder, so the endpoint stays
+the URL it documents:
+
+```
+Endpoint:  {{baseUrl}}/api/v1/campaigns/{{channel}}/pause/{{campaignID}}
+
+Case              channel   campaignID   Expect
+sms one-off       sms       c-123        200
+email recurring   email     c-456        200
+unknown channel   telex     c-123        400
+```
+
+The columns appear on their own — you named them when you wrote the URL, so there is
+nothing to define. Two names never get a column: **built-ins** like `{{$UUID}}`, which
+are generated per use, and **a placeholder the endpoint begins with**, which is the base
+URL rather than a parameter.
+
+A blank cell means the row doesn't set that name, so it resolves from wherever it would
+have anyway — an earlier step's export, the environment, or the node. That's what lets a
+row fill in only the part that varies:
+
+```
+Endpoint:  {{baseUrl}}/api/v1/campaigns/{{channel}}/pause/{{campaignID}}
+
+Case         channel   campaignID   ← left blank, comes from the create step
+sms          sms
+email        email
+```
 
 ### Expect takes three forms
 

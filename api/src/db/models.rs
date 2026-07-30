@@ -1,6 +1,6 @@
 //! Domain models for the application
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -273,6 +273,20 @@ pub struct DataRow {
     /// it did with no migration and no re-save.
     #[serde(default, skip_serializing_if = "is_not_set")]
     pub needs_flow: bool,
+    /// Values for the `{{names}}` this request already declares — the path parameters
+    /// in `/campaigns/{{channel}}/pause/{{campaignID}}`, so one row can be the SMS
+    /// case and the next the email one.
+    ///
+    /// This is not the `data.*` column model that was tried and dropped. There, the
+    /// author had to invent names and rewrite the payload as a template before writing
+    /// a single case. Here the names already exist because they are in the URL, and the
+    /// editor reads them off it — nothing to declare, nothing to learn. A body is still
+    /// overridden wholesale, for exactly the reason it was then.
+    ///
+    /// A name left out simply isn't set by this row: it resolves from wherever it would
+    /// have anyway. Sorted so a saved dataset's JSON doesn't churn on key order.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vars: BTreeMap<String, String>,
 }
 
 /// Keeps `needs_flow: false` out of the stored JSON — an ordinary row says nothing.

@@ -47,6 +47,51 @@ export function setRowNeedsFlow(d: Dataset, rowId: string, needs_flow: boolean):
   return patchRow(d, rowId, { needs_flow });
 }
 
+/** Set one of a row's values for the request's own `{{names}}`. A blank clears it, so
+ *  the name falls back through the normal tiers rather than sending an empty segment. */
+export function setRowVar(d: Dataset, rowId: string, name: string, value: string): Dataset {
+  return {
+    rows: d.rows.map((r) => {
+      if (r.id !== rowId) return r;
+      const vars = { ...(r.vars ?? {}) };
+      if (value.trim()) vars[name] = value;
+      else delete vars[name];
+      return { ...r, vars };
+    }),
+  };
+}
+
+/** This row's value for a name, or "" if it doesn't set one. */
+export const rowVar = (row: DataRow, name: string): string => row.vars?.[name] ?? "";
+
+/**
+ * The `{{names}}` in an endpoint that a data row can usefully fill in.
+ *
+ * Mirrors `template_names` on the server — the same regex, and the same "no dots"
+ * rule. Two names are left out:
+ *
+ * - **Built-ins** (`{{$UUID}}`, `{{$RandomEmail}}`): generated per use, so there is
+ *   nothing for a row to say about them.
+ * - **A placeholder the endpoint *starts* with**, which is the base URL. Every endpoint
+ *   in the project begins `{{baseUrl}}/…`, and a column for it in every dataset would
+ *   be noise. A placeholder anywhere else is a parameter of the request.
+ *
+ * Duplicates collapse: `/{{id}}/children/{{id}}` is one column.
+ */
+export function pathVariables(endpoint: string | undefined | null): string[] {
+  if (!endpoint) return [];
+  const trimmed = endpoint.trim();
+  const names: string[] = [];
+  const re = /\{\{(\$?\w+)(?:\(([^)]*)\))?\}\}/g;
+  for (const match of trimmed.matchAll(re)) {
+    const name = match[1];
+    if (name.startsWith("$")) continue;
+    if (match.index === 0) continue; // the base URL, not a parameter
+    if (!names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
 /** The rows "Run dataset" will actually send — the rest need a flow to satisfy them. */
 export const runnableAlone = (d: Dataset): DataRow[] => d.rows.filter((r) => !r.needs_flow);
 

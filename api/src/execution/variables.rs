@@ -2,11 +2,12 @@
 //!
 //! Resolution order (highest priority first):
 //! 1. Execution variables (passed in execute request)
-//! 2. Node input variables (static per-node overrides set in flow editor)
-//! 3. Context variables (exports from previous test cases + pre-test script vars)
-//! 4. Flow variables (scoped to the flow)
-//! 5. Environment variables (from project settings)
-//! 6. Built-in variables ($UUID, $Timestamp, etc.)
+//! 2. Data row variables (this row's values for the request's own {{names}})
+//! 3. Node input variables (static per-node overrides set in flow editor)
+//! 4. Context variables (exports from previous test cases + pre-test script vars)
+//! 5. Flow variables (scoped to the flow)
+//! 6. Environment variables (from project settings)
+//! 7. Built-in variables ($UUID, $Timestamp, etc.)
 
 use std::collections::HashMap;
 use regex::Regex;
@@ -21,6 +22,9 @@ use crate::error::AppError;
 pub struct ExecutionContext {
     /// Variables passed in the execute request
     execution_vars: HashMap<String, Value>,
+    /// This data row's own values (set per row by `run_rows`, on that row's own
+    /// clone of the context, so one row's values cannot reach the next)
+    row_vars: HashMap<String, Value>,
     /// Accumulated exports from test cases during execution
     context: HashMap<String, Value>,
     /// Static per-node input variables (replaced before each node runs)
@@ -40,6 +44,7 @@ impl ExecutionContext {
     ) -> Self {
         Self {
             execution_vars,
+            row_vars: HashMap::new(),
             context: HashMap::new(),
             node_input_vars: HashMap::new(),
             flow_vars,
@@ -64,6 +69,16 @@ impl ExecutionContext {
         self.node_input_vars = vars;
     }
 
+    /// Set this data row's values, replacing any previous row's.
+    ///
+    /// Above `node_input_vars` on purpose: a row is more specific than the node it
+    /// runs in. A fan-out node supplying `expected_count` for the whole set and a row
+    /// supplying its own `channel` is the normal case, and where they name the same
+    /// thing the row is the one that changes per iteration.
+    pub fn set_row_vars(&mut self, vars: HashMap<String, Value>) {
+        self.row_vars = vars;
+    }
+
     /// Resolve a variable by name using the resolution order
     /// Most specific wins. `node_input_vars` sits above `context` deliberately: it
     /// is what the author typed on *this* node, while `context` is inherited from
@@ -81,8 +96,9 @@ impl ExecutionContext {
         // sitting in one tier shadows a real value in the next, and interpolates
         // into a request as the four letters n-u-l-l.
         let present = |v: &&Value| !v.is_null();
-        let tiers: [(&HashMap<String, Value>, VarSource); 5] = [
+        let tiers: [(&HashMap<String, Value>, VarSource); 6] = [
             (&self.execution_vars, VarSource::Request),
+            (&self.row_vars, VarSource::Row),
             (&self.node_input_vars, VarSource::Node),
             (&self.context, VarSource::EarlierStep),
             (&self.flow_vars, VarSource::Flow),
@@ -257,6 +273,7 @@ impl ExecutionContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VarSource {
     Request,
+    Row,
     Node,
     EarlierStep,
     Flow,
@@ -267,6 +284,7 @@ impl VarSource {
     pub fn label(&self) -> &'static str {
         match self {
             VarSource::Request => "the run request",
+            VarSource::Row => "this row",
             VarSource::Node => "this node",
             VarSource::EarlierStep => "an earlier step",
             VarSource::Flow => "flow variables",

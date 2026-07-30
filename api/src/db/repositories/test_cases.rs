@@ -325,6 +325,10 @@ mod tests {
             rows: vec![DataRow {
                 path: None,
                 needs_flow: false,
+                vars: [("channel", "sms"), ("campaignID", "c-123")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
                 id: "r1".into(),
                 name: Some("missing email".into()),
                 body: Some(r#"{"mobile":"9876500001"}"#.into()),
@@ -338,6 +342,11 @@ mod tests {
         assert_eq!(ds.rows[0].name.as_deref(), Some("missing email"));
         assert_eq!(ds.rows[0].body_override(), Some(r#"{"mobile":"9876500001"}"#));
         assert_eq!(ds.rows[0].expected_status_code(), Some(400));
+        // A row's values for the endpoint's own placeholders come back too. Worth its own
+        // assertion: a field the client sends and the server quietly drops is how the
+        // stored `expected_status` went missing for a week.
+        assert_eq!(ds.rows[0].vars.get("channel").map(String::as_str), Some("sms"));
+        assert_eq!(ds.rows[0].vars.get("campaignID").map(String::as_str), Some("c-123"));
 
         // The UI clears a dataset by sending an empty one — it must not be
         // resurrected by the PATCH-style `.or(existing)` merge.

@@ -120,12 +120,13 @@ Defined by `ExecutionContext::resolve` in `api/src/execution/variables.rs`.
 **Lowest number wins** — the first tier that has the name is used.
 
 1. `execution_vars` — one-off values passed in the execute request
-2. `node_input_vars` — per-node overrides set on the flow canvas
-3. `context` — exports from earlier test cases **and** `SAT.vars` set by scripts
-4. `flow_vars` — variables scoped to a flow
-5. `environment` — Globals + the active Environment merged client-side (env wins);
+2. `row_vars` — this data row's values for the request's own `{{names}}`
+3. `node_input_vars` — per-node overrides set on the flow canvas
+4. `context` — exports from earlier test cases **and** `SAT.vars` set by scripts
+5. `flow_vars` — variables scoped to a flow
+6. `environment` — Globals + the active Environment merged client-side (env wins);
    `SAT.env` writes land here
-6. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
+7. Built-ins — `{{$UUID}}`, `{{$Timestamp}}`, `{{$RandomEmail}}`, … (see
    `generate_builtin`)
 
 `resolve` delegates to `resolve_with_source`, so the order is stated once. In debug
@@ -144,18 +145,38 @@ on this node, while `context` is inherited from whatever ran earlier. Ranked the
 other way, a node that set `my_email` explicitly still sent the value an earlier
 step's pre-test script left behind. Don't swap them back.
 
-There is deliberately **no data-row tier** — a dataset row overrides the body
-wholesale rather than supplying variables (see below).
+`row_vars` sits above `node_input_vars` for the same kind of reason, one level
+finer: the node says what is true for the whole set (`expected_count`), the row says
+what changes per iteration (`channel`). Set per row on that row's **own clone** of
+the context, so one row's value cannot reach the next — `a_rows_value_beats_the_nodes_and_does_not_reach_the_next_row`
+pins both halves. A blank value is not a value: it is filtered out so the name falls
+through instead of sending an empty path segment.
 
 ## Data-Driven Testing
 
 A test case may carry a `dataset` — `{rows: [{id, name?, body?, check?}]}`, stored
 as JSON on `test_cases.dataset`. Each row runs the request once.
 
-There are **no named columns and no `data.*` namespace**: an earlier design had
-both and it lost on usability — the author had to learn a template-variable model
-before writing a single case. A row now overrides the *whole body*, which is
-exactly what the author already knows how to write.
+A row overrides the *whole body* rather than filling named body columns. An earlier
+design had a `data.*` namespace and author-defined columns, and it lost on usability:
+you had to learn a template-variable model and rewrite the payload as a template
+before writing a single case.
+
+**`DataRow.vars` is not that model coming back.** It holds values for the `{{names}}`
+*the request already declares* — `/campaigns/{{channel}}/pause/{{campaignID}}` — and
+the editor reads those names off the endpoint (`pathVariables` in `lib/dataset.ts`,
+mirroring `template_names`). Nothing to define, nothing to learn: you named them when
+you wrote the URL. The alternative was cutting the endpoint down to
+`{{baseUrl}}/api/v1/campaigns` so rows could append the rest, which leaves the Request
+tab describing a URL the test never sends. Bodies stay wholesale for the original
+reason; only the URL's own placeholders get columns.
+
+- Derived columns skip **built-ins** (`{{$UUID}}` is generated per use) and **a
+  placeholder the endpoint starts with**, which is the base URL — every endpoint here
+  begins `{{baseUrl}}/…` and a column for it in every dataset would be noise. A
+  placeholder anywhere else is a parameter.
+- Stored omitted-when-empty in a `BTreeMap`, so datasets written before it are
+  untouched and a saved dataset's JSON doesn't churn on key order.
 
 - **`body`** — replaces `test_case.payload` for that row (`resolve_body`); blank
   falls back to the payload. Interpolated either way, so `{{...}}` works in it.

@@ -865,6 +865,9 @@ export const TestCaseEditor = ({
                   dataset={dataset}
                   onChange={(d) => { setDataset(d); setIsDirty(true); }}
                   sharedAssertion={postTestScript}
+                  // The one being edited, not the saved one: adding {{channel}} to the URL
+                  // should offer the column before you save.
+                  endpoint={endpoint}
                 />
               </div>
             </ScrollArea>

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DatasetEditor } from "@/components/DatasetEditor";
-import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName, setRowNeedsFlow } from "@/lib/dataset";
+import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName, setRowNeedsFlow, setRowVar } from "@/lib/dataset";
 import type { Dataset } from "@/lib/api/types";
 
 function seed(): Dataset {
@@ -229,5 +229,74 @@ describe("DatasetEditor", () => {
     render(<DatasetEditor dataset={seed()} onChange={onChange} />);
     await userEvent.click(screen.getByRole("button", { name: /duplicate valid/i }));
     expect(onChange.mock.calls[0][0].rows).toHaveLength(2);
+  });
+});
+
+describe("DatasetEditor endpoint parameters", () => {
+  const endpoint =
+    "{{baseUrl}}/api/v1/campaigns/{{channel}}/pause/{{campaignID}}/{{recurrenceID}}";
+
+  it("grows a column per placeholder the endpoint declares", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint={endpoint} />);
+
+    // Named as written in the URL, so the column and the placeholder are obviously
+    // the same thing. baseUrl is the prefix, not a parameter.
+    expect(screen.getByText("channel")).toBeInTheDocument();
+    expect(screen.getByText("campaignID")).toBeInTheDocument();
+    expect(screen.getByText("recurrenceID")).toBeInTheDocument();
+    expect(screen.queryByText("baseUrl")).not.toBeInTheDocument();
+
+    // And the columns that were always there are still there, with the parameters
+    // sitting between Case and them.
+    // Spans only: the footer's help text mentions "Path / query" in a <strong>.
+    const headings = screen
+      .getAllByText(/^(Case|channel|campaignID|recurrenceID|Path \/ query|Body|Expect)$/)
+      .filter((el) => el.tagName === "SPAN")
+      .map((el) => el.textContent);
+    expect(headings).toEqual([
+      "Case", "channel", "campaignID", "recurrenceID", "Path / query", "Body", "Expect",
+    ]);
+  });
+
+  it("leaves a dataset alone when the endpoint has no parameters", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint="{{baseUrl}}/signup" />);
+    expect(screen.getByText("Case")).toBeInTheDocument();
+    expect(screen.getByText("Body")).toBeInTheDocument();
+    // Nothing extra: a signup case looks exactly as it did.
+    expect(screen.getByLabelText(/case name for row 1/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/channel for valid/i)).not.toBeInTheDocument();
+  });
+
+  it("records a value against the row and the name", async () => {
+    const onChange = vi.fn();
+    render(<DatasetEditor dataset={seed()} onChange={onChange} endpoint={endpoint} />);
+
+    await userEvent.type(screen.getByLabelText(/^channel for valid$/i), "sms");
+    expect(onChange.mock.calls.at(-1)![0].rows[0].vars).toEqual({ channel: "s" });
+  });
+
+  it("shows what a row already has for each parameter", () => {
+    let d = seed();
+    d = setRowVar(d, d.rows[0].id, "channel", "email");
+    d = setRowVar(d, d.rows[0].id, "campaignID", "c-456");
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} endpoint={endpoint} />);
+
+    expect(screen.getByLabelText(/^channel for valid$/i)).toHaveValue("email");
+    expect(screen.getByLabelText(/^campaignid for valid$/i)).toHaveValue("c-456");
+    // Unset stays empty rather than inventing something.
+    expect(screen.getByLabelText(/^recurrenceid for valid$/i)).toHaveValue("");
+  });
+
+  it("offers the column as soon as the URL mentions it, before saving", () => {
+    // The editor passes the endpoint being edited, not the saved one.
+    const { rerender } = render(
+      <DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint="{{baseUrl}}/campaigns" />,
+    );
+    expect(screen.queryByText("channel")).not.toBeInTheDocument();
+
+    rerender(
+      <DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint="{{baseUrl}}/campaigns/{{channel}}" />,
+    );
+    expect(screen.getByText("channel")).toBeInTheDocument();
   });
 });
