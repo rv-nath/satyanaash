@@ -209,7 +209,10 @@ reason; only the URL's own placeholders get columns.
   **A `Skipped` row is not a failure** — the fold counts only `Failed` and `Error`, so the
   aggregate stays `Passed`; four frontend sites had to be taught the same
   (`DatasetResultView`'s strip and status cell, `fanOutDetails`, `resultHeadline`).
-- **`DataRow.disabled`** parks a row that isn't finished. Skipped by `run_rows`
+- **`DataRow.disabled`** parks a row that isn't finished. Marked with a **⊘** in its own
+  column, ghosted until hovered — nothing is drawn against a row that runs, because
+  running is the norm and a column of ticks confirming it spends attention saying
+  "normal". Amber rather than the ⛓'s red: parking is a choice, not a blockade. Skipped by `run_rows`
   **whatever the caller asked for** — that is the whole difference from `needs_flow`,
   which says *where* a row can run and is honoured only by the editor. Nothing revives a
   parked row, because "not ready" isn't a precondition anything can satisfy.

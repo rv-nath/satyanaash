@@ -302,30 +302,37 @@ describe("DatasetEditor endpoint parameters", () => {
 });
 
 describe("DatasetEditor parking a row", () => {
-  it("ticks a row that runs", () => {
+  it("draws nothing for a row that runs — running is the norm, not news", () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
-    expect(screen.getByRole("checkbox", { name: /run valid/i })).toBeChecked();
+    // The control is there to be found, but ghosted: no tick, no badge, nothing
+    // decorating an ordinary row.
+    const control = screen.getByRole("button", { name: /disable valid/i });
+    expect(control.className).toContain("text-muted-foreground/25");
+    expect(control).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("unticks one that is parked", () => {
+  it("marks only the exception", () => {
     const d = seed();
     render(<DatasetEditor dataset={setRowDisabled(d, d.rows[0].id, true)} onChange={vi.fn()} />);
-    expect(screen.getByRole("checkbox", { name: /run valid/i })).not.toBeChecked();
+    const control = screen.getByRole("button", { name: /enable valid/i });
+    // Amber rather than the ⛓'s red: parking is a choice, not a blockade.
+    expect(control.className).toContain("text-warning");
+    expect(control).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("parks a row when unticked, and brings it back", async () => {
+  it("parks a row, and brings it back", async () => {
     const onChange = vi.fn();
     const d = seed();
     const { rerender } = render(<DatasetEditor dataset={d} onChange={onChange} />);
 
-    await userEvent.click(screen.getByRole("checkbox", { name: /run valid/i }));
+    await userEvent.click(screen.getByRole("button", { name: /disable valid/i }));
     expect(onChange.mock.calls[0][0].rows[0].disabled).toBe(true);
 
     onChange.mockClear();
     rerender(
       <DatasetEditor dataset={setRowDisabled(d, d.rows[0].id, true)} onChange={onChange} />,
     );
-    await userEvent.click(screen.getByRole("checkbox", { name: /run valid/i }));
+    await userEvent.click(screen.getByRole("button", { name: /enable valid/i }));
     expect(onChange.mock.calls[0][0].rows[0].disabled).toBe(false);
   });
 
@@ -338,11 +345,11 @@ describe("DatasetEditor parking a row", () => {
     );
   });
 
-  it("says what unticking does, so it doesn't read as delete", () => {
+  it("says what it does, so it doesn't read as delete", () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
-    expect(screen.getByRole("checkbox", { name: /run valid/i }).closest("label")).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /disable valid/i })).toHaveAttribute(
       "title",
-      expect.stringMatching(/park it while you draft/i),
+      expect.stringMatching(/park this row while you draft/i),
     );
   });
 });

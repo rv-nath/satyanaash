@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Trash2, Copy, AlertTriangle, Link2, Check } from "lucide-react";
+import { Plus, Trash2, Copy, AlertTriangle, Link2, CircleSlash } from "lucide-react";
 import type { Dataset } from "@/lib/api/types";
 import {
   addRow,
@@ -35,7 +35,7 @@ interface DatasetEditorProps {
   endpoint?: string;
 }
 
-// in-play, #, needs-flow, case, …one per endpoint parameter…, path, body, expect, duplicate, delete.
+// parked, #, needs-flow, case, …one per endpoint parameter…, path, body, expect, duplicate, delete.
 // Every text column flexes now that none of them holds a field, and Case gets the most
 // it can: it wraps rather than clipping, so width spent there is width spent on fewer
 // wrapped lines. Expect was a fixed 150px for a value that is usually three digits.
@@ -54,7 +54,7 @@ const gridFor = (params: string[]): string => {
   if (params.length === 0) return FIXED_GRID;
   const cols = FIXED_GRID.split(" ");
   const paramCols = params.map(() => "minmax(90px,0.5fr)").join(" ");
-  // After in-play, #, needs-flow and Case.
+  // After parked, #, needs-flow and Case.
   return [...cols.slice(0, 4), paramCols, ...cols.slice(4)].join(" ");
 };
 
@@ -235,9 +235,9 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
             >
               <span
                 className={`flex items-center justify-center text-muted-foreground ${CELL}`}
-                title="Ticked rows run. Untick one you're still drafting."
+                title="Parked — a row you're still drafting, skipped everywhere"
               >
-                <Check className="h-3 w-3" />
+                <CircleSlash className="h-3 w-3" />
               </span>
               <span className={CELL} />
               <span
@@ -285,25 +285,28 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
                   className="grid items-stretch border-t border-border first:border-t-0 hover:bg-muted/20"
                   style={{ gridTemplateColumns: grid }}
                 >
-                  {/* Ticked means in play. A checkbox rather than another icon: the ⛓
-                      beside it already carries a subtler meaning, and include/exclude is
-                      the one control everybody reads correctly. */}
-                  <label
-                    className={`flex h-9 items-center justify-center ${CELL}`}
+                  {/* Parked. Nothing is drawn for a row that runs: running is the norm,
+                      and decorating every row with a tick spends attention saying
+                      "normal". Ghosted until hovered, exactly as the ⛓ beside it — amber
+                      rather than red, because parking is a choice, not a blockade. */}
+                  <button
+                    type="button"
+                    onClick={() => onChange(setRowDisabled(dataset, row.id, !parked))}
+                    aria-label={`${parked ? "Enable" : "Disable"} ${label}`}
+                    aria-pressed={parked}
                     title={
                       parked
-                        ? "Not ready — skipped everywhere. Tick to run it."
-                        : "Runs. Untick to park it while you draft it."
+                        ? "Parked — skipped everywhere until you enable it"
+                        : "Park this row while you draft it"
                     }
+                    className={`flex h-9 items-center justify-center transition-colors ${CELL} ${
+                      parked
+                        ? "text-warning"
+                        : "text-muted-foreground/25 hover:text-muted-foreground"
+                    }`}
                   >
-                    <input
-                      type="checkbox"
-                      checked={!parked}
-                      onChange={(e) => onChange(setRowDisabled(dataset, row.id, !e.target.checked))}
-                      aria-label={`Run ${label}`}
-                      className="h-3.5 w-3.5 cursor-pointer accent-primary"
-                    />
-                  </label>
+                    <CircleSlash className="h-3.5 w-3.5" />
+                  </button>
 
                   <span
                     className={`pt-2 text-center text-xs text-muted-foreground ${CELL} ${

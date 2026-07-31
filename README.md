@@ -319,7 +319,7 @@ and the engine runs the request once per row.
 | Column | Meaning |
 |--------|---------|
 | **Case** | Label for the row, shown in the results. Optional — blank rows read as *Row 1*, *Row 2*, … |
-| **☑** | Ticked rows run. Untick one you're still drafting — see [Parking a row](#parking-a-row). |
+| **⊘** | Marks a row you're still drafting — see [Parking a row](#parking-a-row). Blank means it runs, which is the norm. |
 | **⛓** | Marks a row that needs a flow — see [Rows that can't run cold](#rows-that-cant-run-cold). Blank means it runs anywhere. |
 | *(one per `{{name}}` in the endpoint)* | This row's value for that placeholder — see below. Blank means the row doesn't set it. |
 | **Path / query** | Appended to the request's endpoint for this row — `?org=acme`, `/acme/summary`. Joins with `&` if the endpoint already has a query. Blank uses it as authored. |
@@ -428,8 +428,12 @@ overall verdict is the worst of the rows.
 
 ### Parking a row
 
-Untick a row's checkbox and it sends nothing, asserts nothing, and can't fail — somewhere
-to leave a case while you work out what it should say.
+Park a row with the **⊘** column and it sends nothing, asserts nothing, and can't fail —
+somewhere to leave a case while you work out what it should say.
+
+Nothing is drawn against a row that runs. Running is the norm, and a column of ticks
+confirming it would spend your attention saying "normal" fifteen times over; the marks are
+there for the exceptions. Hover the empty cell to find the control.
 
 This is not the same as ⛓, and the difference matters:
 
@@ -437,7 +441,7 @@ This is not the same as ⛓, and the difference matters:
 |---|:--:|:--:|
 | ordinary row | ✅ | ✅ |
 | ⛓ needs a flow | ❌ | ✅ — the flow is the precondition |
-| ☐ parked | ❌ | ❌ — nothing revives it |
+| ⊘ parked | ❌ | ❌ — nothing revives it |
 
 A parked row is still reported, as skipped, and the headline counts it: *"3/4 rows passed
 (1 of 5 not run)"*. A green line that hid a parked row would read as coverage it doesn't
