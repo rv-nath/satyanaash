@@ -110,6 +110,66 @@ describe("useExecutionStream", () => {
     expect(Object.keys(result.current.nodeRuns.f1)).toEqual(["nb"]);
   });
 
+  it("a superseded run writes nothing into the run that replaced it", async () => {
+    // Aborting a fetch doesn't stop the invocation that owns it. The old stream keeps
+    // delivering for a moment, and its events used to land in the log the new run had
+    // just cleared — which reads as "the console kept the last run's output", and puts
+    // the tail of one run into the copy of another.
+    let releaseOld: (() => void) | null = null;
+    const encoder = new TextEncoder();
+    let oldSent = false;
+
+    const oldStream = {
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (!oldSent) {
+              oldSent = true;
+              // Held until the test lets it go, by which time run 2 has started.
+              await new Promise<void>((resolve) => { releaseOld = resolve; });
+              return {
+                done: false,
+                value: encoder.encode(`data: ${JSON.stringify(passed("stale-node"))}\n\n`),
+              };
+            }
+            return { done: true, value: undefined };
+          },
+        }),
+      },
+    };
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(oldStream)
+      .mockResolvedValue(sseResponse([passed("fresh-node")], true));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useExecutionStream());
+
+    act(() => { void result.current.execute("f1"); });
+    await waitFor(() => expect(releaseOld).not.toBeNull());
+
+    // Run 2 supersedes it.
+    act(() => { void result.current.execute("f1", { step: true }) });
+    await waitFor(() => expect(result.current.nodeRuns.f1?.["fresh-node"]).toBeDefined());
+
+    // Now let the abandoned stream deliver.
+    await act(async () => {
+      releaseOld!();
+      await Promise.resolve();
+    });
+
+    expect(result.current.nodeRuns.f1["stale-node"]).toBeUndefined();
+    const messages = (result.current.logsByFlow.f1 ?? []).map((l) => l.message);
+    expect(messages.filter((m) => m.includes("stale-node"))).toEqual([]);
+    // And the old invocation's `finally` hasn't reported the new run as finished.
+    expect(result.current.isExecuting).toBe(true);
+
+    act(() => result.current.cancelExecution());
+  });
+
   it("asks the server to pause between nodes only when told to step", async () => {
     const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
     vi.stubGlobal("fetch", fetchMock);

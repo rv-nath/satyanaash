@@ -153,6 +153,12 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
   const onEnvWritesRef = useRef(onEnvWrites);
   onEnvWritesRef.current = onEnvWrites;
 
+  // Which run is the current one. Aborting a fetch doesn't stop the invocation that
+  // owns it: its loop still unwinds, its catch still runs, and its `finally` still
+  // fires — after the run that replaced it has already set the state that `finally`
+  // resets. A superseded run must therefore write nothing at all.
+  const runSeqRef = useRef(0);
+
   const addLog = useCallback((message: string, type: ConsoleLog['type'] = 'info', details?: ConsoleLogDetail[]) => {
     const flowId = targetFlowRef.current;
     if (!flowId) return;
@@ -225,6 +231,10 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
   }, [addLog]);
 
   const execute = useCallback(async (flowId: string, options: ExecuteFlowRequest = {}) => {
+    // This run's ticket. Everything below writes only while it holds it.
+    const runSeq = ++runSeqRef.current;
+    const current = () => runSeqRef.current === runSeq;
+
     // Cancel any previous execution
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -253,15 +263,20 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
 
     // Where the stream loop puts what it reads. Bundled rather than passed one
     // parameter at a time: there are six of them now.
+    //
+    // Every writer is gated on this still being the current run. The previous stream
+    // keeps delivering for a moment after it's aborted, and its events would otherwise
+    // land in the log this run has just cleared — which reads as "the console kept the
+    // last run's output", and puts the tail of one run into the copy of another.
     const sink: EventSink = {
-      addLog,
+      addLog: (message, type, details) => { if (current()) addLog(message, type, details); },
       envWrites,
-      recordResult,
-      setActiveNodeId,
-      setPausedNodeId,
-      setRunMode,
-      setExecutionId,
-      setTotalNodes,
+      recordResult: (nodeId, result) => { if (current()) recordResult(nodeId, result); },
+      setActiveNodeId: (id) => { if (current()) setActiveNodeId(id); },
+      setPausedNodeId: (id) => { if (current()) setPausedNodeId(id); },
+      setRunMode: (next) => { if (current()) setRunMode(next); },
+      setExecutionId: (id) => { if (current()) setExecutionId(id); },
+      setTotalNodes: (n) => { if (current()) setTotalNodes(n); },
     };
 
     try {
@@ -336,12 +351,13 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
 
       // Persist SAT.env writes made during the run (matches standalone behaviour).
       const written = Object.keys(envWrites);
-      if (written.length > 0) {
+      if (written.length > 0 && current()) {
         onEnvWritesRef.current?.(envWrites);
         addLog(`Saved ${written.length} environment variable(s): ${written.join(', ')}`, 'info');
       }
 
     } catch (error) {
+      if (!current()) return; // superseded: not this run's news to report
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           // Execution was cancelled, already logged
@@ -352,15 +368,20 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
         addLog('Unknown error occurred', 'error');
       }
     } finally {
-      setExecutingFlowId(null);
-      // The stream is over however it ended, so nothing is running and nothing is
-      // waiting to be pressed. The results stay: they are what the canvas and the
-      // node popovers report until the next run.
-      setActiveNodeId(null);
-      setPausedNodeId(null);
-      setRunMode('idle');
-      setExecutionId(null);
-      abortControllerRef.current = null;
+      // Only if this is still the run in progress. A superseded invocation reaching here
+      // would otherwise report *its* ending as the current one's: no spinner, no step
+      // controls, and no execution id for the controls to address.
+      if (current()) {
+        setExecutingFlowId(null);
+        // The stream is over however it ended, so nothing is running and nothing is
+        // waiting to be pressed. The results stay: they are what the canvas and the
+        // node popovers report until the next run.
+        setActiveNodeId(null);
+        setPausedNodeId(null);
+        setRunMode('idle');
+        setExecutionId(null);
+        abortControllerRef.current = null;
+      }
     }
   }, [addLog, recordResult]);
 
