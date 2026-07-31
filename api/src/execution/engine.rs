@@ -261,6 +261,25 @@ fn plan_rows(node: &GraphNode, test_case: &TestCase, logs: &mut Vec<String>) -> 
                     missing.join(", ")
                 ));
             }
+            // A row left out of the selection produces no result at all — unlike a
+            // parked one, which is reported as skipped. Without this the only clue is a
+            // gap in the row numbers, which reads as "the last one didn't run" when it
+            // was really the first two.
+            if selected.len() < rows.len() {
+                let left_out: Vec<String> = rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, row)| !wanted.iter().any(|id| *id == row.id))
+                    .map(|(i, _)| (i + 1).to_string())
+                    .collect();
+                logs.push(format!(
+                    "Running {} of the {} data rows in \"{}\" — row(s) {} are not selected on this node",
+                    selected.len(),
+                    rows.len(),
+                    test_case.name,
+                    left_out.join(", ")
+                ));
+            }
             if rows.iter().any(|row| row.id.trim().is_empty()) {
                 logs.push(
                     "⚠ Some data rows have no id and can't be selected individually — open the request's Data tab and save it once to give them ids"
@@ -3597,6 +3616,66 @@ mod tests {
             vec![Some(0), Some(2)],
             "dataset order, not selection order"
         );
+    }
+
+    /// A row left out of the selection produces no result at all, unlike a parked one
+    /// which is reported as skipped. The only other clue is a gap in the row numbers,
+    /// and that reads as "the last one didn't run" when it was really a middle one — so
+    /// the node says which rows it left out.
+    #[tokio::test]
+    async fn a_node_says_which_rows_its_selection_left_out() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", &stub_times(200, "{}", 3).await, "POST");
+        tc.dataset = Some(dataset_of(vec![
+            ("one", Some("{}"), Some("200")),
+            ("two", Some("{}"), Some("200")),
+            ("three", Some("{}"), Some("200")),
+        ]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true, "rowIds": ["r2"]
+        }));
+
+        let aggregate = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        let logs = aggregate.logs.join("\n");
+        assert!(logs.contains("Running 1 of the 3 data rows"), "{}", logs);
+        // Named by their place in the dataset, which is how the results table numbers
+        // them — "rows 1, 2" beside results starting at 3.
+        assert!(logs.contains("row(s) 1, 2 are not selected"), "{}", logs);
+    }
+
+    /// Running every row says nothing: there is nothing left out to report.
+    #[tokio::test]
+    async fn a_node_running_every_row_says_nothing_about_selection() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", &stub_times(200, "{}", 3).await, "POST");
+        tc.dataset = Some(dataset_of(vec![
+            ("one", Some("{}"), Some("200")),
+            ("two", Some("{}"), Some("200")),
+        ]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEachRow": true, "rowIds": ["r0", "r1"]
+        }));
+
+        let aggregate = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        assert!(!aggregate.logs.join("\n").contains("not selected"), "{:?}", aggregate.logs);
     }
 
     #[tokio::test]
