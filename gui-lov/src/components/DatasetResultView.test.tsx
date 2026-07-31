@@ -102,12 +102,81 @@ describe("DatasetResultView", () => {
       />,
     );
 
-    // Counted apart from both passes and failures.
-    expect(screen.getByText(/1 passed · 1 needs a flow/)).toBeInTheDocument();
+    // Counted apart from both passes and failures, and the header says what the run
+    // actually covered rather than how many rows exist.
+    expect(screen.getByText("1 of 2 rows ran")).toBeInTheDocument();
+    expect(screen.getByText(/1 passed/)).toBeInTheDocument();
     expect(screen.queryByText(/not passed/)).not.toBeInTheDocument();
+  });
 
-    // And the row itself reads as muted, not as a failure.
+  it("folds the rows that didn't run, but says how many", async () => {
+    // A skipped row has no request, response or verdict — it isn't a result. But hiding
+    // it silently would make "1 passed" read as full coverage.
+    render(
+      <DatasetResultView
+        aggregate={{
+          node_id: "direct", status: "passed", duration_ms: 28, logs: [],
+          iterations: [
+            {
+              node_id: "direct", status: "passed", duration_ms: 21, logs: [],
+              row_index: 0, row_label: "runs cold", expected: "HTTP 401",
+              response: { status: 401, headers: {}, body: "{}" },
+            },
+            {
+              node_id: "direct", status: "skipped", duration_ms: 0, logs: [],
+              row_index: 1, row_label: "needs a login",
+              error_message: "Needs a flow — \"Run dataset\" has no earlier steps",
+            },
+          ],
+        }}
+        selected={null} onSelect={vi.fn()}
+        wordWrap onRerun={vi.fn()} onClear={vi.fn()} running={false}
+        setWordWrap={vi.fn()}
+      />,
+    );
+
+    // Folded: the row that ran is listed, the one that didn't isn't.
+    expect(screen.getByText("runs cold")).toBeInTheDocument();
+    expect(screen.queryByText("needs a login")).not.toBeInTheDocument();
+    // But it is counted, in the open.
+    const toggle = screen.getByRole("button", { name: /1 not run/i });
+
+    await userEvent.click(toggle);
+    expect(screen.getByText("needs a login")).toBeInTheDocument();
+    // And reads as muted, not as a failure.
     expect(screen.getByText("skipped").className).toContain("text-muted-foreground");
+
+    await userEvent.click(screen.getByRole("button", { name: /hide 1 not run/i }));
+    expect(screen.queryByText("needs a login")).not.toBeInTheDocument();
+  });
+
+  it("numbers a row by its place in the dataset, not in the table", async () => {
+    // With the skips folded away, row 3 here must still be row 3 in the Data tab —
+    // otherwise drilling in opens someone else's result.
+    const onSelect = vi.fn();
+    render(
+      <DatasetResultView
+        aggregate={{
+          node_id: "direct", status: "passed", duration_ms: 9, logs: [],
+          iterations: [
+            { node_id: "direct", status: "skipped", duration_ms: 0, logs: [], row_index: 0, row_label: "parked" },
+            { node_id: "direct", status: "skipped", duration_ms: 0, logs: [], row_index: 1, row_label: "also parked" },
+            {
+              node_id: "direct", status: "passed", duration_ms: 5, logs: [],
+              row_index: 2, row_label: "the one that ran",
+              response: { status: 200, headers: {}, body: "{}" },
+            },
+          ],
+        }}
+        selected={null} onSelect={onSelect}
+        wordWrap onRerun={vi.fn()} onClear={vi.fn()} running={false}
+        setWordWrap={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("3")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("the one that ran"));
+    expect(onSelect).toHaveBeenCalledWith(2);
   });
 
   it("lists the rows", () => {

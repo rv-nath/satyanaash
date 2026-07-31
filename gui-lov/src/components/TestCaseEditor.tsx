@@ -1355,12 +1355,23 @@ export function DatasetResultView({
 }) {
   const rows = aggregate.iterations ?? [];
   const passed = rows.filter((r) => r.status === "passed").length;
-  // A row skipped because it needs a flow is neither a pass nor a problem. Counting it
-  // as "not passed" turned the whole strip red on a run where nothing failed — the
-  // false red this flag exists to remove.
+  // A row skipped because it is parked or needs a flow is neither a pass nor a problem.
+  // Counting it as "not passed" turned the whole strip red on a run where nothing failed
+  // — the false red these flags exist to remove.
   const skipped = rows.filter((r) => r.status === "skipped").length;
   const notPassed = rows.length - passed - skipped;
   const allPassed = notPassed === 0;
+
+  // A skipped row has no request, no response and no verdict, so it isn't a result — and
+  // fifteen of them to find two that ran is a table you have to search. They're folded
+  // away by default, but *counted* in the open: "2 rows, 2 passed" beside thirteen
+  // untested cases reads as coverage it hasn't got.
+  const [showSkipped, setShowSkipped] = useState(false);
+  // The original index travels with the row: drilling in looks the row up by it, so
+  // filtering the list without it would open the wrong one.
+  const visible = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => showSkipped || row.status !== "skipped");
 
   // Drilled into one row: breadcrumb + the standard single-result view.
   if (selected !== null && rows[selected]) {
@@ -1426,13 +1437,26 @@ export function DatasetResultView({
             <XCircle className="h-5 w-5 text-destructive" />
           )}
           <span className="font-semibold">
-            {rows.length} {rows.length === 1 ? "row" : "rows"}
+            {/* "2 of 17 rows" rather than "2 rows": the seventeen are what you wrote, and
+                the two are what this run covered. */}
+            {skipped > 0
+              ? `${rows.length - skipped} of ${rows.length} rows ran`
+              : `${rows.length} ${rows.length === 1 ? "row" : "rows"}`}
           </span>
           <span className="text-sm text-muted-foreground">
             {passed} passed
             {notPassed > 0 ? ` · ${notPassed} not passed` : ""}
-            {skipped > 0 ? ` · ${skipped} need${skipped === 1 ? "s" : ""} a flow` : ""}
           </span>
+          {skipped > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowSkipped(!showSkipped)}
+              className="text-sm text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+              title="A parked row, or one that needs a flow — nothing was sent for it"
+            >
+              {showSkipped ? `hide ${skipped} not run` : `${skipped} not run`}
+            </button>
+          )}
           <span className="text-sm text-muted-foreground">{aggregate.duration_ms}ms</span>
         </div>
         <div className="flex items-center gap-1">
@@ -1464,13 +1488,15 @@ export function DatasetResultView({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((row, i) => (
+            {visible.map(({ row, index: i }) => (
               <TableRow
                 key={i}
                 className="cursor-pointer"
                 onClick={() => onSelect(i)}
                 title="Show this row's request and response"
               >
+                {/* The dataset's own numbering, not a position in this table — so row 7
+                    here is row 7 in the Data tab even with the skips folded away. */}
                 <TableCell className="py-2 text-xs text-muted-foreground">{i + 1}</TableCell>
                 <TableCell className="py-2 text-[13px] font-medium">
                   {row.row_label ?? `Row ${i + 1}`}
