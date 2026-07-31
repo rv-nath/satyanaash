@@ -45,3 +45,33 @@ describe("consoleText", () => {
     expect(formatLogs([])).toBe("");
   });
 });
+
+describe("copying a fanned-out run", () => {
+  it("keeps every row's verdict, not just its request", () => {
+    // The verdict lives on the collapsed line as a `note`; a formatter that only knew
+    // about label and value would paste the requests and lose which of them failed.
+    const text = formatLog({
+      timestamp: "2026-07-31T09:15:00Z",
+      message: "✗ Send SMS: 1/2 rows passed",
+      type: "error",
+      details: [
+        { label: "Error", value: "1 of 2 rows did not pass", type: "error" },
+        { label: "✓  1  valid", note: "201  40ms", value: "Request: POST http://host/a" },
+        {
+          label: "✗  2  no sender",
+          note: "400  12ms  Expected HTTP 201, got 400",
+          value: "Request: POST http://host/b\nStatus: 400",
+          type: "error",
+        },
+      ],
+    });
+
+    expect(text).toContain("Error: 1 of 2 rows did not pass");
+    // The row line reads as a sentence, so it takes no colon.
+    expect(text).toContain("✗  2  no sender  400  12ms  Expected HTTP 201, got 400");
+    expect(text).not.toContain("no sender  400  12ms  Expected HTTP 201, got 400:");
+    // And its request follows, indented under it.
+    expect(text).toContain("    Status: 400");
+    expect(text).toContain("    Request: POST http://host/a");
+  });
+});

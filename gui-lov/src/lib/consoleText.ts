@@ -20,12 +20,21 @@ export function formatTimestamp(timestamp: string): string {
 export function formatLog(log: ConsoleLog): string {
   const lines = [`[${formatTimestamp(log.timestamp)}] ${log.message}`];
   for (const detail of log.details ?? []) {
+    // A data row's line already reads as a sentence — "✗  3  no sender  400  12ms
+    // Expected HTTP 201, got 400" — so it takes no colon; its request and response
+    // follow indented beneath it.
+    const head = detail.note !== undefined
+      ? `${detail.label}  ${detail.note}`
+      : `${detail.label}:`;
     if (detail.value.includes("\n")) {
       // A JSON body keeps its own shape, indented as a block under its label.
-      lines.push(`  ${detail.label}:`);
+      lines.push(`  ${head}`);
       for (const line of detail.value.split("\n")) lines.push(`    ${line}`);
+    } else if (detail.note !== undefined) {
+      lines.push(`  ${head}`);
+      if (detail.value) lines.push(`    ${detail.value}`);
     } else {
-      lines.push(`  ${detail.label}: ${detail.value}`);
+      lines.push(`  ${head} ${detail.value}`);
     }
   }
   return lines.join("\n");

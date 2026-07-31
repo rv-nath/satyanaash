@@ -11,6 +11,10 @@ export interface ConsoleLogDetail {
   label: string;
   value: string;
   type?: "info" | "error";
+  /** Shown beside the label on the collapsed line, in place of the size. For a data row
+   *  that is its verdict — the status, the time, and why — so the list of rows reads as a
+   *  table without needing a second copy of itself underneath. */
+  note?: string;
 }
 
 /** Pretty-print a JSON body; anything else is passed through untouched. */
@@ -66,20 +70,30 @@ export function resultDetails(result: TestCaseExecutionResult): ConsoleLogDetail
   return details;
 }
 
+/** How wide the name column has to be for a set of rows to line up. */
+const labelWidth = (rows: TestCaseExecutionResult[]): number =>
+  Math.max(0, ...rows.map((r) => (r.row_label ?? "").length));
+
+/** A row's identity: its number and name, padded so a column of them lines up. The
+ *  console is monospace, so padding is all alignment takes. */
+export function rowHeading(row: TestCaseExecutionResult, width: number): string {
+  const n = String((row.row_index ?? 0) + 1).padStart(2);
+  return `${statusIcon(row.status)} ${n}  ${(row.row_label ?? "").padEnd(width)}`;
+}
+
+/** A row's verdict: what came back, how long it took, and why it didn't pass. */
+export function rowVerdict(row: TestCaseExecutionResult): string {
+  // The status column is sized for an HTTP code; a request that never went out has
+  // none, so say so rather than overflowing the alignment with a word.
+  const status = row.response ? String(row.response.status) : "—";
+  const reason = row.error_message ? `  ${row.error_message}` : "";
+  return `${status.padStart(3)}  ${row.duration_ms}ms${reason}`;
+}
+
 /** One aligned line per row: the matrix at a glance, and copyable as text. */
 export function rowsSummary(rows: TestCaseExecutionResult[]): string {
-  const width = Math.max(0, ...rows.map((r) => (r.row_label ?? "").length));
-  return rows
-    .map((row) => {
-      const n = String((row.row_index ?? 0) + 1).padStart(2);
-      const label = (row.row_label ?? "").padEnd(width);
-      // The status column is sized for an HTTP code; a request that never went out has
-      // none, so say so rather than overflowing the alignment with a word.
-      const status = row.response ? String(row.response.status) : "—";
-      const reason = row.error_message ? `  ${row.error_message}` : "";
-      return `${statusIcon(row.status)} ${n}  ${label}  ${status.padStart(3)}  ${row.duration_ms}ms${reason}`;
-    })
-    .join("\n");
+  const width = labelWidth(rows);
+  return rows.map((row) => `${rowHeading(row, width)}  ${rowVerdict(row)}`).join("\n");
 }
 
 /**
@@ -91,25 +105,33 @@ export function rowsSummary(rows: TestCaseExecutionResult[]): string {
  */
 export function fanOutDetails(aggregate: TestCaseExecutionResult): ConsoleLogDetail[] {
   const rows = aggregate.iterations ?? [];
-  const details: ConsoleLogDetail[] = [{ label: "Rows", value: rowsSummary(rows) }];
+  const details: ConsoleLogDetail[] = [];
+  const width = labelWidth(rows);
 
-  for (const row of rows) {
-    // A skipped row was never sent, so a block would hold nothing — and colouring it
-    // as an error would say something went wrong when nothing did. Its summary line
-    // already carries the reason.
-    if (row.status === "passed" || row.status === "skipped") continue;
-    const label = `Row ${(row.row_index ?? 0) + 1} · ${row.row_label ?? ""}`.trim();
-    // Reuse the single-request details, minus the per-row logs — the aggregate already
-    // carries every row's logs, prefixed, so repeating them here would double them up.
-    const value = resultDetails({ ...row, logs: [] })
-      .map((d) => `${d.label}: ${d.value}`)
-      .join("\n");
-    details.push({ label, value, type: "error" });
-  }
-
+  // Introduces the rows rather than footnoting them.
   if (aggregate.error_message) {
     details.push({ label: "Error", value: aggregate.error_message, type: "error" });
   }
+
+  for (const row of rows) {
+    const failed = row.status !== "passed" && row.status !== "skipped";
+    // A row that was never sent has no request or response to show, so its reason is the
+    // whole of it. Everything else carries its request and response, folded — the per-row
+    // logs left out, since the aggregate already holds every row's, prefixed.
+    const value =
+      row.status === "skipped"
+        ? (row.error_message ?? "Not run")
+        : resultDetails({ ...row, logs: [] })
+            .map((d) => `${d.label}: ${d.value}`)
+            .join("\n");
+    details.push({
+      label: rowHeading(row, width),
+      note: rowVerdict(row),
+      value,
+      ...(failed ? { type: "error" as const } : {}),
+    });
+  }
+
   if (aggregate.logs && aggregate.logs.length > 0) {
     details.push({ label: "Logs", value: aggregate.logs.join("\n") });
   }

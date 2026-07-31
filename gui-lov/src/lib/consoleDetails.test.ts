@@ -84,7 +84,10 @@ describe("rowsSummary", () => {
 });
 
 describe("fanOutDetails", () => {
-  it("blocks out only the rows that didn't pass", () => {
+  it("lists every row exactly once", () => {
+    // It used to list all of them in a summary and then repeat the failures as blocks
+    // underneath, so a failing row appeared twice and a passing one had no way to show
+    // its request at all.
     const details = fanOutDetails(
       aggregate([
         row(0, "valid", "passed", 201),
@@ -92,21 +95,59 @@ describe("fanOutDetails", () => {
         row(2, "no sender", "failed", 400, "Expected HTTP 201, got 400"),
       ]),
     );
-    const labels = details.map((d) => d.label);
-    expect(labels[0]).toBe("Rows");
-    // One block, for the one failure — a green fan-out stays one screen.
-    expect(labels.filter((l) => l.startsWith("Row "))).toEqual(["Row 3 · no sender"]);
-    const block = details.find((d) => d.label === "Row 3 · no sender")!;
-    expect(block.value).toContain("POST http://host/sms?n=2");
-    expect(block.value).toContain("Status: 400");
+
+    const rowEntries = details.filter((d) => d.note !== undefined);
+    expect(rowEntries).toHaveLength(3);
+    expect(rowEntries.map((d) => d.label.trim())).toEqual([
+      "✓  1  valid",
+      "✓  2  also fine",
+      "✗  3  no sender",
+    ]);
+    // Only the one that didn't pass is coloured as a problem.
+    expect(rowEntries.map((d) => d.type)).toEqual([undefined, undefined, "error"]);
+  });
+
+  it("puts a row's verdict on its collapsed line and its request behind it", () => {
+    const details = fanOutDetails(
+      aggregate([row(2, "no sender", "failed", 400, "Expected HTTP 201, got 400")]),
+    );
+    const entry = details.find((d) => d.note !== undefined)!;
+
+    // Scannable without opening anything.
+    expect(entry.note).toContain("400");
+    expect(entry.note).toContain("Expected HTTP 201, got 400");
+    // And the whole request and response one click away — for passing rows too, which
+    // previously had nowhere to show them.
+    expect(entry.value).toContain("POST http://host/sms?n=2");
+    expect(entry.value).toContain("Status: 400");
+  });
+
+  it("aligns the row names into a column", () => {
+    // The console is monospace, so padding the label is all alignment takes.
+    const details = fanOutDetails(
+      aggregate([row(0, "short", "passed", 201), row(1, "a much longer name", "passed", 201)]),
+    );
+    const [a, b] = details.filter((d) => d.note !== undefined);
+    expect(a.label).toHaveLength(b.label.length);
+  });
+
+  it("leads with the summary rather than footnoting it", () => {
+    // "1 of 2 rows did not pass" underneath the rows reads as a footnote; above them it
+    // says what you are about to look at.
+    const agg = aggregate([
+      row(0, "valid", "passed", 201),
+      row(1, "no sender", "failed", 400, "Expected HTTP 201, got 400"),
+    ]);
+    const labels = fanOutDetails(agg).map((d) => d.label);
+    expect(labels[0]).toBe("Error");
   });
 
   it("doesn't repeat each row's logs, which the aggregate already carries", () => {
     const failing = row(0, "valid", "failed", 400, "nope");
     failing.logs = ["a row note"];
     const details = fanOutDetails(aggregate([failing]));
-    const block = details.find((d) => d.label.startsWith("Row "))!;
-    expect(block.value).not.toContain("a row note");
+    const entry = details.find((d) => d.note !== undefined)!;
+    expect(entry.value).not.toContain("a row note");
     expect(details.find((d) => d.label === "Logs")!.value).toContain("⚠ something worth saying");
   });
 });
@@ -122,16 +163,19 @@ describe("a skipped row", () => {
     error_message: 'Needs a flow — "Run dataset" has no earlier steps to satisfy it',
   };
 
-  it("gets no block of its own, having sent nothing", () => {
-    // Colouring an empty block red would say something went wrong when nothing did.
+  it("holds its reason rather than an empty request, and isn't coloured as a problem", () => {
     const details = fanOutDetails({
       node_id: "direct", status: "passed", duration_ms: 40, logs: [],
       iterations: [row(0, "runs cold", "passed", 401), skipped],
     });
-    expect(details.filter((d) => d.label.startsWith("Row "))).toHaveLength(0);
-    // It is still visible in the summary, with its reason.
-    expect(details[0].value).toContain("needs a login");
-    expect(details[0].value).toContain("Needs a flow");
+    const entry = details.filter((d) => d.note !== undefined)[1];
+
+    expect(entry.label).toContain("needs a login");
+    // Nothing was sent, so the reason is the whole of it.
+    expect(entry.value).toContain("Needs a flow");
+    expect(entry.value).not.toContain("Request:");
+    // Nothing went wrong, so nothing is red.
+    expect(entry.type).toBeUndefined();
   });
 
   it("shows a dash where an HTTP code would be, keeping the columns aligned", () => {

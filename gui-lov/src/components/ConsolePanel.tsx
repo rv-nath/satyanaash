@@ -247,7 +247,9 @@ const ConsolePanel = ({
 };
 
 const DetailRow = ({ detail }: { detail: ConsoleLogDetail }) => {
-  const foldable = worthFolding(detail.value);
+  // A detail carrying a note is a row of a table: it folds whatever its size, so a
+  // column of them stays a column instead of some lines sprouting into blocks.
+  const foldable = detail.note !== undefined || worthFolding(detail.value);
   const [open, setOpen] = useState(!foldable);
   const isMultiline = detail.value.includes('\n');
   const colorClass = detail.type === 'error' ? 'text-destructive' : 'text-console-text';
@@ -271,10 +273,14 @@ const DetailRow = ({ detail }: { detail: ConsoleLogDetail }) => {
           className="flex w-full items-center gap-1 rounded text-left hover:bg-muted/10"
         >
           {open ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-          <span className={detail.type === 'error' ? 'text-destructive' : 'text-muted-foreground'}>
+          <span className={`whitespace-pre ${detail.type === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}>
             {detail.label}
           </span>
-          <span className="text-muted-foreground/60">{detailSummary(detail.value)}</span>
+          {/* A row's verdict where a big block would say how big it is: the size of a
+              response is not what you are scanning a list of rows for. */}
+          <span className={`whitespace-pre ${detail.note !== undefined ? 'text-console-text' : 'text-muted-foreground/60'}`}>
+            {detail.note ?? detailSummary(detail.value)}
+          </span>
         </button>
         {open && body}
       </div>
