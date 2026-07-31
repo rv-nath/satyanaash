@@ -435,6 +435,10 @@ Nothing is drawn against a row that runs. Running is the norm, and a column of t
 confirming it would spend your attention saying "normal" fifteen times over; the marks are
 there for the exceptions. Hover the empty cell to find the control.
 
+A parked row is tinted, and its **name** is ruled through — but not its payload, which is
+the thing you come back to finish, and which a line through monospace JSON makes unreadable.
+The text itself isn't faded any further either: it has to stay legible enough to find.
+
 This is not the same as ⛓, and the difference matters:
 
 | | Runs from **Run dataset** | Runs from a **flow node** |

@@ -86,6 +86,15 @@ interface CellProps {
   /** Proportional rather than monospace — a case name is prose, not a payload. */
   prose?: boolean;
   /**
+   * Ruled through, because this row is parked.
+   *
+   * Only ever the Case name. A line through monospace JSON collides with the braces and
+   * quotes and stops the payload being readable at all, and the payload is what you come
+   * back to finish. Not applied while editing either — you can't read what you're typing
+   * through a line.
+   */
+  struck?: boolean;
+  /**
    * Show all of it, wrapping and growing the row, instead of clipping to one line.
    *
    * For the Case column. A row's name is what identifies it — reading the matrix means
@@ -117,6 +126,7 @@ function EditableCell({
   hint,
   dim,
   prose,
+  struck,
   wrap,
   editorHeight,
 }: CellProps) {
@@ -134,7 +144,7 @@ function EditableCell({
           title={!wrap && preview ? preview : undefined}
           className={`block w-full px-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
             wrap ? "min-h-9 break-words py-2 leading-snug" : "h-9 truncate"
-          } ${prose ? "text-[13px]" : "font-mono text-xs"} ${
+          } ${prose ? "text-[13px]" : "font-mono text-xs"} ${struck ? "line-through" : ""} ${
             preview ? (tone ?? "text-foreground") : "text-muted-foreground/70"
           }`}
         >
@@ -282,7 +292,11 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
               return (
                 <div
                   key={row.id}
-                  className="grid items-stretch border-t border-border first:border-t-0 hover:bg-muted/20"
+                  className={`grid items-stretch border-t border-border first:border-t-0 hover:bg-muted/20 ${
+                    // Tinted rather than fainter: 50% is already near the legibility
+                    // floor, and a parked row is one you mean to come back and finish.
+                    parked ? "bg-muted/30" : ""
+                  }`}
                   style={{ gridTemplateColumns: grid }}
                 >
                   {/* Parked. Nothing is drawn for a row that runs: running is the norm,
@@ -351,6 +365,7 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
                     label={`Case name for row ${i + 1}`}
                     dim={dim}
                     prose
+                    struck={parked}
                     wrap
                     editorHeight="h-[72px]"
                   />

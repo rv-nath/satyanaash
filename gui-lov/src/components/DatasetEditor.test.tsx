@@ -345,6 +345,33 @@ describe("DatasetEditor parking a row", () => {
     );
   });
 
+  it("rules through the name, but never the payload", () => {
+    // A line through monospace JSON collides with the braces and quotes, and the payload
+    // is the thing you come back to finish.
+    let d = seed();
+    d = setRowDisabled(d, d.rows[0].id, true);
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    expect(screen.getByLabelText(/case name for row 1/i).className).toContain("line-through");
+    expect(screen.getByLabelText(/^body for valid$/i).className).not.toContain("line-through");
+  });
+
+  it("doesn't rule through what you're typing", async () => {
+    let d = seed();
+    d = setRowDisabled(d, d.rows[0].id, true);
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    await userEvent.click(screen.getByLabelText(/case name for row 1/i));
+    const editor = screen.getByLabelText(/case name for row 1/i);
+    expect(editor.tagName).toBe("TEXTAREA");
+    expect(editor.className).not.toContain("line-through");
+  });
+
+  it("leaves a running row's name alone", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    expect(screen.getByLabelText(/case name for row 1/i).className).not.toContain("line-through");
+  });
+
   it("says what it does, so it doesn't read as delete", () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
     expect(screen.getByRole("button", { name: /disable valid/i })).toHaveAttribute(
