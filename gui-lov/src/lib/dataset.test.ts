@@ -9,6 +9,7 @@ import {
   pathVariables,
   rowVar,
   runnableInFlow,
+  runnableLabel,
   setRowDisabled,
   setRowVar,
   oneLine,
@@ -235,5 +236,38 @@ describe("parking a row", () => {
 
     expect(runnableAlone(d)).toHaveLength(0);
     expect(runnableInFlow(d).map((r) => r.name)).toEqual(["finished"]);
+  });
+});
+
+describe("runnableLabel", () => {
+  const withRows = (n: number) => {
+    let d = emptyDataset();
+    for (let i = 0; i < n; i++) d = addRow(d);
+    return d;
+  };
+
+  it("shows a bare total when every row will run", () => {
+    // "17/17" is noise — the same reason a running row carries no marker.
+    expect(runnableLabel(withRows(17))).toBe("17");
+  });
+
+  it("shows the fraction when some rows won't run here", () => {
+    // The reported case: 17 rows, 15 of them needing a login, so the button that said
+    // "(17)" sent two requests.
+    let d = withRows(17);
+    for (const row of d.rows.slice(2)) d = setRowNeedsFlow(d, row.id, true);
+    expect(runnableLabel(d)).toBe("2/17");
+  });
+
+  it("counts parked rows out too", () => {
+    let d = withRows(3);
+    d = setRowDisabled(d, d.rows[0].id, true);
+    expect(runnableLabel(d)).toBe("2/3");
+  });
+
+  it("says zero rather than pretending", () => {
+    let d = withRows(2);
+    for (const row of d.rows) d = setRowDisabled(d, row.id, true);
+    expect(runnableLabel(d)).toBe("0/2");
   });
 });

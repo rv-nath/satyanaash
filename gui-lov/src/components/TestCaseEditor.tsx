@@ -20,7 +20,7 @@ import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/compon
 import type { Dataset, TestCaseExecutionResult } from "@/lib/api/types";
 import { DatasetEditor } from "@/components/DatasetEditor";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { emptyDataset, runnableAlone } from "@/lib/dataset";
+import { emptyDataset, runnableAlone, runnableLabel } from "@/lib/dataset";
 
 interface TestCaseEditorProps {
   testCaseId?: string; // Optional - undefined means create mode
@@ -586,11 +586,19 @@ export const TestCaseEditor = ({
               size="sm"
               className="gap-2"
               onClick={() => handleRunTest(true)}
-              disabled={executeMutation.isPending}
-              title="Runs the request once per row in the Data tab"
+              // Nothing to send is not a run. Without this it would go out, come back
+              // "nothing ran", and look like a failure of the request.
+              disabled={executeMutation.isPending || runnableHere === 0}
+              title={
+                runnableHere === 0
+                  ? "No rows can run here — they're parked, or they need a flow"
+                  : runnableHere === dataset.rows.length
+                    ? `Runs the request once per row — ${runnableHere} rows`
+                    : `Runs ${runnableHere} of ${dataset.rows.length} rows. The rest are parked or need a flow.`
+              }
             >
               <Table2 className="w-4 h-4" />
-              Run dataset ({dataset.rows.length})
+              Run dataset ({runnableLabel(dataset)})
             </Button>
           )}
           <Button

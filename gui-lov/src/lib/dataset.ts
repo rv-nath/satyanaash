@@ -106,6 +106,18 @@ export const runnableAlone = (d: Dataset): DataRow[] =>
  *  parked row. */
 export const runnableInFlow = (d: Dataset): DataRow[] => d.rows.filter((r) => !r.disabled);
 
+/**
+ * What the "Run dataset" button counts.
+ *
+ * A bare total when every row will run, and a fraction when some won't — "17" beside a
+ * button that sends 2 requests is a lie, and "17/17" is noise. Same rule as the row
+ * markers: say something only when there is something to say.
+ */
+export function runnableLabel(d: Dataset): string {
+  const runnable = runnableAlone(d).length;
+  return runnable === d.rows.length ? `${runnable}` : `${runnable}/${d.rows.length}`;
+}
+
 /** How a row's suffix will join the request's endpoint — shown as a hint, and
  *  mirroring `resolve_endpoint` on the server. A row adding "?org=acme" to an
  *  endpoint that already has a query joins with "&", because "?limit=10?org=acme"
