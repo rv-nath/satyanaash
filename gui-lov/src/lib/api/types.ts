@@ -56,6 +56,10 @@ export interface DataRow {
    *  endpoint, so there is nothing to define. A name left out isn't set by this row and
    *  resolves from wherever it would have anyway. */
   vars?: Record<string, string>;
+  /** This row isn't finished: it sends nothing and asserts nothing, anywhere. Unlike
+   *  `needs_flow`, which says *where* a row can run, this says it runs nowhere until you
+   *  enable it — somewhere to park a case while you work out what it should say. */
+  disabled?: boolean;
 }
 
 /** A table of cases. "Run dataset" in the editor iterates them, and so does a flow

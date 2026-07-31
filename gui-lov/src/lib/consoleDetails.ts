@@ -151,10 +151,17 @@ export function resultHeadline(result: TestCaseExecutionResult, name: string): s
   if (rows) {
     const passed = rows.filter((r) => r.status === "passed").length;
     const skipped = rows.filter((r) => r.status === "skipped").length;
-    // Skipped rows are excluded from the denominator rather than counted as failures,
-    // so "3/3 rows passed (1 needed a flow)" reads with a ✓ instead of contradicting it.
+    // Skipped rows are excluded from the denominator rather than counted as failures, so
+    // "3/3 rows passed (1 not run)" reads with a ✓ instead of contradicting it. But it
+    // has to *say* so: "3/3 rows passed" beside two rows nobody ran reads as complete
+    // coverage, which is how a parked row becomes a way of hiding a case from yourself.
     const ran = rows.length - skipped;
-    const note = skipped > 0 ? ` (${skipped} needed a flow)` : "";
+    const note = skipped > 0 ? ` (${skipped} of ${rows.length} not run)` : "";
+    // Every row skipped is not a pass. The engine reports the aggregate as skipped; say
+    // it in words too, because "0/0 rows passed" beside a ○ is a riddle.
+    if (ran === 0) {
+      return `${statusIcon(result.status)} ${name}${suffix}: nothing ran — all ${rows.length} rows are parked or need a flow (${result.duration_ms}ms)`;
+    }
     return `${statusIcon(result.status)} ${name}${suffix}: ${passed}/${ran} rows passed${note} (${result.duration_ms}ms)`;
   }
   return `${statusIcon(result.status)} ${name}${suffix}: ${result.status} (${result.duration_ms}ms)`;

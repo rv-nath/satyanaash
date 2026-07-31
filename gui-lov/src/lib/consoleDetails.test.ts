@@ -148,9 +148,24 @@ describe("a skipped row", () => {
       },
       "Login",
     );
-    // Not "1/2 rows passed" beside a ✓, which contradicts itself.
-    expect(line).toContain("1/1 rows passed (1 needed a flow)");
+    // Not "1/2 rows passed" beside a ✓, which contradicts itself — but it must still say
+    // a row went unrun, or a green line reads as coverage it doesn't have.
+    expect(line).toContain("1/1 rows passed (1 of 2 not run)");
     expect(line.startsWith("✓")).toBe(true);
+  });
+
+  it("says plainly when nothing ran at all", () => {
+    // "0/0 rows passed" beside a ○ is a riddle, and a green one would be a lie.
+    const line = resultHeadline(
+      {
+        node_id: "direct", status: "skipped", duration_ms: 0, logs: [],
+        iterations: [skipped, { ...skipped, row_index: 1, row_label: "also parked" }],
+      },
+      "Send SMS",
+    );
+    expect(line).toContain("nothing ran");
+    expect(line).toContain("all 2 rows are parked or need a flow");
+    expect(line).not.toContain("rows passed");
   });
 });
 

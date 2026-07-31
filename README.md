@@ -26,6 +26,7 @@ exports for chaining, and Rhai scripting throughout.
 - [Pre-test scripts](#pre-test-scripts)
 - [Assertions (post-test)](#assertions-post-test)
 - [Data-driven testing](#data-driven-testing)
+  - [Parking a row](#parking-a-row)
   - [Rows that can't run cold](#rows-that-cant-run-cold)
   - [Running a dataset inside a flow](#running-a-dataset-inside-a-flow)
 - [Exports — chaining values](#exports--chaining-values)
@@ -318,6 +319,7 @@ and the engine runs the request once per row.
 | Column | Meaning |
 |--------|---------|
 | **Case** | Label for the row, shown in the results. Optional — blank rows read as *Row 1*, *Row 2*, … |
+| **☑** | Ticked rows run. Untick one you're still drafting — see [Parking a row](#parking-a-row). |
 | **⛓** | Marks a row that needs a flow — see [Rows that can't run cold](#rows-that-cant-run-cold). Blank means it runs anywhere. |
 | *(one per `{{name}}` in the endpoint)* | This row's value for that placeholder — see below. Blank means the row doesn't set it. |
 | **Path / query** | Appended to the request's endpoint for this row — `?org=acme`, `/acme/summary`. Joins with `&` if the endpoint already has a query. Blank uses it as authored. |
@@ -423,6 +425,24 @@ overall verdict is the worst of the rows.
 > A blank **Expect** means *any 2xx*, which is the right default for a happy-path row
 > and the wrong one for a negative case: a row meant to check a rejection will
 > **pass** on a 200. Give negative rows an explicit status.
+
+### Parking a row
+
+Untick a row's checkbox and it sends nothing, asserts nothing, and can't fail — somewhere
+to leave a case while you work out what it should say.
+
+This is not the same as ⛓, and the difference matters:
+
+| | Runs from **Run dataset** | Runs from a **flow node** |
+|---|:--:|:--:|
+| ordinary row | ✅ | ✅ |
+| ⛓ needs a flow | ❌ | ✅ — the flow is the precondition |
+| ☐ parked | ❌ | ❌ — nothing revives it |
+
+A parked row is still reported, as skipped, and the headline counts it: *"3/4 rows passed
+(1 of 5 not run)"*. A green line that hid a parked row would read as coverage it doesn't
+have. And a step whose every row is parked sends nothing, so it reports a skip rather than
+a pass, and flow validation says so before you run it.
 
 ### Rows that can't run cold
 

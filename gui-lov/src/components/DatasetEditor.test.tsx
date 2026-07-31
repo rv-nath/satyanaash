@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DatasetEditor } from "@/components/DatasetEditor";
-import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName, setRowNeedsFlow, setRowVar } from "@/lib/dataset";
+import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName, setRowDisabled, setRowNeedsFlow, setRowVar } from "@/lib/dataset";
 import type { Dataset } from "@/lib/api/types";
 
 function seed(): Dataset {
@@ -298,5 +298,51 @@ describe("DatasetEditor endpoint parameters", () => {
       <DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint="{{baseUrl}}/campaigns/{{channel}}" />,
     );
     expect(screen.getByText("channel")).toBeInTheDocument();
+  });
+});
+
+describe("DatasetEditor parking a row", () => {
+  it("ticks a row that runs", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    expect(screen.getByRole("checkbox", { name: /run valid/i })).toBeChecked();
+  });
+
+  it("unticks one that is parked", () => {
+    const d = seed();
+    render(<DatasetEditor dataset={setRowDisabled(d, d.rows[0].id, true)} onChange={vi.fn()} />);
+    expect(screen.getByRole("checkbox", { name: /run valid/i })).not.toBeChecked();
+  });
+
+  it("parks a row when unticked, and brings it back", async () => {
+    const onChange = vi.fn();
+    const d = seed();
+    const { rerender } = render(<DatasetEditor dataset={d} onChange={onChange} />);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /run valid/i }));
+    expect(onChange.mock.calls[0][0].rows[0].disabled).toBe(true);
+
+    onChange.mockClear();
+    rerender(
+      <DatasetEditor dataset={setRowDisabled(d, d.rows[0].id, true)} onChange={onChange} />,
+    );
+    await userEvent.click(screen.getByRole("checkbox", { name: /run valid/i }));
+    expect(onChange.mock.calls[0][0].rows[0].disabled).toBe(false);
+  });
+
+  it("steps a parked row back, as it does one that needs a flow", () => {
+    let d = seed();
+    d = setRowDisabled(d, d.rows[0].id, true);
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+    expect(screen.getByLabelText(/^body for valid$/i).parentElement!.className).toContain(
+      "opacity-50",
+    );
+  });
+
+  it("says what unticking does, so it doesn't read as delete", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    expect(screen.getByRole("checkbox", { name: /run valid/i }).closest("label")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/park it while you draft/i),
+    );
   });
 });

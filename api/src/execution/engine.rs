@@ -1968,12 +1968,21 @@ impl ExecutionEngine {
         for (index, row) in rows {
             let label = crate::db::models::Dataset::label_for(*index, row);
 
-            if opts.honour_needs_flow && row.needs_flow {
-                // Not sent, and not a failure: there is nothing here to satisfy it.
-                // Reported all the same — a row you didn't run is a row you should be
-                // able to see you didn't run.
-                let reason = "Needs a flow — \"Run dataset\" has no earlier steps to                               satisfy it. Run it from a flow node instead"
-                    .to_string();
+            // Two reasons a row isn't sent, and they are not the same thing. `disabled`
+            // means the row is parked and nobody runs it; `needs_flow` means only the
+            // editor can't satisfy it, and a flow node runs it happily. Either way it is
+            // reported — a row you didn't run is a row you should be able to see you
+            // didn't run.
+            let parked = if row.disabled {
+                Some("Disabled — this row is parked and runs nowhere until you enable it")
+            } else if opts.honour_needs_flow && row.needs_flow {
+                Some("Needs a flow — \"Run dataset\" has no earlier steps to satisfy it. Run it from a flow node instead")
+            } else {
+                None
+            };
+
+            if let Some(reason) = parked {
+                let reason = reason.to_string();
                 iterations.push(NodeResult {
                     node_id: opts.node_id.to_string(),
                     node_label: None,
@@ -2064,7 +2073,15 @@ impl ExecutionEngine {
 
         let failed = iterations.iter().filter(|r| r.status == NodeStatus::Failed).count();
         let errored = iterations.iter().filter(|r| r.status == NodeStatus::Error).count();
-        let status = if errored > 0 {
+        let skipped = iterations.iter().filter(|r| r.status == NodeStatus::Skipped).count();
+        // Nothing was sent, so there is nothing to be green about. The fold below counts
+        // only Failed and Error, which would otherwise call a dataset of entirely parked
+        // rows a pass — the same "worst kind of green" the empty case above guards
+        // against, and easy to reach once rows can be parked while a dataset is reworked.
+        let nothing_ran = skipped == iterations.len();
+        let status = if nothing_ran {
+            NodeStatus::Skipped
+        } else if errored > 0 {
             NodeStatus::Error
         } else if failed > 0 {
             NodeStatus::Failed
@@ -2072,15 +2089,23 @@ impl ExecutionEngine {
             NodeStatus::Passed
         };
         let not_passed = failed + errored;
-        let error_message = (not_passed > 0)
-            .then(|| format!("{} of {} rows did not pass", not_passed, iterations.len()));
-        let skipped = iterations.iter().filter(|r| r.status == NodeStatus::Skipped).count();
+        let error_message = if nothing_ran {
+            Some(format!(
+                "No rows ran — all {} are parked or need a flow",
+                iterations.len()
+            ))
+        } else {
+            (not_passed > 0)
+                .then(|| format!("{} of {} rows did not pass", not_passed, iterations.len()))
+        };
         info!(
             "\"{}\" finished: {} of {} rows passed{} ({}ms)",
             test_case.name,
             iterations.len() - not_passed - skipped,
             iterations.len(),
-            if skipped > 0 { format!(", {} needed a flow", skipped) } else { String::new() },
+            // "not run" rather than "needed a flow": a skipped row is now either parked
+            // or waiting on a flow, and each row's own message says which.
+            if skipped > 0 { format!(", {} not run", skipped) } else { String::new() },
             start.elapsed().as_millis()
         );
 
@@ -2173,6 +2198,7 @@ mod tests {
                 .map(|(i, (name, body, status))| DataRow {
                     path: None,
                     needs_flow: false,
+                    disabled: false,
                     vars: Default::default(),
                     id: format!("r{}", i),
                     name: Some(name.to_string()),
@@ -3144,6 +3170,131 @@ mod tests {
         ]);
         d.rows[1].needs_flow = true;
         d
+    }
+
+    /// A parked row runs **nowhere** — which is what separates it from `needs_flow`, and
+    /// the reason both callers are asserted here rather than in two tests.
+    #[tokio::test]
+    async fn a_disabled_row_is_skipped_everywhere() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 4).await;
+        let mut tc = make_test_case("tc", "Send", &url, "POST");
+        let mut dataset = dataset_of(vec![
+            ("finished", Some("{}"), Some("200")),
+            ("still drafting", Some("{}"), Some("200")),
+        ]);
+        dataset.rows[1].disabled = true;
+        tc.dataset = Some(dataset);
+
+        // 1. The editor's own run.
+        let from_editor = engine
+            .execute_test_case_dataset(&tc, HashMap::new(), HashMap::new())
+            .await;
+        let rows = from_editor.iterations.as_ref().unwrap();
+        assert_eq!(rows[0].status, NodeStatus::Passed);
+        assert_eq!(rows[1].status, NodeStatus::Skipped);
+        assert!(rows[1].request.is_none(), "nothing may be sent");
+        assert!(
+            rows[1].error_message.as_deref().unwrap_or("").contains("Disabled"),
+            "{:?}",
+            rows[1].error_message
+        );
+
+        // 2. A flow node, which honours `needs_flow` in the other direction — the flow is
+        //    the precondition — but has no say over a parked row.
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({"forEachRow": true}));
+        let from_flow = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+        let rows = from_flow.iterations.as_ref().unwrap();
+        assert_eq!(rows[0].status, NodeStatus::Passed);
+        assert_eq!(rows[1].status, NodeStatus::Skipped, "a flow node cannot revive it");
+    }
+
+    /// The reported failure, reproduced and then parked: a row whose check is a
+    /// placeholder used to error, error the aggregate, and abort the flow before its last
+    /// node. Parked, it cannot.
+    #[tokio::test]
+    async fn a_disabled_row_cannot_abort_a_flow() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", &stub_times(200, "{}", 3).await, "POST");
+        let mut dataset = dataset_of(vec![
+            ("finished", Some("{}"), Some("200")),
+            // `??` is not digits, so it is read as a Rhai expression and will not parse.
+            ("still drafting", Some("{}"), Some("??")),
+        ]);
+        dataset.rows[1].disabled = true;
+        tc.dataset = Some(dataset);
+        let after = make_test_case("after", "Downstream", &stub_once(200, "{}").await, "POST");
+        let repo = MockTestCaseRepository::new().with_test_case(tc).with_test_case(after);
+
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("b", "testCase", serde_json::json!({
+                "testCaseId": "tc", "config": {"forEachRow": true}
+            })),
+            make_node("c", "testCase", serde_json::json!({"testCaseId": "after"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "b", None),
+            make_edge("e2", "b", "c", Some("success")),
+            make_edge("e3", "c", "end", Some("success")),
+        ]);
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, "completed");
+        assert!(
+            result.results.iter().any(|r| r.node_id == "c"),
+            "the node after the fan-out must still run"
+        );
+    }
+
+    /// Nothing was sent, so there is nothing to be green about. Reachable before parking
+    /// existed — mark every row `needs_flow` and run the dataset — and routine once a
+    /// whole dataset can be parked while it is reworked.
+    #[tokio::test]
+    async fn a_dataset_with_every_row_parked_is_not_a_pass() {
+        let engine = ExecutionEngine::new(false, None);
+        let mut tc = make_test_case("tc", "Send", "http://127.0.0.1:1/send", "POST");
+        let mut dataset = dataset_of(vec![("one", Some("{}"), None), ("two", Some("{}"), None)]);
+        dataset.rows[0].disabled = true;
+        dataset.rows[1].disabled = true;
+        tc.dataset = Some(dataset);
+
+        let aggregate = engine
+            .execute_test_case_dataset(&tc, HashMap::new(), HashMap::new())
+            .await;
+
+        // A refused port: had either row been sent, this would be an error rather than
+        // the skip it must be.
+        assert_eq!(aggregate.status, NodeStatus::Skipped);
+        assert!(
+            aggregate.error_message.as_deref().unwrap_or("").contains("No rows ran"),
+            "{:?}",
+            aggregate.error_message
+        );
+    }
+
+    /// The serde exception, so a dataset written before parking existed is untouched.
+    #[tokio::test]
+    async fn an_ordinary_row_stores_nothing_for_disabled() {
+        let plain = DataRow { id: "r1".into(), ..Default::default() };
+        assert!(!serde_json::to_string(&plain).unwrap().contains("disabled"));
+
+        let parked = DataRow { id: "r1".into(), disabled: true, ..Default::default() };
+        let json = serde_json::to_string(&parked).unwrap();
+        assert!(json.contains("\"disabled\":true"), "{}", json);
+        assert!(serde_json::from_str::<DataRow>(&json).unwrap().disabled);
     }
 
     /// The point of the feature: the editor's run leaves the marked row alone and stays

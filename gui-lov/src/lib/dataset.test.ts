@@ -8,6 +8,8 @@ import {
   looksLikeInvalidJson,
   pathVariables,
   rowVar,
+  runnableInFlow,
+  setRowDisabled,
   setRowVar,
   oneLine,
   runnableAlone,
@@ -195,5 +197,43 @@ describe("setRowVar", () => {
     d = setRowVar(d, d.rows[1].id, "channel", "email");
     expect(d.rows[0].vars).toEqual({ channel: "sms", campaignID: "c-1" });
     expect(d.rows[1].vars).toEqual({ channel: "email" });
+  });
+});
+
+describe("parking a row", () => {
+  const seeded = () => {
+    let d = addRow(addRow(emptyDataset()));
+    d = setRowName(d, d.rows[0].id, "finished");
+    d = setRowName(d, d.rows[1].id, "still drafting");
+    return d;
+  };
+
+  it("sets and clears the flag", () => {
+    const d = seeded();
+    const parked = setRowDisabled(d, d.rows[1].id, true);
+    expect(parked.rows[1].disabled).toBe(true);
+    expect(parked.rows[0].disabled).toBeUndefined();
+    expect(setRowDisabled(parked, d.rows[1].id, false).rows[1].disabled).toBe(false);
+  });
+
+  it("drops a parked row from what Run dataset would send", () => {
+    // This is the count behind the "Run dataset (N)" button: parking a row has to lower
+    // it, or the button promises cases it won't run.
+    let d = seeded();
+    expect(runnableAlone(d)).toHaveLength(2);
+
+    d = setRowDisabled(d, d.rows[1].id, true);
+    expect(runnableAlone(d).map((r) => r.name)).toEqual(["finished"]);
+  });
+
+  it("is not revived by a flow, unlike needs_flow", () => {
+    // The distinction the whole flag rests on: a flow satisfies needs_flow, because the
+    // flow is the precondition; nothing satisfies "not finished".
+    let d = seeded();
+    d = setRowNeedsFlow(d, d.rows[0].id, true);
+    d = setRowDisabled(d, d.rows[1].id, true);
+
+    expect(runnableAlone(d)).toHaveLength(0);
+    expect(runnableInFlow(d).map((r) => r.name)).toEqual(["finished"]);
   });
 });

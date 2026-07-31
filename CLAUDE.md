@@ -209,6 +209,28 @@ reason; only the URL's own placeholders get columns.
   **A `Skipped` row is not a failure** — the fold counts only `Failed` and `Error`, so the
   aggregate stays `Passed`; four frontend sites had to be taught the same
   (`DatasetResultView`'s strip and status cell, `fanOutDetails`, `resultHeadline`).
+- **`DataRow.disabled`** parks a row that isn't finished. Skipped by `run_rows`
+  **whatever the caller asked for** — that is the whole difference from `needs_flow`,
+  which says *where* a row can run and is honoured only by the editor. Nothing revives a
+  parked row, because "not ready" isn't a precondition anything can satisfy.
+  Exists because a row half-written with `??` in its Expect was read as a Rhai
+  expression, failed to parse, was classified `Error`, and aborted a seven-node flow. Two
+  alternatives were weighed and rejected: a per-row "continue on error" flag (needs
+  foresight about which row will break, and a typo is never foreseen — and an outcome you
+  *can* predict you state as an expectation, so "expected error" has no meaning), and
+  reclassifying an unparseable check as `Failed` (defensible, still open, but it changes
+  verdict semantics project-wide to fix a half-written row).
+- **Nothing ran is not a pass.** With every row skipped the fold used to yield `Passed`
+  having sent nothing — the "worst kind of green" the empty-rows guard beside it warns
+  about, reachable before parking existed by marking every row `needs_flow`. `run_rows`
+  now returns `Skipped` with a message naming why, and `resultHeadline` says it in words:
+  "0/0 rows passed" beside a ○ is a riddle. The skip note also counts —
+  "(1 of 2 not run)" — because a bare "1/1 rows passed" beside a parked row reads as
+  coverage it doesn't have, which is how a park becomes a way to hide a case from
+  yourself. `iterations.is_empty()` still returns `Failed`: no rows *selected* is a
+  misconfigured node, a different thing.
+- `FANOUT_ALL_ROWS_DISABLED` warns on the canvas when every row a step would run is
+  parked, alongside the other fan-out warnings.
 - **`DataRow.path`** is appended to the endpoint for that row (`resolve_endpoint`,
   sibling to `resolve_body`), composed *before* interpolation so the result is what
   `find_unresolved`, `placeholder_values` and `provenance` all see. A `?…` suffix joins

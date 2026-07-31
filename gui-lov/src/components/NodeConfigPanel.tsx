@@ -121,8 +121,14 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const rows = testCase?.dataset?.rows;
   const loadingRows = testCase === undefined;
   const stale = rows ? (rowIds ?? []).filter((id) => !rows.some((r) => r.id === id)) : [];
-  const selectedCount = rowIds === null ? (rows?.length ?? 0) : rowIds.length;
   const isSelected = (id: string) => rowIds === null || rowIds.includes(id);
+  // Counts describe what will actually be sent, so a parked row is not counted even when
+  // it is selected — promising 15 requests and sending 13 is the kind of quiet lie this
+  // panel exists to avoid.
+  const willRun = (rows ?? []).filter((r) => !r.disabled && isSelected(r.id));
+  const selectedCount = willRun.length;
+  const runnableTotal = (rows ?? []).filter((r) => !r.disabled).length;
+  const parkedCount = (rows?.length ?? 0) - runnableTotal;
   const toggleRow = (id: string) => {
     setRowIds((current) => {
       // Unticking while "every row" is in force materialises the list minus that row.
@@ -204,8 +210,12 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                   : !forEachRow
                     ? "The request runs once, with its own payload — its data rows are ignored."
                     : rowIds === null
-                      ? `Every row runs here, in order — ${rows.length} requests, each inheriting what earlier steps produced.`
-                      : `${selectedCount} of ${rows.length} rows run here.`
+                      ? `Every row runs here, in order — ${runnableTotal} requests, each inheriting what earlier steps produced.${
+                          parkedCount > 0 ? ` ${parkedCount} disabled row(s) are skipped.` : ""
+                        }`
+                      : `${selectedCount} of ${runnableTotal} rows run here.${
+                          parkedCount > 0 ? ` ${parkedCount} disabled row(s) are skipped.` : ""
+                        }`
               }
             >
               <ToggleGroup
@@ -227,7 +237,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                   disabled={!rows || rows.length === 0}
                   className="h-9 px-3 text-[13px] data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
                 >
-                  Once per row{rows && rows.length > 0 ? ` · ${rows.length}` : ""}
+                  Once per row{runnableTotal > 0 ? ` · ${runnableTotal}` : ""}
                 </ToggleGroupItem>
               </ToggleGroup>
               {/* A config that predates the rows being deleted: say so rather than
@@ -325,12 +335,22 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                     {rows!.map((row, i) => (
                       <label
                         key={row.id}
-                        className="flex cursor-pointer items-center gap-2.5 rounded px-1 py-1 hover:bg-muted/30"
-                        title={row.id ? undefined : "This row has no id and can't be picked"}
+                        className={`flex items-center gap-2.5 rounded px-1 py-1 ${
+                          // A parked row runs nowhere, so offering it here would be a
+                          // promise this step can't keep.
+                          row.disabled ? "opacity-50" : "cursor-pointer hover:bg-muted/30"
+                        }`}
+                        title={
+                          row.disabled
+                            ? "Disabled in the request's Data tab — it runs nowhere until enabled"
+                            : row.id
+                              ? undefined
+                              : "This row has no id and can't be picked"
+                        }
                       >
                         <Checkbox
-                          checked={isSelected(row.id)}
-                          disabled={!row.id}
+                          checked={isSelected(row.id) && !row.disabled}
+                          disabled={!row.id || row.disabled === true}
                           onCheckedChange={() => toggleRow(row.id)}
                           aria-label={`Run ${rowLabel(i, row)} at this step`}
                         />
@@ -351,6 +371,11 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                         {row.check && (
                           <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
                             {row.check}
+                          </span>
+                        )}
+                        {row.disabled && (
+                          <span className="shrink-0 rounded bg-muted px-1 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            off
                           </span>
                         )}
                       </label>

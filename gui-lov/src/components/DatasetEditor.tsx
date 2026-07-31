@@ -2,7 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Trash2, Copy, AlertTriangle, Link2 } from "lucide-react";
+import { Plus, Trash2, Copy, AlertTriangle, Link2, Check } from "lucide-react";
 import type { Dataset } from "@/lib/api/types";
 import {
   addRow,
@@ -18,6 +18,7 @@ import {
   setRowBody,
   setRowCheck,
   setRowName,
+  setRowDisabled,
   setRowNeedsFlow,
   setRowPath,
   setRowVar,
@@ -34,12 +35,12 @@ interface DatasetEditorProps {
   endpoint?: string;
 }
 
-// #, needs-flow, case, …one per endpoint parameter…, path, body, expect, duplicate, delete.
+// in-play, #, needs-flow, case, …one per endpoint parameter…, path, body, expect, duplicate, delete.
 // Every text column flexes now that none of them holds a field, and Case gets the most
 // it can: it wraps rather than clipping, so width spent there is width spent on fewer
 // wrapped lines. Expect was a fixed 150px for a value that is usually three digits.
 const FIXED_GRID =
-  "30px 30px minmax(180px,1.1fr) minmax(100px,0.4fr) minmax(180px,1.2fr) minmax(90px,0.4fr) 34px 34px";
+  "30px 30px 30px minmax(180px,1.1fr) minmax(100px,0.4fr) minmax(180px,1.2fr) minmax(90px,0.4fr) 34px 34px";
 
 /**
  * The grid, with a column per endpoint parameter inserted after Case.
@@ -53,8 +54,8 @@ const gridFor = (params: string[]): string => {
   if (params.length === 0) return FIXED_GRID;
   const cols = FIXED_GRID.split(" ");
   const paramCols = params.map(() => "minmax(90px,0.5fr)").join(" ");
-  // After #, needs-flow and Case.
-  return [...cols.slice(0, 3), paramCols, ...cols.slice(3)].join(" ");
+  // After in-play, #, needs-flow and Case.
+  return [...cols.slice(0, 4), paramCols, ...cols.slice(4)].join(" ");
 };
 
 /** Borders belong to the table, not to the fields — a field with its own border
@@ -232,6 +233,12 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
               className="grid items-center border-b border-border bg-muted/40"
               style={{ gridTemplateColumns: grid }}
             >
+              <span
+                className={`flex items-center justify-center text-muted-foreground ${CELL}`}
+                title="Ticked rows run. Untick one you're still drafting."
+              >
+                <Check className="h-3 w-3" />
+              </span>
               <span className={CELL} />
               <span
                 className={`flex items-center justify-center text-muted-foreground ${CELL}`}
@@ -267,8 +274,10 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
               const check = row.check ?? "";
               const badJson = looksLikeInvalidJson(body);
               const label = rowLabel(i, row);
-              // Muted where the marker is red: this row won't take part in a Run dataset.
-              const dim = row.needs_flow === true;
+              // Parked, or waiting on a flow: either way this row takes no part in a
+              // Run dataset, and its fields step back to say so.
+              const parked = row.disabled === true;
+              const dim = parked || row.needs_flow === true;
 
               return (
                 <div
@@ -276,6 +285,26 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
                   className="grid items-stretch border-t border-border first:border-t-0 hover:bg-muted/20"
                   style={{ gridTemplateColumns: grid }}
                 >
+                  {/* Ticked means in play. A checkbox rather than another icon: the ⛓
+                      beside it already carries a subtler meaning, and include/exclude is
+                      the one control everybody reads correctly. */}
+                  <label
+                    className={`flex h-9 items-center justify-center ${CELL}`}
+                    title={
+                      parked
+                        ? "Not ready — skipped everywhere. Tick to run it."
+                        : "Runs. Untick to park it while you draft it."
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!parked}
+                      onChange={(e) => onChange(setRowDisabled(dataset, row.id, !e.target.checked))}
+                      aria-label={`Run ${label}`}
+                      className="h-3.5 w-3.5 cursor-pointer accent-primary"
+                    />
+                  </label>
+
                   <span
                     className={`pt-2 text-center text-xs text-muted-foreground ${CELL} ${
                       dim ? "opacity-50" : ""

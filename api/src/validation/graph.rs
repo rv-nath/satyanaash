@@ -502,6 +502,27 @@ fn fan_out_warnings(node: &GraphNode, test_case: Option<&TestCase>) -> Vec<Valid
         }
     }
 
+    // Every row this step would run is parked. It sends nothing and reports a skip, which
+    // is honest but silent — worth saying on the canvas, because a step that tests
+    // nothing looks exactly like one that does.
+    let would_run: Vec<_> = match config.and_then(|c| c.get("rowIds")).and_then(|v| v.as_array()) {
+        Some(chosen) => {
+            let ids: Vec<&str> = chosen.iter().filter_map(|v| v.as_str()).collect();
+            rows.iter().filter(|row| ids.contains(&row.id.as_str())).collect()
+        }
+        None => rows.iter().collect(),
+    };
+    if !would_run.is_empty() && would_run.iter().all(|row| row.disabled) {
+        issues.push(ValidationIssue::warning_with_node(
+            "FANOUT_ALL_ROWS_DISABLED",
+            format!(
+                "Every data row this step would run is disabled, so it will send nothing — enable a row in '{}' or turn off \"once per row\"",
+                test_case.name
+            ),
+            &node.id,
+        ));
+    }
+
     issues
 }
 
@@ -588,6 +609,28 @@ mod tests {
         assert_eq!(codes(issues.clone()), vec!["FANOUT_DISCARDS_OUTPUT_VARS"]);
         // Names the variable, and ignores the half-filled row.
         assert!(issues[0].message.contains("token"), "{}", issues[0].message);
+    }
+
+    /// A step whose every row is parked sends nothing. That is honest at run time — it
+    /// reports a skip — but silent on the canvas, where it looks like any other step.
+    #[test]
+    fn a_step_whose_every_row_is_parked_is_flagged() {
+        let mut tc = test_case_with(vec!["r0", "r1"]);
+        for row in &mut tc.dataset.as_mut().unwrap().rows {
+            row.disabled = true;
+        }
+
+        let all = fan_out_node(serde_json::json!({"forEachRow": true}));
+        assert_eq!(codes(fan_out_warnings(&all, Some(&tc))), vec!["FANOUT_ALL_ROWS_DISABLED"]);
+
+        // One live row is enough — the step still tests something.
+        tc.dataset.as_mut().unwrap().rows[0].disabled = false;
+        assert!(fan_out_warnings(&all, Some(&tc)).is_empty());
+
+        // And it follows the selection: picking only the parked row is the same problem.
+        tc.dataset.as_mut().unwrap().rows[0].disabled = false;
+        let picked = fan_out_node(serde_json::json!({"forEachRow": true, "rowIds": ["r1"]}));
+        assert_eq!(codes(fan_out_warnings(&picked, Some(&tc))), vec!["FANOUT_ALL_ROWS_DISABLED"]);
     }
 
     #[test]

@@ -273,6 +273,22 @@ pub struct DataRow {
     /// it did with no migration and no re-save.
     #[serde(default, skip_serializing_if = "is_not_set")]
     pub needs_flow: bool,
+    /// This row isn't finished. It sends nothing, asserts nothing, and cannot fail or
+    /// abort anything — a place to park a case while you work out what it should say.
+    ///
+    /// **Not the same as `needs_flow`, and the difference is the point.** `needs_flow`
+    /// says *where* a row can run: the editor skips it, a flow node runs it, because the
+    /// flow is the precondition. `disabled` says it runs **nowhere** — `run_rows` skips
+    /// it whatever the caller asked for.
+    ///
+    /// Exists because a row half-written with `??` in its check was treated as a Rhai
+    /// expression, failed to parse, was classified an error, and aborted a seven-node
+    /// flow. "Not ready" is a fact the author knows; "might break" is a prediction
+    /// nobody can make.
+    ///
+    /// Stored as the exception, like `needs_flow` above.
+    #[serde(default, skip_serializing_if = "is_not_set")]
+    pub disabled: bool,
     /// Values for the `{{names}}` this request already declares — the path parameters
     /// in `/campaigns/{{channel}}/pause/{{campaignID}}`, so one row can be the SMS
     /// case and the next the email one.

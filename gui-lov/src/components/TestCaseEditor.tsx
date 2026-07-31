@@ -169,7 +169,8 @@ export const TestCaseEditor = ({
   const [preTestScript, setPreTestScript] = useState("");
   const [postTestScript, setPostTestScript] = useState("");
   const [dataset, setDataset] = useState<Dataset>(emptyDataset);
-  // Rows "Run dataset" will actually send; the rest are marked as needing a flow.
+  // Rows "Run dataset" will actually send: the rest are parked, or marked as needing a
+  // flow. Parking a row should drop this count, or the button promises cases it won't run.
   const runnableHere = runnableAlone(dataset).length;
   const [activeTab, setActiveTab] = useState(() => initialSubTab || "overview");
   // Report sub-tab changes upward so they survive close/reopen of the tab.

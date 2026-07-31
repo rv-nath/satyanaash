@@ -92,8 +92,19 @@ export function pathVariables(endpoint: string | undefined | null): string[] {
   return names;
 }
 
-/** The rows "Run dataset" will actually send — the rest need a flow to satisfy them. */
-export const runnableAlone = (d: Dataset): DataRow[] => d.rows.filter((r) => !r.needs_flow);
+/** Park a row while it's being drafted, or bring it back. */
+export function setRowDisabled(d: Dataset, rowId: string, disabled: boolean): Dataset {
+  return patchRow(d, rowId, { disabled });
+}
+
+/** The rows "Run dataset" will actually send: parked rows run nowhere, and the rest of
+ *  the skips need a flow to satisfy them. */
+export const runnableAlone = (d: Dataset): DataRow[] =>
+  d.rows.filter((r) => !r.needs_flow && !r.disabled);
+
+/** The rows a flow node will send. A flow satisfies `needs_flow`, but nothing revives a
+ *  parked row. */
+export const runnableInFlow = (d: Dataset): DataRow[] => d.rows.filter((r) => !r.disabled);
 
 /** How a row's suffix will join the request's endpoint — shown as a hint, and
  *  mirroring `resolve_endpoint` on the server. A row adding "?org=acme" to an
