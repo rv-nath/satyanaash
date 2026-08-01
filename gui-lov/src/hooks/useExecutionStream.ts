@@ -12,6 +12,7 @@ import { API_URL } from '@/lib/api/client';
 import type { TestCaseExecutionResult } from '@/lib/api/types';
 import type { ConsoleLogDetail } from '@/lib/consoleDetails';
 import { fanOutDetails, resultDetails, resultHeadline } from '@/lib/consoleDetails';
+import { suiteLogKey } from '@/lib/runHistory';
 
 /** One node's result off the wire. The single definition lives in lib/api/types —
  *  this module used to keep its own copy, which is exactly why per-row results were
@@ -124,8 +125,9 @@ type ExecutionEvent =
   | ExecutionEventMemberStarted
   | ExecutionEventMemberCompleted;
 
-/** Console key for a suite's run. Prefixed so it can never collide with a flow id. */
-export const suiteLogKey = (suiteId: string) => `suite:${suiteId}`;
+// Defined with the rest of the run-history vocabulary; re-exported here because the
+// stream is what writes under it.
+export { suiteLogKey };
 
 // Defined alongside the formatters that build them; re-exported here because the
 // console panel has always imported it from this module.

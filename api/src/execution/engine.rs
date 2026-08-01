@@ -888,6 +888,11 @@ impl ExecutionEngine {
                 )
                 .await;
             result.teardown = Some(true);
+            // Counted in the total as well as in its verdict. Without this a teardown node
+            // added to the pass/fail tallies while the denominator stayed behind, so a
+            // flow with two cleanup nodes reported more errors than it had nodes — which
+            // the run history then rendered as "0/14 passed · 18 errored".
+            state.stats.total += 1;
             match result.status {
                 NodeStatus::Passed => state.stats.passed += 1,
                 NodeStatus::Failed => state.stats.failed += 1,
@@ -4062,6 +4067,47 @@ mod tests {
         assert_eq!(
             results.iter().filter(|r| r.test_case_name.as_deref() == Some("Cleanup")).count(),
             1
+        );
+    }
+
+    /// A teardown node counts in the total, not only in the verdict tallies.
+    ///
+    /// It used to add to passed/failed/errors while leaving `total` behind, so the parts
+    /// could exceed the whole: a flow with two cleanup nodes reported eighteen errors out
+    /// of sixteen nodes. Harmless while nobody did arithmetic on it, and nonsense the
+    /// moment the run history printed "0/14 passed · 18 errored".
+    #[tokio::test]
+    async fn a_teardown_node_is_counted_in_the_total() {
+        let engine = ExecutionEngine::new(false, None);
+        let a = make_test_case("a", "Step", "http://127.0.0.1:1/a", "POST");
+        let t = make_test_case("t", "Cleanup", "http://127.0.0.1:1/t", "DELETE");
+        let repo = MockTestCaseRepository::new().with_test_case(a).with_test_case(t);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({"testCaseId": "a"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "t", Some("success")),
+            make_edge("e3", "t", "end", Some("success")),
+        ]);
+
+        let stats = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .stats;
+
+        // Both nodes ran and neither could reach its endpoint, so both errored — and the
+        // denominator has to account for both of them.
+        assert_eq!(stats.total, 2, "the teardown node is missing from the total");
+        assert_eq!(
+            stats.passed + stats.failed + stats.errors + stats.skipped,
+            stats.total,
+            "the parts must sum to the whole"
         );
     }
 

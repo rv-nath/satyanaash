@@ -32,6 +32,17 @@ export function nodeTitle(result: Pick<TestCaseExecutionResult, 'node_label' | '
   return result.node_label || result.test_case_name || result.node_id;
 }
 
+/**
+ * Console key prefix for a suite's run.
+ *
+ * A suite spans several flows, so its output cannot live under any one flow's key without
+ * leaving that flow's console holding another run's history. Prefixed so it can never
+ * collide with a flow id.
+ */
+export const SUITE_LOG_PREFIX = 'suite:';
+
+export const suiteLogKey = (suiteId: string) => `${SUITE_LOG_PREFIX}${suiteId}`;
+
 /** Whether a run is still going. Written before the first member executes, so a run that
  *  died with the server stays visible as `running` rather than vanishing. */
 export function isInFlight(run: Pick<SuiteRun, 'status'>): boolean {

@@ -33,7 +33,8 @@ interface Props {
 
 const SuiteEditor = ({ suiteId, projectId }: Props) => {
   const queryClient = useQueryClient();
-  const { executeSuite, isExecuting, cancelExecution } = useTestProject();
+  const { executeSuite, isExecuting, cancelExecution, showConsole, setShowConsole } =
+    useTestProject();
 
   const { data: suite } = useQuery({
     queryKey: ["suite", suiteId],
@@ -92,7 +93,13 @@ const SuiteEditor = ({ suiteId, projectId }: Props) => {
           <Button
             size="sm"
             disabled={!canRun(suite, available)}
-            onClick={() => executeSuite(suite.id, suite.name)}
+            onClick={() => {
+              // A suite has no canvas to light up, so the console is the only place its
+              // run is visible. Pressing Run with it closed did the work and showed
+              // nothing at all.
+              if (!showConsole) setShowConsole(true);
+              executeSuite(suite.id, suite.name);
+            }}
             title={
               canRun(suite, available)
                 ? "Run every selected member, one after another"

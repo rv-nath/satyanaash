@@ -55,6 +55,8 @@ import SuiteEditor from "@/components/SuiteEditor";
 import { SuitesList } from "@/components/SuitesList";
 import { useQuery } from "@tanstack/react-query";
 import { suitesApi } from "@/lib/api";
+import { consoleTabsFor, shownConsole } from "@/lib/consoleTabs";
+import { suiteLogKey } from "@/lib/runHistory";
 import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
 import { ApiClientError } from "@/lib/api/client";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
@@ -311,25 +313,29 @@ const ProjectDetailContent = () => {
   useEffect(() => {
     if (activeFlowId) setConsoleFlowId(activeFlowId);
   }, [activeFlowId]);
+  // Opening a suite points the console at its own log, so pressing Run shows that run's
+  // output rather than whichever flow happened to be pinned.
+  useEffect(() => {
+    if (activeSuiteId) setConsoleFlowId(suiteLogKey(activeSuiteId));
+  }, [activeSuiteId]);
 
-  // A tab per flow that has output, plus the flow on screen so the panel is never
-  // headless. Ordered like the rail rather than by when each last ran.
-  const consoleTabs = useMemo(() => {
-    const ids = new Set(Object.keys(logsByFlow));
-    if (activeFlowId) ids.add(activeFlowId);
-    return testGroups
-      .filter((g) => ids.has(g.id))
-      .map((g) => ({
-        id: g.id,
-        name: g.name,
-        entries: logsByFlow[g.id]?.length ?? 0,
-        running: executingFlowId === g.id,
-      }));
-  }, [logsByFlow, activeFlowId, testGroups, executingFlowId]);
+  // A tab per producer that has output — flows and suites both — plus whatever is on
+  // screen so the panel is never headless.
+  const consoleTabs = useMemo(
+    () =>
+      consoleTabsFor({
+        logKeys: Object.keys(logsByFlow),
+        flows: testGroups,
+        suites: apiSuites ?? [],
+        activeFlowId,
+        activeSuiteKey: activeSuiteId ? suiteLogKey(activeSuiteId) : null,
+        executingId: executingFlowId,
+        entryCount: (key) => logsByFlow[key]?.length ?? 0,
+      }),
+    [logsByFlow, activeFlowId, activeSuiteId, testGroups, apiSuites, executingFlowId],
+  );
 
-  const shownConsoleId = consoleTabs.some((t) => t.id === consoleFlowId)
-    ? consoleFlowId
-    : consoleTabs[0]?.id ?? null;
+  const shownConsoleId = shownConsole(consoleTabs, consoleFlowId);
 
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [validatorOpen, setValidatorOpen] = useState(false);

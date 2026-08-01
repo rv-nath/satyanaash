@@ -490,6 +490,24 @@ export const TestProjectProvider = ({
     step,
   } = useExecutionStream({ onEnvWrites: applyEnvWrites });
 
+  /**
+   * Run a suite against the environment the author has selected.
+   *
+   * The environment is resolved here rather than by the caller. A flow run has one place
+   * that assembles it (`handleRunFlow`); a suite has a Run button in its own editor, and
+   * leaving that button to remember meant the first version sent none at all — so every
+   * request resolved `{{baseUrl}}` from Globals, aimed at a dead port, and every node
+   * errored identically. One caller forgetting is a bug; no caller being able to is not.
+   */
+  const executeSuite = useCallback(
+    (suiteId: string, suiteName: string) =>
+      runSuite(suiteId, suiteName, {
+        debug_mode: true,
+        environment: effectiveEnvironment(),
+      }),
+    [runSuite, effectiveEnvironment]
+  );
+
   const setNodes = useCallback((newNodes: Node[]) => {
     if (!activeFlowId) return;
     // Use functional update to avoid stale closure issues
@@ -891,7 +909,7 @@ export const TestProjectProvider = ({
         executingFlowId,
         isExecuting,
         executeFlow,
-        executeSuite: runSuite,
+        executeSuite,
         cancelExecution,
         clearLogs,
         closeLogs,
