@@ -21,6 +21,10 @@ import type {
   ExecutionResponse,
   TestCaseExecutionResult,
   ExecuteTestCaseRequest,
+  Suite,
+  CreateSuiteRequest,
+  UpdateSuiteRequest,
+  SuiteRun,
 } from './types';
 
 // ============ Helper for paginated responses ============
@@ -143,6 +147,38 @@ export const flowsApi = {
   /** Execute a flow */
   execute: (id: string, data?: ExecuteFlowRequest) =>
     apiClient.post<ExecutionResponse>(`/flows/${id}/execute`, data || {}),
+};
+
+// ============ Suites API ============
+
+export const suitesApi = {
+  /** List suites for a project (newest first) */
+  list: (projectId: string) => apiClient.get<Suite[]>(`/projects/${projectId}/suites`),
+
+  get: (id: string) => apiClient.get<Suite>(`/suites/${id}`),
+
+  /** Create a suite. Send `members: []` for a blank one — omitting the field means
+   *  "everything in the project", which is a choice rather than a starting point. */
+  create: (projectId: string, data: CreateSuiteRequest) =>
+    apiClient.post<Suite>(`/projects/${projectId}/suites`, data),
+
+  update: (id: string, data: UpdateSuiteRequest) =>
+    apiClient.patch<Suite>(`/suites/${id}`, data),
+
+  delete: (id: string) => apiClient.delete(`/suites/${id}`),
+};
+
+// ============ Run history API ============
+
+export const runsApi = {
+  /** Newest first, headlines only — no request or response bodies. */
+  list: (projectId: string, limit = 50) =>
+    apiClient.get<SuiteRun[]>(`/projects/${projectId}/runs?limit=${limit}`),
+
+  /** One run in full, bodies unpacked and fan-out rows reattached to their nodes. */
+  get: (id: string) => apiClient.get<SuiteRun>(`/runs/${id}`),
+
+  delete: (id: string) => apiClient.delete(`/runs/${id}`),
 };
 
 // ============ Re-export types ============

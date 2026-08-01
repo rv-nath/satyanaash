@@ -10,17 +10,35 @@
  */
 export const MAX_TABS = 8;
 
-export type TabKind = "flow" | "test";
+export type TabKind = "flow" | "test" | "suite";
 
 export interface OpenTab {
   kind: TabKind;
   id: string;
 }
 
-/** active is a tab key ("flow:<id>" | "test:<id>"), "settings", or null (empty). */
+/**
+ * Surfaces there is only ever one of, whatever the project holds.
+ *
+ * Settings is one screen because a project has one set of them. Run history is one screen
+ * for the same reason: it is the record of the whole project, not a property of any flow
+ * or suite in it — a history tab per suite would fragment the one view where comparing
+ * across them is the point.
+ */
+export type SingletonTab = "settings" | "runs";
+
+const SINGLETONS: SingletonTab[] = ["settings", "runs"];
+
+export function isSingleton(key: string): key is SingletonTab {
+  return (SINGLETONS as string[]).includes(key);
+}
+
+/** active is a tab key ("flow:<id>" | "test:<id>" | "suite:<id>"), a singleton key, or
+ *  null (empty). */
 export interface WorkspaceState {
   tabs: OpenTab[];
   settingsOpen: boolean;
+  runsOpen: boolean;
   active: string | null;
 }
 
@@ -35,7 +53,7 @@ export function tabKey(kind: TabKind, id: string): string {
 }
 
 export function initialWorkspaceState(): WorkspaceState {
-  return { tabs: [], settingsOpen: false, active: null };
+  return { tabs: [], settingsOpen: false, runsOpen: false, active: null };
 }
 
 export function tabCount(state: WorkspaceState): number {
@@ -83,19 +101,48 @@ export function openFlow(
   return { state: { ...state, tabs: [...state.tabs, { kind: "flow", id }], active: key } };
 }
 
+export function openSuite(state: WorkspaceState, id: string): OpenResult {
+  const key = tabKey("suite", id);
+  if (has(state, "suite", id)) return { state: setActive(state, key) };
+  if (atCap(state)) return { state, capped: true };
+  return { state: { ...state, tabs: [...state.tabs, { kind: "suite", id }], active: key } };
+}
+
 export function openSettings(state: WorkspaceState): WorkspaceState {
   return { ...state, settingsOpen: true, active: "settings" };
 }
 
+export function openRuns(state: WorkspaceState): WorkspaceState {
+  return { ...state, runsOpen: true, active: "runs" };
+}
+
+/**
+ * Where focus lands when the active tab goes away: the last ordinary tab, else whichever
+ * singleton is still open, else nothing.
+ *
+ * Settings is preferred over runs only because it was here first and its behaviour is
+ * already pinned by tests — neither is a better landing place than the other.
+ */
+function fallbackActive(state: WorkspaceState, tabs: OpenTab[]): string | null {
+  if (tabs.length) {
+    const last = tabs[tabs.length - 1];
+    return tabKey(last.kind, last.id);
+  }
+  if (state.settingsOpen) return "settings";
+  if (state.runsOpen) return "runs";
+  return null;
+}
+
 export function closeTab(state: WorkspaceState, key: string): WorkspaceState {
-  if (key === "settings") {
-    let active = state.active;
-    if (state.active === "settings") {
-      active = state.tabs.length
-        ? tabKey(state.tabs[state.tabs.length - 1].kind, state.tabs[state.tabs.length - 1].id)
-        : null;
-    }
-    return { ...state, settingsOpen: false, active };
+  if (isSingleton(key)) {
+    // Closed first, so it can't be offered as its own fallback.
+    const closed: WorkspaceState = {
+      ...state,
+      settingsOpen: key === "settings" ? false : state.settingsOpen,
+      runsOpen: key === "runs" ? false : state.runsOpen,
+    };
+    const active = state.active === key ? fallbackActive(closed, closed.tabs) : state.active;
+    return { ...closed, active };
   }
 
   const idx = state.tabs.findIndex((t) => tabKey(t.kind, t.id) === key);
@@ -105,7 +152,7 @@ export function closeTab(state: WorkspaceState, key: string): WorkspaceState {
   let active = state.active;
   if (state.active === key) {
     if (tabs.length === 0) {
-      active = state.settingsOpen ? "settings" : null;
+      active = fallbackActive(state, tabs);
     } else if (idx < tabs.length) {
       active = tabKey(tabs[idx].kind, tabs[idx].id); // right neighbor took this index
     } else {

@@ -57,6 +57,7 @@ async fn run_migrations(pool: &AnyPool) -> Result<(), sqlx::Error> {
         include_str!("../../migrations/006_add_pre_test_script.sql"),
         include_str!("../../migrations/007_test_groups.sql"),
         include_str!("../../migrations/008_dataset.sql"),
+        include_str!("../../migrations/009_runs.sql"),
     ];
 
     for sql in migrations {

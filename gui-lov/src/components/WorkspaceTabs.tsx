@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { X, Settings, Workflow } from "lucide-react";
+import { X, Settings, Workflow, Layers, History } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
 export interface RenderTab {
-  key: string;            // "flow:<id>" | "test:<id>"
-  kind: "flow" | "test";
+  key: string;            // "flow:<id>" | "test:<id>" | "suite:<id>"
+  kind: "flow" | "test" | "suite";
   label: string;
   method?: string;        // test tabs
   dirty?: boolean;
@@ -17,6 +17,8 @@ interface Props {
   tabs: RenderTab[];
   settingsOpen: boolean;
   settingsDirty?: boolean;
+  /** Run history — one surface for the project, so a singleton like Settings. */
+  runsOpen?: boolean;
   active: string | null;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
@@ -62,7 +64,7 @@ function TabShell({
   );
 }
 
-export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, active, onActivate, onClose, onRename }: Props) {
+export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, active, onActivate, onClose, onRename }: Props) {
   // Which tab is being renamed, and the name so far. Held here rather than by the page:
   // it is nobody else's business, and the page is long enough.
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
@@ -100,6 +102,8 @@ export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, active, onAct
         >
           {t.kind === "flow" ? (
             <Workflow className="h-3.5 w-3.5 text-node-group" />
+          ) : t.kind === "suite" ? (
+            <Layers className="h-3.5 w-3.5 text-primary" />
           ) : (
             <span className={`text-[9px] font-bold uppercase ${active === t.key ? "text-primary" : "text-muted-foreground"}`}>
               {t.method}
@@ -141,6 +145,18 @@ export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, active, onAct
           )}
         </TabShell>
       ))}
+
+      {runsOpen && (
+        <TabShell
+          tabKey="runs"
+          active={active === "runs"}
+          onActivate={() => onActivate("runs")}
+          onClose={() => onClose("runs")}
+        >
+          <History className="h-3.5 w-3.5" />
+          <span>Runs</span>
+        </TabShell>
+      )}
 
       {settingsOpen && (
         <TabShell

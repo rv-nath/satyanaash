@@ -77,13 +77,55 @@ interface ExecutionEventError {
   message: string;
 }
 
+/**
+ * Suite-level events.
+ *
+ * A suite's members each run a flow, and each of those would emit its own `started` and
+ * `completed` — which would read as the whole run finishing four members early. The server
+ * swallows the inner pair and sends these instead, so `completed` still means "that is all".
+ */
+interface ExecutionEventSuiteStarted {
+  type: 'suite_started';
+  execution_id: string;
+  suite_id?: string;
+  suite_name: string;
+  total_members: number;
+}
+
+interface ExecutionEventMemberStarted {
+  type: 'member_started';
+  ordinal: number;
+  total: number;
+  kind: 'flow' | 'test';
+  member_id: string;
+  name: string;
+}
+
+interface ExecutionEventMemberCompleted {
+  type: 'member_completed';
+  ordinal: number;
+  name: string;
+  status: string;
+  duration_ms: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  skipped: number;
+}
+
 type ExecutionEvent =
   | ExecutionEventStarted
   | ExecutionEventNodeStarted
   | ExecutionEventNodeCompleted
   | ExecutionEventPaused
   | ExecutionEventCompleted
-  | ExecutionEventError;
+  | ExecutionEventError
+  | ExecutionEventSuiteStarted
+  | ExecutionEventMemberStarted
+  | ExecutionEventMemberCompleted;
+
+/** Console key for a suite's run. Prefixed so it can never collide with a flow id. */
+export const suiteLogKey = (suiteId: string) => `suite:${suiteId}`;
 
 // Defined alongside the formatters that build them; re-exported here because the
 // console panel has always imported it from this module.
@@ -280,74 +322,17 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     };
 
     try {
-      const response = await fetch(`${API_URL}/flows/${flowId}/execute-stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await pumpStream(
+        `${API_URL}/flows/${flowId}/execute-stream`,
+        {
           debug_mode: options.debug_mode ?? false,
           environment: options.environment ?? {},
           variables: options.variables ?? {},
           step: options.step ?? false,
-        }),
-        signal: abortController.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error: ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body');
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
-        // Decode chunk and add to buffer
-        buffer += decoder.decode(value, { stream: true });
-
-        // Process complete lines from buffer
-        const lines = buffer.split('\n');
-        // Keep incomplete line in buffer
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          // Skip empty lines and keep-alive messages
-          if (!line.trim() || line.trim() === 'keep-alive') {
-            continue;
-          }
-
-          // Parse SSE data lines
-          if (line.startsWith('data: ')) {
-            const jsonStr = line.slice(6); // Remove 'data: ' prefix
-            try {
-              const event: ExecutionEvent = JSON.parse(jsonStr);
-              handleEvent(event, sink);
-            } catch (parseError) {
-              console.warn('Failed to parse SSE event:', jsonStr, parseError);
-            }
-          }
-        }
-      }
-
-      // Process any remaining data in buffer
-      if (buffer.trim() && buffer.startsWith('data: ')) {
-        const jsonStr = buffer.slice(6);
-        try {
-          const event: ExecutionEvent = JSON.parse(jsonStr);
-          handleEvent(event, sink);
-        } catch (parseError) {
-          console.warn('Failed to parse final SSE event:', jsonStr, parseError);
-        }
-      }
+        },
+        sink,
+        abortController.signal,
+      );
 
       // Persist SAT.env writes made during the run (matches standalone behaviour).
       const written = Object.keys(envWrites);
@@ -385,12 +370,97 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     }
   }, [addLog, recordResult]);
 
+  /**
+   * Run a suite: its members one after another, into a console of their own.
+   *
+   * Logged under `suite:<id>` rather than any flow's key. A suite spans several flows, and
+   * putting its output into the last one it happened to touch would leave a flow's console
+   * holding another run's history.
+   */
+  const executeSuite = useCallback(async (
+    suiteId: string,
+    suiteName: string,
+    options: Omit<ExecuteFlowRequest, 'step'> = {},
+  ) => {
+    // Same ticket discipline as a flow run: everything below writes only while it holds it.
+    const runSeq = ++runSeqRef.current;
+    const current = () => runSeqRef.current === runSeq;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    const logKey = suiteLogKey(suiteId);
+    targetFlowRef.current = logKey;
+    setExecutingFlowId(logKey);
+    setLogsByFlow(prev => ({ ...prev, [logKey]: [] }));
+    setActiveNodeId(null);
+    setPausedNodeId(null);
+    setExecutionId(null);
+    // A suite never pauses — stepping is a single-flow affair, so there is nothing to press.
+    setRunMode('finishing');
+    addLog(`Starting suite "${suiteName}"...`, 'info');
+
+    const envWrites: Record<string, unknown> = {};
+    const sink: EventSink = {
+      addLog: (message, type, details) => { if (current()) addLog(message, type, details); },
+      envWrites,
+      recordResult: (nodeId, result) => { if (current()) recordResult(nodeId, result); },
+      setActiveNodeId: (id) => { if (current()) setActiveNodeId(id); },
+      setPausedNodeId: (id) => { if (current()) setPausedNodeId(id); },
+      setRunMode: (next) => { if (current()) setRunMode(next); },
+      setExecutionId: (id) => { if (current()) setExecutionId(id); },
+      setTotalNodes: (n) => { if (current()) setTotalNodes(n); },
+    };
+
+    try {
+      await pumpStream(
+        `${API_URL}/suites/${suiteId}/execute-stream`,
+        {
+          debug_mode: options.debug_mode ?? true,
+          environment: options.environment ?? {},
+          variables: options.variables ?? {},
+        },
+        sink,
+        abortController.signal,
+      );
+
+      // A suite folds env writes forward server-side, but the author's own environment is
+      // still theirs to keep — same as a flow run.
+      const written = Object.keys(envWrites);
+      if (written.length > 0 && current()) {
+        onEnvWritesRef.current?.(envWrites);
+        addLog(`Saved ${written.length} environment variable(s): ${written.join(', ')}`, 'info');
+      }
+    } catch (error) {
+      if (!current()) return;
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') return;
+        addLog(`Error: ${error.message}`, 'error');
+      } else {
+        addLog('Unknown error occurred', 'error');
+      }
+    } finally {
+      if (current()) {
+        setExecutingFlowId(null);
+        setActiveNodeId(null);
+        setPausedNodeId(null);
+        setRunMode('idle');
+        setExecutionId(null);
+        abortControllerRef.current = null;
+      }
+    }
+  }, [addLog, recordResult]);
+
   return {
     logsByFlow,
     /** The flow currently running, if any — one execution at a time. */
     executingFlowId,
     isExecuting: executingFlowId !== null,
     execute,
+    executeSuite,
     cancelExecution,
     clearLogs,
     closeLogs,
@@ -414,6 +484,65 @@ interface EventSink {
   setRunMode: (next: RunMode | ((prev: RunMode) => RunMode)) => void;
   setExecutionId: (id: string) => void;
   setTotalNodes: (n: number) => void;
+}
+
+/**
+ * POST, then read SSE events off the response until it ends.
+ *
+ * Shared by a flow run and a suite run: they differ in the URL and the body, not in how
+ * the stream is read, and two copies of this loop would drift.
+ */
+async function pumpStream(
+  url: string,
+  body: Record<string, unknown>,
+  sink: EventSink,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('No response body');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const feed = (line: string) => {
+    if (!line.startsWith('data: ')) return;
+    const jsonStr = line.slice(6);
+    try {
+      handleEvent(JSON.parse(jsonStr) as ExecutionEvent, sink);
+    } catch (parseError) {
+      console.warn('Failed to parse SSE event:', jsonStr, parseError);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    // Keep the incomplete line for the next chunk.
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim() || line.trim() === 'keep-alive') continue;
+      feed(line);
+    }
+  }
+
+  if (buffer.trim()) feed(buffer);
 }
 
 /** Handle individual execution events */
@@ -468,6 +597,32 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
       const resultType: ConsoleLog['type'] = failed === 0 && errors === 0 ? 'success' : 'error';
       addLog(`Execution ${status} in ${duration_ms}ms`, 'info');
       addLog(`Results: ${passed}/${total} passed, ${failed} failed, ${errors} errors, ${skipped} skipped`, resultType);
+      break;
+    }
+
+    case 'suite_started':
+      sink.setExecutionId(event.execution_id);
+      sink.setTotalNodes(event.total_members);
+      addLog(
+        `Running "${event.suite_name}" — ${event.total_members} ${event.total_members === 1 ? 'member' : 'members'}`,
+        'info',
+      );
+      break;
+
+    case 'member_started':
+      addLog(`── ${event.ordinal + 1}/${event.total}  ${event.name}`, 'info');
+      break;
+
+    case 'member_completed': {
+      // Named rather than folded into the totals: a suite's value is knowing *which*
+      // member went red, and the totals at the end cannot say that.
+      const ran = event.passed + event.failed + event.errors;
+      const type: ConsoleLog['type'] =
+        event.failed === 0 && event.errors === 0 ? 'success' : 'error';
+      const counts = ran === 0
+        ? `nothing ran${event.skipped > 0 ? ` — ${event.skipped} skipped` : ''}`
+        : `${event.passed}/${ran} passed${event.skipped > 0 ? `, ${event.skipped} skipped` : ''}`;
+      addLog(`   ${event.name}: ${event.status} — ${counts} (${event.duration_ms}ms)`, type);
       break;
     }
 

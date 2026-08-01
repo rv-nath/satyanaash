@@ -548,6 +548,41 @@ pub enum ExecutionEvent {
     Paused {
         node_id: String,
     },
+    /// A suite is about to work through its members.
+    ///
+    /// A suite's members each run a flow, and each of those would otherwise emit its own
+    /// `Started` and `Completed` — which a client reads as the whole run finishing, four
+    /// members early. The suite runner swallows the inner pair and reports member
+    /// boundaries with these instead, so `Completed` keeps meaning "that is all".
+    SuiteStarted {
+        execution_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suite_id: Option<String>,
+        suite_name: String,
+        total_members: usize,
+    },
+    /// The suite moved on to this member.
+    MemberStarted {
+        ordinal: usize,
+        total: usize,
+        kind: String,
+        /// The flow or test case being run. A client with that flow's canvas open can
+        /// follow the node events that come next.
+        member_id: String,
+        name: String,
+    },
+    /// That member is done. The suite carries on regardless — one failing flow is a
+    /// result, not a reason to stop reporting on the other five.
+    MemberCompleted {
+        ordinal: usize,
+        name: String,
+        status: String,
+        duration_ms: u64,
+        passed: usize,
+        failed: usize,
+        errors: usize,
+        skipped: usize,
+    },
     /// Execution completed
     Completed {
         execution_id: String,
@@ -2837,6 +2872,8 @@ mod tests {
                 ExecutionEvent::Started { .. } => "run-started".to_string(),
                 ExecutionEvent::Completed { status, .. } => format!("run-{}", status),
                 ExecutionEvent::Error { .. } => "error".to_string(),
+                // Suite-level events; a single flow never emits them.
+                other => format!("unexpected:{:?}", other),
             });
         }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings,
-  closeTab, setActive, tabCount, atCap,
+  MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings, openSuite,
+  openRuns, closeTab, setActive, tabCount, atCap, isSingleton,
 } from "@/lib/workspaceTabs";
 
 describe("workspaceTabs", () => {
@@ -103,5 +103,87 @@ describe("workspaceTabs", () => {
     let empty = openSettings(initialWorkspaceState());
     empty = closeTab(empty, "settings");
     expect(empty.active).toBeNull();
+  });
+});
+
+describe("suite tabs", () => {
+  it("opens like a test tab — one per suite, no preview reuse", () => {
+    // Flow tabs reuse the active tab when unedited; a suite is a thing you edit and run,
+    // so it gets its own tab and keeps it.
+    let s = openSuite(initialWorkspaceState(), "s1").state;
+    expect(s.tabs).toEqual([{ kind: "suite", id: "s1" }]);
+    expect(s.active).toBe(tabKey("suite", "s1"));
+
+    s = openSuite(s, "s1").state;
+    expect(s.tabs).toHaveLength(1);
+  });
+
+  it("counts against the tab cap like any other", () => {
+    let s = initialWorkspaceState();
+    for (let i = 0; i < MAX_TABS; i++) s = openFlow(s, `f${i}`).state;
+    expect(atCap(s)).toBe(true);
+
+    const { state, capped } = openSuite(s, "s1");
+    expect(capped).toBe(true);
+    expect(tabCount(state)).toBe(MAX_TABS);
+  });
+
+  it("closes and hands focus to its neighbour", () => {
+    let s = openSuite(initialWorkspaceState(), "s1").state;
+    s = openSuite(s, "s2").state;
+    s = setActive(s, tabKey("suite", "s1"));
+    s = closeTab(s, tabKey("suite", "s1"));
+    expect(s.active).toBe(tabKey("suite", "s2"));
+  });
+});
+
+describe("the runs tab", () => {
+  it("is a singleton, like settings", () => {
+    expect(isSingleton("runs")).toBe(true);
+    expect(isSingleton("settings")).toBe(true);
+    expect(isSingleton("flow:f1")).toBe(false);
+
+    let s = openRuns(initialWorkspaceState());
+    expect(s.runsOpen).toBe(true);
+    expect(s.active).toBe("runs");
+    // Opening it twice is opening it once — there is one history, not one per click.
+    s = openRuns(s);
+    expect(s.runsOpen).toBe(true);
+    expect(s.tabs).toEqual([]);
+  });
+
+  it("closing it falls back to the last ordinary tab", () => {
+    let s = openFlow(initialWorkspaceState(), "f1").state;
+    s = openRuns(s);
+    s = closeTab(s, "runs");
+    expect(s.runsOpen).toBe(false);
+    expect(s.active).toBe(tabKey("flow", "f1"));
+  });
+
+  it("is never offered as its own fallback", () => {
+    // The bug this guards: closing the active runs tab and landing back on it, so the
+    // close button appears to do nothing.
+    let s = openRuns(initialWorkspaceState());
+    s = closeTab(s, "runs");
+    expect(s.active).toBeNull();
+  });
+
+  it("catches focus when the last ordinary tab closes", () => {
+    let s = openFlow(initialWorkspaceState(), "f1").state;
+    s = openRuns(s);
+    s = setActive(s, tabKey("flow", "f1"));
+    s = closeTab(s, tabKey("flow", "f1"));
+    expect(s.active).toBe("runs");
+  });
+
+  it("coexists with settings without either closing the other", () => {
+    let s = openSettings(initialWorkspaceState());
+    s = openRuns(s);
+    expect(s.settingsOpen).toBe(true);
+    expect(s.runsOpen).toBe(true);
+
+    s = closeTab(s, "runs");
+    expect(s.settingsOpen).toBe(true);
+    expect(s.active).toBe("settings");
   });
 });

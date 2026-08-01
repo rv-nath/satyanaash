@@ -415,6 +415,178 @@ pub struct UpdateTestCase {
 }
 
 // =============================================================================
+// Suites and run history
+// =============================================================================
+
+/// A saved selection of flows and standalone tests, run as one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Suite {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    /// `None` means every flow and test in the project, resolved at run time.
+    ///
+    /// Absence is how this codebase already says "unset" for a selection — see fan-out's
+    /// `rowIds` — and it means a flow added tomorrow is in the suite without anyone
+    /// reopening it. `Some(vec![])` is a different thing: it means nothing is selected,
+    /// and the run fails saying so rather than quietly doing everything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<SuiteMember>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One entry in a suite: a flow to run, or a test case to run on its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SuiteMember {
+    pub kind: MemberKind,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberKind {
+    Flow,
+    Test,
+}
+
+impl MemberKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MemberKind::Flow => "flow",
+            MemberKind::Test => "test",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "flow" => Some(MemberKind::Flow),
+            "test" => Some(MemberKind::Test),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateSuite {
+    pub name: String,
+    #[serde(default)]
+    pub members: Option<Vec<SuiteMember>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateSuite {
+    pub name: Option<String>,
+    /// Absent leaves the selection alone; `Some(None)` resets it to "everything".
+    ///
+    /// Two levels of Option because "don't touch it" and "set it back to unset" are
+    /// different edits and the PATCH has to be able to say both.
+    #[serde(default, deserialize_with = "double_option", skip_serializing_if = "Option::is_none")]
+    pub members: Option<Option<Vec<SuiteMember>>>,
+}
+
+/// One press of Run: a suite, or a single flow run ad hoc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuiteRun {
+    pub id: String,
+    pub project_id: String,
+    /// `None` for an ad-hoc run of one flow, and for a run whose suite was deleted.
+    pub suite_id: Option<String>,
+    /// What it was called when it ran. Recorded rather than looked up, for the reason
+    /// `NodeResult::expected` is: the project may have been renamed or deleted since.
+    pub suite_name: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub duration_ms: Option<i64>,
+    pub total: i64,
+    pub passed: i64,
+    pub failed: i64,
+    pub errors: i64,
+    pub skipped: i64,
+    pub environment_name: Option<String>,
+    pub error_message: Option<String>,
+    /// Filled by `get_run`, left empty by the list endpoint — a history page wants the
+    /// headline of a hundred runs, not the bodies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<FlowRun>,
+}
+
+/// One suite member's run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowRun {
+    pub id: String,
+    pub suite_run_id: String,
+    pub ordinal: i64,
+    pub member_kind: MemberKind,
+    pub flow_id: Option<String>,
+    pub test_case_id: Option<String>,
+    pub name: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub duration_ms: Option<i64>,
+    pub error_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<crate::execution::NodeResult>,
+}
+
+/// What a run needs before it starts. The row is written up front so a run in flight is
+/// visible, and so a server that dies mid-suite leaves a run marked `running` rather
+/// than no trace of the hour it spent.
+#[derive(Debug, Clone)]
+pub struct SuiteRunInput {
+    pub project_id: String,
+    pub suite_id: Option<String>,
+    pub suite_name: String,
+    pub environment_name: Option<String>,
+}
+
+/// One member's outcome, handed over once that member is done.
+#[derive(Debug, Clone)]
+pub struct FlowRunInput {
+    pub ordinal: i64,
+    pub member_kind: MemberKind,
+    pub flow_id: Option<String>,
+    pub test_case_id: Option<String>,
+    pub name: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub duration_ms: Option<i64>,
+    pub error_message: Option<String>,
+    pub results: Vec<crate::execution::NodeResult>,
+}
+
+/// Node counts across a whole run. Nodes, not rows — the same rule `ExecutionStats`
+/// follows, so `total` means one thing everywhere.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct RunTotals {
+    pub total: i64,
+    pub passed: i64,
+    pub failed: i64,
+    pub errors: i64,
+    pub skipped: i64,
+}
+
+impl RunTotals {
+    pub fn add(&mut self, other: &crate::execution::ExecutionStats) {
+        self.total += other.total as i64;
+        self.passed += other.passed as i64;
+        self.failed += other.failed as i64;
+        self.errors += other.errors as i64;
+        self.skipped += other.skipped as i64;
+    }
+}
+
+/// A PATCH field that can be "leave it", "clear it", or "set it".
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
+// =============================================================================
 // Pagination
 // =============================================================================
 

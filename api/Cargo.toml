@@ -48,3 +48,6 @@ futures = "0.3"                                    # Stream utilities
 
 # Random Data Generation
 bharat-cafe = "0.2"                                # Indian names, addresses, phones, etc.
+
+# Run history storage
+zstd = "0.13"                                      # Packs stored request/response/log bodies

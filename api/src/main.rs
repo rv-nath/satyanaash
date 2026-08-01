@@ -18,11 +18,11 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::api::{executions, flows, groups, projects, test_cases};
+use crate::api::{executions, flows, groups, projects, runs, suites, test_cases};
 use crate::api::executions::ExecutionState;
 use crate::config::Config;
 use crate::db::pool::init_pool;
-use crate::db::repositories::{SqlxFlowRepository, SqlxProjectRepository, SqlxTestCaseRepository, SqlxTestGroupRepository};
+use crate::db::repositories::{SqlxFlowRepository, SqlxProjectRepository, SqlxRunRepository, SqlxSuiteRepository, SqlxTestCaseRepository, SqlxTestGroupRepository};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -46,6 +46,8 @@ async fn main() -> anyhow::Result<()> {
     let test_case_repo = Arc::new(SqlxTestCaseRepository::new(pool.clone()));
     let test_group_repo = Arc::new(SqlxTestGroupRepository::new(pool.clone()));
     let flow_repo = Arc::new(SqlxFlowRepository::new(pool.clone()));
+    let run_repo = Arc::new(SqlxRunRepository::new(pool.clone()));
+    let suite_repo = Arc::new(SqlxSuiteRepository::new(pool.clone()));
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -99,6 +101,8 @@ async fn main() -> anyhow::Result<()> {
         flow_repo,
         tc_repo: test_case_repo.clone(),
         project_repo: project_repo.clone(),
+        run_repo: run_repo.clone(),
+        suite_repo: suite_repo.clone(),
         steps: Default::default(),
     };
     let execution_routes = Router::new()
@@ -107,6 +111,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/flows/{id}/execute-stream", post(executions::execute_flow_stream))
         .route("/api/v1/executions/{id}/step", post(executions::step_execution))
         .route("/api/v1/test-cases/{id}/execute", post(executions::execute_test_case))
+        // Suites and run history share the execution state: a suite needs every
+        // repository the runner touches, and the history is written by the same runs.
+        .route("/api/v1/projects/{project_id}/suites", post(suites::create_suite))
+        .route("/api/v1/projects/{project_id}/suites", get(suites::list_suites))
+        .route("/api/v1/suites/{id}", get(suites::get_suite))
+        .route("/api/v1/suites/{id}", patch(suites::update_suite))
+        .route("/api/v1/suites/{id}", delete(suites::delete_suite))
+        .route("/api/v1/suites/{id}/execute-stream", post(suites::execute_suite_stream))
+        .route("/api/v1/projects/{project_id}/runs", get(runs::list_runs))
+        .route("/api/v1/runs/{id}", get(runs::get_run))
+        .route("/api/v1/runs/{id}", delete(runs::delete_run))
         .with_state(execution_state);
 
     // Build router

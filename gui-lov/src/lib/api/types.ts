@@ -307,6 +307,83 @@ export interface ExecuteTestCaseRequest {
   all_rows?: boolean;
 }
 
+// ============ Suites and run history ============
+
+export type MemberKind = 'flow' | 'test';
+
+export interface SuiteMember {
+  kind: MemberKind;
+  id: string;
+}
+
+export interface Suite {
+  id: string;
+  project_id: string;
+  name: string;
+  /**
+   * The ordered selection. **Absent means every flow and test in the project**, resolved
+   * when the suite runs — so a flow added tomorrow is included. An empty array means
+   * nothing is selected, and the run is refused rather than quietly doing everything.
+   *
+   * New suites are created empty. "Everything" is a deliberate choice for the one suite
+   * that wants it (a nightly full regression), not a default that hides what it covers.
+   */
+  members?: SuiteMember[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateSuiteRequest {
+  name: string;
+  members?: SuiteMember[];
+}
+
+export interface UpdateSuiteRequest {
+  name?: string;
+  /** Omit to leave the selection alone; `null` resets it to "everything". */
+  members?: SuiteMember[] | null;
+}
+
+/** One member's run within a stored run. */
+export interface FlowRun {
+  id: string;
+  suite_run_id: string;
+  ordinal: number;
+  member_kind: MemberKind;
+  /** Null once the flow has been deleted — the record outlives what it ran. */
+  flow_id?: string | null;
+  test_case_id?: string | null;
+  /** What it was called when it ran, not what the project calls it now. */
+  name: string;
+  status: string;
+  started_at: string;
+  duration_ms?: number | null;
+  error_message?: string | null;
+  /** Filled by `runsApi.get`, empty in the list. */
+  results?: TestCaseExecutionResult[];
+}
+
+/** One press of Run. A single flow is stored as an ad-hoc run of one. */
+export interface SuiteRun {
+  id: string;
+  project_id: string;
+  /** Null for an ad-hoc single-flow run, and for a run whose suite was deleted. */
+  suite_id?: string | null;
+  suite_name: string;
+  status: string;
+  started_at: string;
+  completed_at?: string | null;
+  duration_ms?: number | null;
+  total: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  skipped: number;
+  environment_name?: string | null;
+  error_message?: string | null;
+  members?: FlowRun[];
+}
+
 // ============ Pagination ============
 
 export interface PaginationParams {

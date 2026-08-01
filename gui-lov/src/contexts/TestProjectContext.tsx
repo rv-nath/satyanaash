@@ -3,7 +3,8 @@ import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import {
   WorkspaceState, initialWorkspaceState, MAX_TABS,
-  openTest, openFlow, openSettings, closeTab as closeWsTab, setActive as setActiveWsTab,
+  openTest, openFlow, openSettings, openRuns, openSuite,
+  closeTab as closeWsTab, setActive as setActiveWsTab,
 } from "@/lib/workspaceTabs";
 import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
@@ -84,6 +85,9 @@ interface TestProjectContextType {
   openTestTab: (id: string) => void;
   openFlowTab: (id: string, canReuseActive: boolean) => void;
   openSettingsTab: () => void;
+  /** Run history — one surface for the project, so a singleton like Settings. */
+  openRunsTab: () => void;
+  openSuiteTab: (id: string) => void;
   closeWorkspaceTab: (key: string) => void;
   setActiveWorkspaceTab: (key: string) => void;
   // Environments & globals (per-user active env; SAT.env writes persist here)
@@ -122,6 +126,9 @@ interface TestProjectContextType {
   executingFlowId: string | null;
   isExecuting: boolean;
   executeFlow: (flowId: string, options?: ExecuteFlowRequest) => Promise<void>;
+  /** Run a suite's members one after another. Logged under its own console key. */
+  executeSuite: (suiteId: string, suiteName: string) => Promise<void>;
+  cancelExecution: () => void;
   clearLogs: (flowId: string) => void;
   closeLogs: (flowId: string) => void;
   /** Per flow, per node: what it did last time. Outlives the run. */
@@ -299,6 +306,14 @@ export const TestProjectProvider = ({
     []
   );
   const openSettingsTab = useCallback(() => setWorkspace((s) => openSettings(s)), []);
+  const openRunsTab = useCallback(() => setWorkspace((s) => openRuns(s)), []);
+  const openSuiteTab = useCallback((id: string) => {
+    setWorkspace((s) => {
+      const { state, capped } = openSuite(s, id);
+      if (capped) toast.error(`Close a tab first — ${MAX_TABS} is the limit`);
+      return state;
+    });
+  }, []);
 
   // Environments & globals — derived from project settings; active env per-user.
   const updateProjectMutation = useUpdateProject();
@@ -463,6 +478,8 @@ export const TestProjectProvider = ({
     executingFlowId,
     isExecuting,
     execute: executeFlow,
+    executeSuite: runSuite,
+    cancelExecution,
     clearLogs,
     closeLogs,
     nodeRuns,
@@ -847,6 +864,8 @@ export const TestProjectProvider = ({
         openTestTab,
         openFlowTab,
         openSettingsTab,
+        openRunsTab,
+        openSuiteTab,
         closeWorkspaceTab,
         setActiveWorkspaceTab,
         selectedTestCaseId,
@@ -872,6 +891,8 @@ export const TestProjectProvider = ({
         executingFlowId,
         isExecuting,
         executeFlow,
+        executeSuite: runSuite,
+        cancelExecution,
         clearLogs,
         closeLogs,
         nodeRuns,

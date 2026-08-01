@@ -16,9 +16,14 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::db::repositories::{FlowRepository, ProjectRepository, TestCaseRepository};
+use crate::db::repositories::{
+    FlowRepository, ProjectRepository, RunRepository, SuiteRepository, TestCaseRepository,
+};
 use crate::error::AppError;
-use crate::execution::{ExecutionEngine, ExecutionEvent, FlowExecutionResult, NodeResult, StepCommand};
+use crate::execution::{
+    record_single, ExecutionEngine, ExecutionEvent, FlowExecutionResult, MemberRef, NodeResult,
+    StepCommand,
+};
 use crate::validation::{GraphValidator, ValidationResult};
 
 /// Shared state for execution endpoints (needs flow, test case, and project repos)
@@ -27,6 +32,8 @@ pub struct ExecutionState {
     pub flow_repo: Arc<dyn FlowRepository>,
     pub tc_repo: Arc<dyn TestCaseRepository>,
     pub project_repo: Arc<dyn ProjectRepository>,
+    pub run_repo: Arc<dyn RunRepository>,
+    pub suite_repo: Arc<dyn SuiteRepository>,
     pub steps: StepRegistry,
 }
 
@@ -139,6 +146,11 @@ pub struct StartExecutionRequest {
     /// pause in a single synchronous response.
     #[serde(default)]
     pub step: bool,
+    /// Which environment the author had selected, recorded with the run. The server
+    /// receives the merged values, not their provenance, so a run against staging and
+    /// one against production are otherwise indistinguishable in the history.
+    #[serde(default)]
+    pub environment_name: Option<String>,
 }
 
 /// Response for execution
@@ -204,6 +216,15 @@ pub async fn execute_flow(
         input.variables,
         None, // No WebSocket streaming for sync execution
     ).await?;
+
+    record_single(
+        &state.run_repo,
+        &flow.project_id,
+        MemberRef::flow(&flow.id, &flow.name),
+        &result,
+        input.environment_name,
+    )
+    .await;
 
     // Convert to response
     let response = convert_to_response(result, input.debug_mode);
@@ -288,14 +309,16 @@ pub async fn execute_flow_stream(
 
     // Clone values for the spawned task
     let tc_repo = state.tc_repo.clone();
+    let run_repo = state.run_repo.clone();
     let exec_id = execution_id.clone();
     let debug_mode = input.debug_mode;
     let steps = state.steps.clone();
+    let environment_name = input.environment_name.clone();
 
     // Spawn execution in background task
     tokio::spawn(async move {
         let engine = ExecutionEngine::new(debug_mode, base_url);
-        let _ = engine.run_flow(
+        let outcome = engine.run_flow(
             &exec_id,
             &flow,
             tc_repo.as_ref(),
@@ -304,6 +327,21 @@ pub async fn execute_flow_stream(
             Some(tx),
             resume_rx,
         ).await;
+
+        // The value this used to discard. `run_flow` returns a result for a run that was
+        // stopped or errored as much as one that finished, so everything but a server
+        // crash lands in the history — including the runs worth looking back at.
+        if let Ok(result) = &outcome {
+            record_single(
+                &run_repo,
+                &flow.project_id,
+                MemberRef::flow(&flow.id, &flow.name),
+                result,
+                environment_name,
+            )
+            .await;
+        }
+
         // Last act, on every path out: the run is over, so nothing about it can be
         // stepped, and holding the sender would keep the entry alive for good.
         steps.remove(&exec_id);
@@ -445,7 +483,7 @@ pub async fn execute_test_case(
 }
 
 /// Extract project-level variables from settings JSON
-fn extract_project_variables(settings: &Value) -> HashMap<String, Value> {
+pub fn extract_project_variables(settings: &Value) -> HashMap<String, Value> {
     settings
         .get("variables")
         .and_then(|v| v.as_object())

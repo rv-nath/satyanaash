@@ -6,7 +6,10 @@ import {
   Undo2, Redo2, Cloud, CloudOff, Save, ChevronDown, Spline, Minus, ArrowRightToLine,
   AlignStartHorizontal, AlignStartVertical, AlignEndVertical, AlignEndHorizontal,
   AlignVerticalJustifyCenter, AlignHorizontalJustifyCenter, Pencil, Network, MoveVertical, MoveHorizontal,
-  AlignHorizontalSpaceAround, AlignVerticalSpaceAround
+  AlignHorizontalSpaceAround, AlignVerticalSpaceAround,
+  // Aliased: the bare name resolves to the DOM's History interface, and TypeScript picks
+  // that over the icon without complaining until you use it as a component.
+  History as HistoryIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WorkspaceWelcome } from "@/components/WorkspaceWelcome";
@@ -47,6 +50,11 @@ import type { LayoutSpacing } from "@/lib/layoutUtils";
 import { useProject, useFlows, useCreateFlow, useCloneFlow, useUpdateFlow, useDeleteFlow, useDeleteTestCase, useUpdateTestCase, useTestCases } from "@/hooks/useApi";
 import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
 import { SettingsPanel } from "@/components/SettingsPanel";
+import RunHistory from "@/components/RunHistory";
+import SuiteEditor from "@/components/SuiteEditor";
+import { SuitesList } from "@/components/SuitesList";
+import { useQuery } from "@tanstack/react-query";
+import { suitesApi } from "@/lib/api";
 import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
 import { ApiClientError } from "@/lib/api/client";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
@@ -68,6 +76,8 @@ const ProjectDetailContent = () => {
     openTestTab,
     openFlowTab,
     openSettingsTab,
+    openRunsTab,
+    openSuiteTab,
     closeWorkspaceTab,
     setActiveWorkspaceTab,
     showConsole,
@@ -120,6 +130,13 @@ const ProjectDetailContent = () => {
 
   // Test cases (for workspace tab labels)
   const { data: apiTestCases } = useTestCases(projectId || '');
+  // Only for the tab label; the editor owns the suite itself. Same cache key as the rail
+  // and the editor, so a rename lands on all three at once.
+  const { data: apiSuites } = useQuery({
+    queryKey: ['suites', projectId],
+    queryFn: () => suitesApi.list(projectId!),
+    enabled: !!projectId,
+  });
 
   // Flows edited this session — a flow tab stops being reused once edited
   // (VS Code preview-tab semantics).
@@ -134,6 +151,9 @@ const ProjectDetailContent = () => {
   const activeIsFlow = !!workspace.active?.startsWith('flow:');
   const activeIsTest = !!workspace.active?.startsWith('test:');
   const activeIsSettings = workspace.active === 'settings';
+  const activeIsRuns = workspace.active === 'runs';
+  const activeIsSuite = !!workspace.active?.startsWith('suite:');
+  const activeSuiteId = activeIsSuite ? workspace.active!.slice('suite:'.length) : null;
   const activeTestId = activeIsTest ? workspace.active!.slice('test:'.length) : null;
 
   // Tab-bar render models
@@ -182,6 +202,12 @@ const ProjectDetailContent = () => {
     if (t.kind === 'flow') {
       const flow = testGroups.find((g) => g.id === t.id);
       return { key: tabKey('flow', t.id), kind: 'flow', label: flow?.name || 'Flow' };
+    }
+    if (t.kind === 'suite') {
+      // Renamed in the editor, where the field sits beside the Run button — so the tab is
+      // a label, not a second place to edit the same name.
+      const suite = (apiSuites || []).find((s) => s.id === t.id);
+      return { key: tabKey('suite', t.id), kind: 'suite', label: suite?.name || 'Suite', renameable: false };
     }
     const key = tabKey('test', t.id);
     // An unsaved New Test has no record to rename; its name belongs to the editor.
@@ -884,6 +910,9 @@ const ProjectDetailContent = () => {
                 </>
               )}
               <DropdownMenuLabel>Project</DropdownMenuLabel>
+              <DropdownMenuItem onClick={openRunsTab}>
+                <HistoryIcon className="w-4 h-4 mr-2" /> Run History
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => openSettings()}>
                 <Settings className="w-4 h-4 mr-2" /> Project Settings...
               </DropdownMenuItem>
@@ -917,7 +946,7 @@ const ProjectDetailContent = () => {
                 />
               </ResizablePanel>
               <ResizableHandle />
-              <ResizablePanel defaultSize={40} minSize={15}>
+              <ResizablePanel defaultSize={30} minSize={15}>
                 <FlowsList
                   onOpenFlow={handleOpenFlow}
                   onAddGroup={handleCreateFlow}
@@ -939,6 +968,10 @@ const ProjectDetailContent = () => {
                   }}
                 />
               </ResizablePanel>
+              <ResizableHandle />
+              <ResizablePanel defaultSize={20} minSize={10}>
+                {projectId && <SuitesList projectId={projectId} onOpenSuite={openSuiteTab} />}
+              </ResizablePanel>
             </ResizablePanelGroup>
           </div>
         </ResizablePanel>
@@ -952,6 +985,7 @@ const ProjectDetailContent = () => {
               tabs={renderTabs}
               settingsOpen={workspace.settingsOpen}
               settingsDirty={dirtyTabs['settings']}
+              runsOpen={workspace.runsOpen}
               active={workspace.active}
               onActivate={activateTab}
               onClose={requestCloseTab}
@@ -1006,6 +1040,43 @@ const ProjectDetailContent = () => {
                 </div>
               )}
 
+              {/* Not kept mounted like Settings: there is nothing unsaved to lose, and a
+                  history that refetches on open is a history that is up to date. */}
+              {activeIsRuns && projectId && (
+                <div className="absolute inset-0">
+                  <RunHistory projectId={projectId} />
+                </div>
+              )}
+
+              {activeIsSuite && activeSuiteId && projectId && (
+                <div className="absolute inset-0">
+                  {showConsole ? (
+                    <ResizablePanelGroup direction="vertical">
+                      <ResizablePanel defaultSize={65} minSize={30}>
+                        <SuiteEditor suiteId={activeSuiteId} projectId={projectId} />
+                      </ResizablePanel>
+                      <ResizableHandle />
+                      <ResizablePanel defaultSize={35} minSize={20}>
+                        <ConsolePanel
+                          logs={(shownConsoleId && logsByFlow[shownConsoleId]) || []}
+                          tabs={consoleTabs}
+                          activeTabId={shownConsoleId}
+                          onSelectTab={setConsoleFlowId}
+                          onCloseTab={(id) => {
+                            closeLogs(id);
+                            if (id === consoleFlowId) setConsoleFlowId(null);
+                          }}
+                          onClose={() => setShowConsole(false)}
+                          onClear={() => shownConsoleId && clearLogs(shownConsoleId)}
+                        />
+                      </ResizablePanel>
+                    </ResizablePanelGroup>
+                  ) : (
+                    <SuiteEditor suiteId={activeSuiteId} projectId={projectId} />
+                  )}
+                </div>
+              )}
+
               {activeIsFlow ? (
                 <div className="absolute inset-0">
                   {showConsole ? (
@@ -1033,7 +1104,7 @@ const ProjectDetailContent = () => {
                     <TestCanvas />
                   )}
                 </div>
-              ) : !activeIsTest && !activeIsSettings ? (
+              ) : !activeIsTest && !activeIsSettings && !activeIsRuns && !activeIsSuite ? (
                 <div className="absolute inset-0">
                   <WorkspaceWelcome
                     onNewTest={() => openTestCaseEditor()}

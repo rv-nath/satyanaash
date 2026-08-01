@@ -1,36 +1,11 @@
--- Execution runs
-CREATE TABLE IF NOT EXISTS execution_runs (
-    id TEXT PRIMARY KEY,
-    flow_id TEXT NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
-    status TEXT NOT NULL DEFAULT 'pending',  -- pending, running, completed, failed, cancelled, stopped, error
-    debug_mode INTEGER NOT NULL DEFAULT 0,
-    environment TEXT NOT NULL DEFAULT '{}',  -- JSON: input variables
-    variables TEXT NOT NULL DEFAULT '{}',    -- JSON: accumulated exports during execution
-    started_at TEXT NOT NULL,
-    completed_at TEXT,
-    duration_ms INTEGER,
-    error_message TEXT,
-    stopped_at_node TEXT  -- Node ID where execution stopped (if stopped/error)
-);
-
--- Execution results for each node
-CREATE TABLE IF NOT EXISTS execution_results (
-    id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL REFERENCES execution_runs(id) ON DELETE CASCADE,
-    node_id TEXT NOT NULL,
-    test_case_id TEXT,  -- NULL for start/end nodes
-    status TEXT NOT NULL,  -- passed, failed, skipped, error
-    duration_ms INTEGER,
-    request TEXT,   -- JSON: method, url, headers, body
-    response TEXT,  -- JSON: status, headers, body
-    exports TEXT,   -- JSON: extracted variables
-    logs TEXT DEFAULT '[]',  -- JSON: debug logs
-    error_message TEXT,
-    executed_at TEXT NOT NULL
-);
-
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_execution_runs_flow_id ON execution_runs(flow_id);
-CREATE INDEX IF NOT EXISTS idx_execution_runs_status ON execution_runs(status);
-CREATE INDEX IF NOT EXISTS idx_execution_runs_started_at ON execution_runs(started_at);
-CREATE INDEX IF NOT EXISTS idx_execution_results_execution_id ON execution_results(execution_id);
+-- Superseded by 009_runs.sql.
+--
+-- This migration once defined `execution_runs` and `execution_results`. Nothing ever
+-- wrote to them: no Rust code referenced either table, and both were empty in every
+-- database. They are removed here rather than migrated because there was nothing to
+-- migrate, and 009 drops any copies left behind in databases that already ran this file.
+--
+-- Editing a past migration is safe in this project specifically: there is no migration
+-- ledger — `run_migrations` re-executes every file on every startup and relies on
+-- IF NOT EXISTS. Leaving the CREATEs here would mean 004 building two dead tables and
+-- 009 dropping them again on every boot.
