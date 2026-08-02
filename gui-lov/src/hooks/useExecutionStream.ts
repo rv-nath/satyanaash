@@ -654,7 +654,19 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
         }),
       );
       // The tab can open now: the run exists and has an id to be addressed by.
-      sink.onRunId?.(event.run_id, event.suite_name);
+      //
+      // Guarded, because a server older than this UI does not send `run_id` — and
+      // opening `run:undefined` gives you a tab that can only ever say the run is
+      // missing. Say what is actually wrong instead. This project has been bitten by a
+      // stale release binary before.
+      if (event.run_id) {
+        sink.onRunId?.(event.run_id, event.suite_name);
+      } else {
+        addLog(
+          'This run cannot be opened in a tab — the server is older than the UI and did not send a run id. Rebuild and restart the API.',
+          'error',
+        );
+      }
       addLog(
         `Running "${event.suite_name}" — ${event.total_members} ${event.total_members === 1 ? 'member' : 'members'}`,
         'info',

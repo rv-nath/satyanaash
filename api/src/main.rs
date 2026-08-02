@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod error;
 mod execution;
+mod shutdown;
 mod validation;
 
 use std::sync::Arc;
@@ -151,12 +152,30 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Waits for Ctrl+C signal for graceful shutdown
+/// Ctrl+C once to stop safely, twice to stop now.
+///
+/// The first press used to be received and then effectively ignored: graceful shutdown
+/// waits for open connections, a suite's SSE stream stays open for as long as the suite
+/// runs, and pressing again did nothing because this future had already completed. The
+/// server would sit there for minutes still creating accounts.
 async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
         .expect("Failed to install Ctrl+C handler");
-    info!("Shutdown signal received, stopping server...")
+    info!(
+        "Shutdown requested — runs will stop at their next step, and their cleanup will \
+         still run. Press Ctrl+C again to exit immediately."
+    );
+    shutdown::request_stop();
+
+    // Armed only after the first press, so an impatient second one is heard. Exiting the
+    // process outright skips any cleanup still owed, which is why it takes asking twice.
+    tokio::spawn(async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::warn!("Second interrupt — exiting now. Cleanup steps may not have run.");
+            std::process::exit(130);
+        }
+    });
 }
 
 /// Health check endpoint

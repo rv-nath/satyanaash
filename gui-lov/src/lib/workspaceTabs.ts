@@ -64,6 +64,18 @@ export function initialWorkspaceState(): WorkspaceState {
   return { tabs: [], settingsOpen: false, runsOpen: false, active: null };
 }
 
+/**
+ * Is the workspace empty — nothing open at all?
+ *
+ * Derived from `active` rather than from a list of "not a test, not settings, not a
+ * suite…". That list had to grow with every new tab kind, and the first time it was
+ * missed the welcome screen rendered *on top of* a run tab, which reads as the tab being
+ * broken rather than as a missing negation.
+ */
+export function nothingOpen(state: WorkspaceState): boolean {
+  return state.active === null;
+}
+
 export function tabCount(state: WorkspaceState): number {
   return state.tabs.length;
 }

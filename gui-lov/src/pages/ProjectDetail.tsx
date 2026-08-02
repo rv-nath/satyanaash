@@ -58,7 +58,7 @@ import { useQuery } from "@tanstack/react-query";
 import { suitesApi } from "@/lib/api";
 import { consoleTabsFor, shownConsole } from "@/lib/consoleTabs";
 import { suiteLogKey } from "@/lib/runHistory";
-import { tabKey, atCap, MAX_TABS } from "@/lib/workspaceTabs";
+import { tabKey, atCap, MAX_TABS, nothingOpen } from "@/lib/workspaceTabs";
 import { ApiClientError } from "@/lib/api/client";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -1132,7 +1132,7 @@ const ProjectDetailContent = () => {
                     <TestCanvas />
                   )}
                 </div>
-              ) : !activeIsTest && !activeIsSettings && !activeIsRuns && !activeIsSuite ? (
+              ) : nothingOpen(workspace) ? (
                 <div className="absolute inset-0">
                   <WorkspaceWelcome
                     onNewTest={() => openTestCaseEditor()}

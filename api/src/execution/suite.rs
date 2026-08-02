@@ -146,8 +146,9 @@ impl SuiteRun<'_> {
 
         for (ordinal, member) in members.iter().enumerate() {
             // Between members is the suite's own boundary check. Inside a member the
-            // engine already stops at the next node when nobody is watching.
-            if out.is_closed() {
+            // engine already stops at the next node when nobody is watching or the
+            // process is going down; this stops the *next member* from starting at all.
+            if out.is_closed() || crate::shutdown::stopping() {
                 abandoned = true;
                 break;
             }

@@ -720,15 +720,25 @@ struct RunState<'a> {
     event_tx: &'a Option<mpsc::Sender<ExecutionEvent>>,
     /// Set when the author is running the flow a node at a time.
     stepper: Option<Stepper>,
+    /// Raised when the process is going down. Read at the same boundary as a client
+    /// walking away, and answered the same way: stop, but clean up.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RunState<'_> {
-    /// True when the stream this run reports to has been dropped — the browser tab
-    /// closed, or the author navigated away.
+    /// True when there is no longer any reason to carry on.
+    ///
+    /// Two ways that happens, answered identically: the stream this run reports to was
+    /// dropped — the browser tab closed, or the author navigated away — or the process
+    /// is shutting down. Either way the remaining nodes would create accounts, send
+    /// messages and delete things with every result going nowhere.
     ///
     /// A run with no stream at all (the plain `POST /execute`) is never "gone": there
     /// is a client blocked on the response, and no way to notice if there isn't.
-    fn client_gone(&self) -> bool {
+    fn should_stop(&self) -> bool {
+        if self.stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
         self.event_tx.as_ref().is_some_and(|tx| tx.is_closed())
     }
 
@@ -745,16 +755,27 @@ impl RunState<'_> {
         }
         match self.event_tx {
             // Watch the stream while waiting for the press. If the tab closes mid-pause
-            // nobody will ever send Next, and the `client_gone` check at the top of the
+            // nobody will ever send Next, and the `should_stop` check at the top of the
             // node can't help — this task is parked inside `wait`, not between nodes.
+            // Shutdown is watched for exactly the same reason.
             Some(tx) => tokio::select! {
                 resume = stepper.wait() => resume,
                 _ = tx.closed() => {
                     stepper.pausing = false;
                     Resume::Abandon
                 }
+                _ = crate::shutdown::stop_requested() => {
+                    stepper.pausing = false;
+                    Resume::Abandon
+                }
             },
-            None => stepper.wait().await,
+            None => tokio::select! {
+                resume = stepper.wait() => resume,
+                _ = crate::shutdown::stop_requested() => {
+                    stepper.pausing = false;
+                    Resume::Abandon
+                }
+            },
         }
     }
 }
@@ -766,6 +787,9 @@ pub struct ExecutionEngine {
     pre_test: PreTestScriptEngine,
     debug_mode: bool,
     base_url: Option<String>,
+    /// The process-wide stop flag, held rather than read from a static so a test can
+    /// give an engine its own and never touch the one every other test is reading.
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ExecutionEngine {
@@ -780,7 +804,16 @@ impl ExecutionEngine {
             pre_test: PreTestScriptEngine::new(),
             debug_mode,
             base_url,
+            stop: crate::shutdown::flag(),
         }
+    }
+
+    /// Give this engine its own stop flag, so a test can raise one without touching the
+    /// process-wide flag every other test is reading.
+    #[cfg(test)]
+    fn stopping_on(mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.stop = flag;
+        self
     }
 
     /// Build the full URL by prepending base_url to relative paths
@@ -863,6 +896,7 @@ impl ExecutionEngine {
             stats: ExecutionStats::default(),
             event_tx: &event_tx,
             stepper: resume_rx.map(Stepper::new),
+            stop: self.stop.clone(),
         };
 
         // Execute graph starting from START node
@@ -973,7 +1007,7 @@ impl ExecutionEngine {
                 // accounts, send messages and delete things, with every result going
                 // nowhere. Teardown below is deliberately *not* guarded this way:
                 // whatever this run already created still has to be cleaned up.
-                if state.client_gone() {
+                if state.should_stop() {
                     return Ok("stopped".to_string());
                 }
 
@@ -2896,6 +2930,64 @@ mod tests {
             "paused:nt", "started:nt", "completed:nt",
             "run-completed",
         ], "{:?}", seen);
+    }
+
+    /// Ctrl+C stops a run at its next step — and still cleans up after it.
+    ///
+    /// The server used to receive the signal and carry on: graceful shutdown waits for
+    /// open connections, and a suite's stream stays open for as long as the suite runs.
+    /// It sat there for minutes still creating accounts. Stopping *without* teardown
+    /// would have been the other way to get this wrong.
+    #[tokio::test]
+    async fn shutting_down_stops_the_run_but_still_tidies_up() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        // This engine's own flag, so the process-wide one is untouched and tests running
+        // beside this one are unaffected.
+        let stop = Arc::new(AtomicBool::new(false));
+        let engine = ExecutionEngine::new(false, None).stopping_on(stop.clone());
+
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(make_test_case("a", "Step", "http://127.0.0.1:1/a", "POST"))
+            .with_test_case(make_test_case("b", "Later step", "http://127.0.0.1:1/b", "POST"))
+            .with_test_case(make_test_case("t", "Delete User", "http://127.0.0.1:1/t", "DELETE"));
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({"testCaseId": "a"})),
+            make_node("b", "testCase", serde_json::json!({"testCaseId": "b"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "b", Some("success")),
+            make_edge("e3", "b", "t", Some("success")),
+            make_edge("e4", "t", "end", Some("success")),
+        ]);
+
+        // Raised before the run starts — the same state a run is in the moment the
+        // author presses Ctrl+C.
+        stop.store(true, Ordering::Relaxed);
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, "stopped");
+        // Not one scenario node ran…
+        assert!(
+            !result.results.iter().any(|r| r.test_case_name.as_deref() == Some("Later step")),
+            "a stopped run kept working through the flow"
+        );
+        // …and the cleanup did anyway. There is no version of cancel that leaves the
+        // account behind.
+        assert!(
+            result.results.iter().any(|r| r.test_case_name.as_deref() == Some("Delete User")),
+            "shutdown skipped teardown and left whatever the run created"
+        );
     }
 
     /// The assertion that matters about Stop: it abandons the *flow*, not the cleanup.

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings, openSuite,
   openRuns, openRun, togglePinned, closeTab, setActive, tabCount, atCap, isSingleton,
+  nothingOpen,
 } from "@/lib/workspaceTabs";
 
 describe("workspaceTabs", () => {
@@ -134,6 +135,32 @@ describe("suite tabs", () => {
     s = setActive(s, tabKey("suite", "s1"));
     s = closeTab(s, tabKey("suite", "s1"));
     expect(s.active).toBe(tabKey("suite", "s2"));
+  });
+});
+
+describe("nothingOpen", () => {
+  it("is true only when nothing is open", () => {
+    expect(nothingOpen(initialWorkspaceState())).toBe(true);
+  });
+
+  it("is false for every kind of tab, including ones added later", () => {
+    // The bug this replaces: the page decided to show its welcome screen from a list of
+    // negations — "not a test, not settings, not a suite…" — and the first kind missed
+    // rendered the welcome screen *on top of* that tab. Derived from `active`, a new
+    // kind cannot be forgotten.
+    const s = initialWorkspaceState();
+    expect(nothingOpen(openFlow(s, "f1").state)).toBe(false);
+    expect(nothingOpen(openTest(s, "t1").state)).toBe(false);
+    expect(nothingOpen(openSuite(s, "s1").state)).toBe(false);
+    expect(nothingOpen(openRun(s, "run-1").state)).toBe(false);
+    expect(nothingOpen(openSettings(s))).toBe(false);
+    expect(nothingOpen(openRuns(s))).toBe(false);
+  });
+
+  it("is true again once the last tab closes", () => {
+    let s = openRun(initialWorkspaceState(), "run-1").state;
+    s = closeTab(s, tabKey("run", "run-1"));
+    expect(nothingOpen(s)).toBe(true);
   });
 });
 
