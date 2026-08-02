@@ -58,7 +58,7 @@ import { useQuery } from "@tanstack/react-query";
 import { suitesApi } from "@/lib/api";
 import { consoleTabsFor, shownConsole } from "@/lib/consoleTabs";
 import { suiteLogKey } from "@/lib/runHistory";
-import { tabKey, atCap, MAX_TABS, nothingOpen } from "@/lib/workspaceTabs";
+import { tabKey, atCap, MAX_TABS, activeSurface } from "@/lib/workspaceTabs";
 import { ApiClientError } from "@/lib/api/client";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -153,16 +153,15 @@ const ProjectDetailContent = () => {
     }
   }, [saveStatus, activeFlowId]);
 
-  // Active tab kind
-  const activeIsFlow = !!workspace.active?.startsWith('flow:');
-  const activeIsTest = !!workspace.active?.startsWith('test:');
-  const activeIsSettings = workspace.active === 'settings';
-  const activeIsRuns = workspace.active === 'runs';
-  const activeIsSuite = !!workspace.active?.startsWith('suite:');
-  const activeSuiteId = activeIsSuite ? workspace.active!.slice('suite:'.length) : null;
-  const activeIsRun = !!workspace.active?.startsWith('run:');
-  const activeRunId = activeIsRun ? workspace.active!.slice('run:'.length) : null;
-  const activeTestId = activeIsTest ? workspace.active!.slice('test:'.length) : null;
+  // What the workspace is showing — one answer, parsed once. Everything below reads this
+  // rather than re-deriving from `workspace.active`, so there is nowhere for two views to
+  // decide they are both on screen.
+  const surface = activeSurface(workspace);
+  const activeIsFlow = surface.kind === 'flow';
+  const activeIsTest = surface.kind === 'test';
+  const activeIsSettings = surface.kind === 'settings';
+  const activeTestId = surface.kind === 'test' ? surface.id : null;
+  const activeSuiteId = surface.kind === 'suite' ? surface.id : null;
 
   // Tab-bar render models
   // Per-tab editor state kept outside the editors, so it survives close/reopen:
@@ -555,6 +554,91 @@ const ProjectDetailContent = () => {
     }
     setEditingDescription(false);
   };
+
+  /** A surface with the console under it, when the console is showing. */
+  const withConsole = (main: React.ReactNode, fallbackConsoleId: string | null) =>
+    showConsole ? (
+      <ResizablePanelGroup direction="vertical">
+        <ResizablePanel defaultSize={65} minSize={30}>
+          {main}
+        </ResizablePanel>
+        <ResizableHandle />
+        <ResizablePanel defaultSize={35} minSize={20}>
+          <ConsolePanel
+            logs={(shownConsoleId && logsByFlow[shownConsoleId]) || []}
+            tabs={consoleTabs}
+            activeTabId={shownConsoleId}
+            onSelectTab={setConsoleFlowId}
+            onCloseTab={(id) => {
+              closeLogs(id);
+              // Closing the console you were reading falls back to whatever this surface
+              // implies — the flow on screen, or nothing.
+              if (id === consoleFlowId) setConsoleFlowId(fallbackConsoleId);
+            }}
+            onClose={() => setShowConsole(false)}
+            onClear={() => shownConsoleId && clearLogs(shownConsoleId)}
+          />
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    ) : (
+      main
+    );
+
+  /**
+   * The one view the workspace is showing.
+   *
+   * A switch rather than a pile of absolutely-positioned `&&` blocks: those stacked
+   * instead of excluding each other, and the "nothing matched" case had to be spelled
+   * out as a list of negations that grew by hand with every new kind. The first time it
+   * was missed, the welcome screen painted over a run tab.
+   *
+   * `Surface` is a discriminated union, so TypeScript will not let a new kind be added
+   * without a branch here.
+   */
+  function renderSurface(): React.ReactNode {
+    switch (surface.kind) {
+      case 'test':
+      case 'settings':
+        // Already on screen. Both keep their DOM while hidden so an unsaved draft
+        // survives a trip to another tab, which a switch that mounts one branch cannot
+        // do — so they are painted above and this branch deliberately adds nothing.
+        return null;
+
+      case 'flow':
+        return withConsole(<TestCanvas />, activeFlowId ?? null);
+
+      case 'suite':
+        return projectId
+          ? withConsole(<SuiteEditor suiteId={surface.id} projectId={projectId} />, null)
+          : null;
+
+      case 'run':
+        return <RunView runId={surface.id} liveRun={liveRun} />;
+
+      case 'runs':
+        // Refetches on open rather than staying mounted: there is nothing unsaved to
+        // lose, and a history that reloads is a history that is up to date.
+        return projectId ? <RunHistory projectId={projectId} onOpenRun={openRunTab} /> : null;
+
+      case 'empty':
+        return (
+          <WorkspaceWelcome
+            onNewTest={() => openTestCaseEditor()}
+            onNewFlow={handleCreateFlow}
+            onOpenEnvironments={() => openSettings(envLandingView)}
+          />
+        );
+
+      default: {
+        // Not decoration. Without it a missing case just falls through and returns
+        // undefined — which `ReactNode` happily accepts — so the compiler would say
+        // nothing and the pane would be blank. Assigning to `never` is what actually
+        // makes adding a kind without a branch a build error.
+        const unhandled: never = surface;
+        return unhandled;
+      }
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -1062,85 +1146,9 @@ const ProjectDetailContent = () => {
                 </div>
               )}
 
-              {/* Not kept mounted like Settings: there is nothing unsaved to lose, and a
-                  history that refetches on open is a history that is up to date. */}
-              {activeIsRuns && projectId && (
-                <div className="absolute inset-0">
-                  <RunHistory projectId={projectId} onOpenRun={openRunTab} />
-                </div>
-              )}
-
-              {activeIsRun && activeRunId && (
-                <div className="absolute inset-0">
-                  <RunView runId={activeRunId} liveRun={liveRun} />
-                </div>
-              )}
-
-              {activeIsSuite && activeSuiteId && projectId && (
-                <div className="absolute inset-0">
-                  {showConsole ? (
-                    <ResizablePanelGroup direction="vertical">
-                      <ResizablePanel defaultSize={65} minSize={30}>
-                        <SuiteEditor suiteId={activeSuiteId} projectId={projectId} />
-                      </ResizablePanel>
-                      <ResizableHandle />
-                      <ResizablePanel defaultSize={35} minSize={20}>
-                        <ConsolePanel
-                          logs={(shownConsoleId && logsByFlow[shownConsoleId]) || []}
-                          tabs={consoleTabs}
-                          activeTabId={shownConsoleId}
-                          onSelectTab={setConsoleFlowId}
-                          onCloseTab={(id) => {
-                            closeLogs(id);
-                            if (id === consoleFlowId) setConsoleFlowId(null);
-                          }}
-                          onClose={() => setShowConsole(false)}
-                          onClear={() => shownConsoleId && clearLogs(shownConsoleId)}
-                        />
-                      </ResizablePanel>
-                    </ResizablePanelGroup>
-                  ) : (
-                    <SuiteEditor suiteId={activeSuiteId} projectId={projectId} />
-                  )}
-                </div>
-              )}
-
-              {activeIsFlow ? (
-                <div className="absolute inset-0">
-                  {showConsole ? (
-                    <ResizablePanelGroup direction="vertical">
-                      <ResizablePanel defaultSize={65} minSize={30}>
-                        <TestCanvas />
-                      </ResizablePanel>
-                      <ResizableHandle />
-                      <ResizablePanel defaultSize={35} minSize={20}>
-                        <ConsolePanel
-                          logs={(shownConsoleId && logsByFlow[shownConsoleId]) || []}
-                          tabs={consoleTabs}
-                          activeTabId={shownConsoleId}
-                          onSelectTab={setConsoleFlowId}
-                          onCloseTab={(flowId) => {
-                            closeLogs(flowId);
-                            if (flowId === consoleFlowId) setConsoleFlowId(activeFlowId ?? null);
-                          }}
-                          onClose={() => setShowConsole(false)}
-                          onClear={() => shownConsoleId && clearLogs(shownConsoleId)}
-                        />
-                      </ResizablePanel>
-                    </ResizablePanelGroup>
-                  ) : (
-                    <TestCanvas />
-                  )}
-                </div>
-              ) : nothingOpen(workspace) ? (
-                <div className="absolute inset-0">
-                  <WorkspaceWelcome
-                    onNewTest={() => openTestCaseEditor()}
-                    onNewFlow={handleCreateFlow}
-                    onOpenEnvironments={() => openSettings(envLandingView)}
-                  />
-                </div>
-              ) : null}
+              {/* Exactly one of these, chosen by kind. Everything above this point stays
+                  mounted while hidden; everything here is mounted only while active. */}
+              <div className="absolute inset-0">{renderSurface()}</div>
             </div>
           </div>
         </ResizablePanel>

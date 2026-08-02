@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings, openSuite,
   openRuns, openRun, togglePinned, closeTab, setActive, tabCount, atCap, isSingleton,
-  nothingOpen,
+  nothingOpen, activeSurface,
 } from "@/lib/workspaceTabs";
 
 describe("workspaceTabs", () => {
@@ -135,6 +135,53 @@ describe("suite tabs", () => {
     s = setActive(s, tabKey("suite", "s1"));
     s = closeTab(s, tabKey("suite", "s1"));
     expect(s.active).toBe(tabKey("suite", "s2"));
+  });
+});
+
+describe("activeSurface", () => {
+  it("gives exactly one answer for every kind of tab", () => {
+    const s = initialWorkspaceState();
+    expect(activeSurface(openFlow(s, "f1").state)).toEqual({ kind: "flow", id: "f1" });
+    expect(activeSurface(openTest(s, "t1").state)).toEqual({ kind: "test", id: "t1" });
+    expect(activeSurface(openSuite(s, "s1").state)).toEqual({ kind: "suite", id: "s1" });
+    expect(activeSurface(openRun(s, "r1").state)).toEqual({ kind: "run", id: "r1" });
+    expect(activeSurface(openSettings(s))).toEqual({ kind: "settings" });
+    expect(activeSurface(openRuns(s))).toEqual({ kind: "runs" });
+    expect(activeSurface(s)).toEqual({ kind: "empty" });
+  });
+
+  it("does not mistake the runs index for a run tab", () => {
+    // "runs" and "run:<id>" differ by one character at the front. Getting this wrong
+    // would send the history index to the run view with an id of "s".
+    expect(activeSurface(openRuns(initialWorkspaceState())).kind).toBe("runs");
+    expect(activeSurface(openRun(initialWorkspaceState(), "s").state)).toEqual({
+      kind: "run",
+      id: "s",
+    });
+  });
+
+  it("keeps an id containing a colon whole", () => {
+    // Ids are opaque. Splitting on every colon rather than the first would truncate one.
+    expect(activeSurface(openRun(initialWorkspaceState(), "a:b:c").state)).toEqual({
+      kind: "run",
+      id: "a:b:c",
+    });
+  });
+
+  it("falls back to empty for an active nobody recognises", () => {
+    // A blank pane with no way out would be worse than the welcome screen.
+    const s = setActive(initialWorkspaceState(), "nonsense");
+    expect(activeSurface(s)).toEqual({ kind: "empty" });
+  });
+
+  it("follows the active tab rather than what happens to be open", () => {
+    // Several tabs are open at once and some stay mounted while hidden. Only one is the
+    // surface, and it is whichever is active.
+    let s = openFlow(initialWorkspaceState(), "f1").state;
+    s = openRun(s, "r1").state;
+    expect(activeSurface(s)).toEqual({ kind: "run", id: "r1" });
+    s = setActive(s, tabKey("flow", "f1"));
+    expect(activeSurface(s)).toEqual({ kind: "flow", id: "f1" });
   });
 });
 

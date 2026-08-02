@@ -65,15 +65,49 @@ export function initialWorkspaceState(): WorkspaceState {
 }
 
 /**
- * Is the workspace empty — nothing open at all?
+ * What the workspace is showing right now — one surface, never two.
  *
- * Derived from `active` rather than from a list of "not a test, not settings, not a
- * suite…". That list had to grow with every new tab kind, and the first time it was
- * missed the welcome screen rendered *on top of* a run tab, which reads as the tab being
- * broken rather than as a missing negation.
+ * The page used to decide this with four independent `&&` blocks plus a chain of
+ * negations for the empty case ("not a test, not settings, not a suite…"). Every block
+ * was absolutely positioned, so two truthy conditions stacked rather than excluded each
+ * other, and the negation list had to grow by hand with every new kind. The first time
+ * it was missed, the welcome screen rendered *on top of* a run tab — which reads as the
+ * tab being broken rather than as a missing `!`.
+ *
+ * A discriminated union makes that impossible: there is exactly one answer, the compiler
+ * checks the switch is exhaustive, and a kind added later cannot be silently forgotten.
  */
+export type Surface =
+  | { kind: "flow"; id: string }
+  | { kind: "test"; id: string }
+  | { kind: "suite"; id: string }
+  | { kind: "run"; id: string }
+  | { kind: "settings" }
+  | { kind: "runs" }
+  | { kind: "empty" };
+
+const TAB_KINDS: TabKind[] = ["flow", "test", "suite", "run"];
+
+export function activeSurface(state: WorkspaceState): Surface {
+  const active = state.active;
+  if (active === null) return { kind: "empty" };
+  if (active === "settings") return { kind: "settings" };
+  if (active === "runs") return { kind: "runs" };
+
+  for (const kind of TAB_KINDS) {
+    const prefix = `${kind}:`;
+    // "runs" is handled above, so this cannot mistake it for a "run:" tab.
+    if (active.startsWith(prefix)) return { kind, id: active.slice(prefix.length) };
+  }
+
+  // An `active` nobody recognises. Showing the empty state is what the page did before
+  // and is the safe answer: a blank pane with no way out would be worse.
+  return { kind: "empty" };
+}
+
+/** Is the workspace empty — nothing open at all? */
 export function nothingOpen(state: WorkspaceState): boolean {
-  return state.active === null;
+  return activeSurface(state).kind === "empty";
 }
 
 export function tabCount(state: WorkspaceState): number {
