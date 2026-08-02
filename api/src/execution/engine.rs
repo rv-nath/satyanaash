@@ -556,6 +556,12 @@ pub enum ExecutionEvent {
     /// boundaries with these instead, so `Completed` keeps meaning "that is all".
     SuiteStarted {
         execution_id: String,
+        /// The id this run is stored under, announced before anything executes.
+        ///
+        /// Without it the client cannot tell which history row the stream belongs to —
+        /// `execution_id` is generated for the execution and the stored row gets its own
+        /// — so a run in flight could not be opened, only waited for.
+        run_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         suite_id: Option<String>,
         suite_name: String,

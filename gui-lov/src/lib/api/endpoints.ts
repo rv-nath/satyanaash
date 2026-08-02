@@ -25,6 +25,7 @@ import type {
   CreateSuiteRequest,
   UpdateSuiteRequest,
   SuiteRun,
+  RunListing,
 } from './types';
 
 // ============ Helper for paginated responses ============
@@ -171,9 +172,17 @@ export const suitesApi = {
 // ============ Run history API ============
 
 export const runsApi = {
-  /** Newest first, headlines only — no request or response bodies. */
-  list: (projectId: string, limit = 50) =>
-    apiClient.get<SuiteRun[]>(`/projects/${projectId}/runs?limit=${limit}`),
+  /**
+   * Newest first, headlines only — no request or response bodies.
+   *
+   * Runs of a single flow started by hand are left out unless asked for, and counted so
+   * the caller can say how many it is not showing. Filtered on the server: `limit` would
+   * otherwise let a debug loop of twenty flow runs hide every suite run.
+   */
+  list: (projectId: string, opts: { limit?: number; includeAdhoc?: boolean } = {}) =>
+    apiClient.get<RunListing>(
+      `/projects/${projectId}/runs?limit=${opts.limit ?? 50}&include_adhoc=${opts.includeAdhoc ?? false}`,
+    ),
 
   /** One run in full, bodies unpacked and fan-out rows reattached to their nodes. */
   get: (id: string) => apiClient.get<SuiteRun>(`/runs/${id}`),

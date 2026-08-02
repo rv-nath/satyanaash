@@ -3,7 +3,7 @@ import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import {
   WorkspaceState, initialWorkspaceState, MAX_TABS,
-  openTest, openFlow, openSettings, openRuns, openSuite,
+  openTest, openFlow, openSettings, openRuns, openSuite, openRun, togglePinned,
   closeTab as closeWsTab, setActive as setActiveWsTab,
 } from "@/lib/workspaceTabs";
 import { useHistory } from "@/hooks/useHistory";
@@ -16,6 +16,7 @@ import {
   type RunMode,
   type StepCommand,
 } from "@/hooks/useExecutionStream";
+import type { LiveRun } from "@/lib/liveRun";
 import type { TestCaseExecutionResult } from "@/lib/api/types";
 import { toast } from "sonner";
 import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
@@ -88,6 +89,10 @@ interface TestProjectContextType {
   /** Run history — one surface for the project, so a singleton like Settings. */
   openRunsTab: () => void;
   openSuiteTab: (id: string) => void;
+  /** Open a run. Reuses the last unpinned run tab — runs are instances, and a debug loop
+   *  should not cost a tab each time. */
+  openRunTab: (id: string) => void;
+  toggleRunPinned: (key: string) => void;
   closeWorkspaceTab: (key: string) => void;
   setActiveWorkspaceTab: (key: string) => void;
   // Environments & globals (per-user active env; SAT.env writes persist here)
@@ -129,6 +134,8 @@ interface TestProjectContextType {
   /** Run a suite's members one after another. Logged under its own console key. */
   executeSuite: (suiteId: string, suiteName: string) => Promise<void>;
   cancelExecution: () => void;
+  /** The suite run in flight, in the shape a stored run comes back in. */
+  liveRun: LiveRun | null;
   clearLogs: (flowId: string) => void;
   closeLogs: (flowId: string) => void;
   /** Per flow, per node: what it did last time. Outlives the run. */
@@ -307,6 +314,17 @@ export const TestProjectProvider = ({
   );
   const openSettingsTab = useCallback(() => setWorkspace((s) => openSettings(s)), []);
   const openRunsTab = useCallback(() => setWorkspace((s) => openRuns(s)), []);
+  const openRunTab = useCallback((id: string) => {
+    setWorkspace((s) => {
+      const { state, capped } = openRun(s, id);
+      if (capped) toast.error(`Every run tab is pinned — unpin or close one (${MAX_TABS} is the limit)`);
+      return state;
+    });
+  }, []);
+  const toggleRunPinned = useCallback(
+    (key: string) => setWorkspace((s) => togglePinned(s, key)),
+    []
+  );
   const openSuiteTab = useCallback((id: string) => {
     setWorkspace((s) => {
       const { state, capped } = openSuite(s, id);
@@ -480,6 +498,7 @@ export const TestProjectProvider = ({
     execute: executeFlow,
     executeSuite: runSuite,
     cancelExecution,
+    liveRun,
     clearLogs,
     closeLogs,
     nodeRuns,
@@ -504,8 +523,11 @@ export const TestProjectProvider = ({
       runSuite(suiteId, suiteName, {
         debug_mode: true,
         environment: effectiveEnvironment(),
+        // The run tab opens the moment the run has an id, so you watch the report fill in
+        // rather than a spinner. A suite is a template; this is the instance.
+        onRunId: (runId) => openRunTab(runId),
       }),
-    [runSuite, effectiveEnvironment]
+    [runSuite, effectiveEnvironment, openRunTab]
   );
 
   const setNodes = useCallback((newNodes: Node[]) => {
@@ -884,6 +906,8 @@ export const TestProjectProvider = ({
         openSettingsTab,
         openRunsTab,
         openSuiteTab,
+        openRunTab,
+        toggleRunPinned,
         closeWorkspaceTab,
         setActiveWorkspaceTab,
         selectedTestCaseId,
@@ -911,6 +935,7 @@ export const TestProjectProvider = ({
         executeFlow,
         executeSuite,
         cancelExecution,
+        liveRun,
         clearLogs,
         closeLogs,
         nodeRuns,

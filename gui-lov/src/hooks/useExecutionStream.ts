@@ -13,6 +13,14 @@ import type { TestCaseExecutionResult } from '@/lib/api/types';
 import type { ConsoleLogDetail } from '@/lib/consoleDetails';
 import { fanOutDetails, resultDetails, resultHeadline } from '@/lib/consoleDetails';
 import { suiteLogKey } from '@/lib/runHistory';
+import {
+  addResult as addLiveResult,
+  beginLiveRun,
+  completeMember,
+  completeRun,
+  startMember,
+  type LiveRun,
+} from '@/lib/liveRun';
 
 /** One node's result off the wire. The single definition lives in lib/api/types —
  *  this module used to keep its own copy, which is exactly why per-row results were
@@ -88,6 +96,8 @@ interface ExecutionEventError {
 interface ExecutionEventSuiteStarted {
   type: 'suite_started';
   execution_id: string;
+  /** The id this run is stored under — how a stream is matched to a history row. */
+  run_id: string;
   suite_id?: string;
   suite_name: string;
   total_members: number;
@@ -184,6 +194,11 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
   // The run's server-side id, learned from the started event. Without it there is no
   // way to address the controls at a paused run.
   const [executionId, setExecutionId] = useState<string | null>(null);
+  // The suite run in flight, accumulated into the shape a finished run comes back in so
+  // a report can be drawn from it. Outlives the stream: the run tab keeps showing it
+  // until the stored copy is fetched, and a run you watched should not blank out the
+  // instant it ends.
+  const [liveRun, setLiveRun] = useState<LiveRun | null>(null);
   const [totalNodes, setTotalNodes] = useState(0);
 
   // Which flow the events arriving right now belong to. A ref because addLog is
@@ -321,6 +336,9 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
       setRunMode: (next) => { if (current()) setRunMode(next); },
       setExecutionId: (id) => { if (current()) setExecutionId(id); },
       setTotalNodes: (n) => { if (current()) setTotalNodes(n); },
+      // A flow run has no suite events, so nothing ever calls this. Present because the
+      // sink is one shape for both paths.
+      updateLiveRun: () => {},
     };
 
     try {
@@ -382,7 +400,11 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
   const executeSuite = useCallback(async (
     suiteId: string,
     suiteName: string,
-    options: Omit<ExecuteFlowRequest, 'step'> = {},
+    options: Omit<ExecuteFlowRequest, 'step'> & {
+      /** Called once the run has an id, so a tab can open on the run rather than on a
+       *  promise of one. */
+      onRunId?: (runId: string, suiteName: string) => void;
+    } = {},
   ) => {
     // Same ticket discipline as a flow run: everything below writes only while it holds it.
     const runSeq = ++runSeqRef.current;
@@ -403,6 +425,8 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     setExecutionId(null);
     // A suite never pauses — stepping is a single-flow affair, so there is nothing to press.
     setRunMode('finishing');
+    // The previous run's report goes when this one starts, the same way its log does.
+    setLiveRun(null);
     addLog(`Starting suite "${suiteName}"...`, 'info');
 
     const envWrites: Record<string, unknown> = {};
@@ -415,6 +439,8 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
       setRunMode: (next) => { if (current()) setRunMode(next); },
       setExecutionId: (id) => { if (current()) setExecutionId(id); },
       setTotalNodes: (n) => { if (current()) setTotalNodes(n); },
+      updateLiveRun: (next) => { if (current()) setLiveRun(next); },
+      onRunId: (runId, name) => { if (current()) options.onRunId?.(runId, name); },
     };
 
     try {
@@ -473,6 +499,9 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     runMode,
     totalNodes,
     step,
+    /** The suite run in flight, in the shape a stored run comes back in. Outlives the
+     *  stream so a run tab does not blank out the moment the run ends. */
+    liveRun,
   };
 }
 
@@ -486,6 +515,10 @@ interface EventSink {
   setRunMode: (next: RunMode | ((prev: RunMode) => RunMode)) => void;
   setExecutionId: (id: string) => void;
   setTotalNodes: (n: number) => void;
+  /** Accumulate the run in flight so a report can be drawn from it, not just a log. */
+  updateLiveRun: (next: (prev: LiveRun | null) => LiveRun | null) => void;
+  /** Called once, when the run announces the id it will be stored under. */
+  onRunId?: (runId: string, suiteName: string) => void;
 }
 
 /**
@@ -575,6 +608,9 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
       const { result } = event;
       sink.setActiveNodeId(null);
       sink.recordResult(event.node_id, result);
+      // Filed under the member currently running. A no-op for a flow run, which has no
+      // live run to file it under.
+      sink.updateLiveRun((run) => (run ? addLiveResult(run, result) : run));
       // Collect SAT.env writes; the caller persists them once the run finishes.
       if (result.env && envWrites) {
         Object.assign(envWrites, result.env);
@@ -597,6 +633,7 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
       const { passed, failed, errors, skipped, duration_ms, status } = event;
       const total = passed + failed + errors + skipped;
       const resultType: ConsoleLog['type'] = failed === 0 && errors === 0 ? 'success' : 'error';
+      sink.updateLiveRun((run) => (run ? completeRun(run, status) : run));
       addLog(`Execution ${status} in ${duration_ms}ms`, 'info');
       addLog(`Results: ${passed}/${total} passed, ${failed} failed, ${errors} errors, ${skipped} skipped`, resultType);
       break;
@@ -605,6 +642,19 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
     case 'suite_started':
       sink.setExecutionId(event.execution_id);
       sink.setTotalNodes(event.total_members);
+      sink.updateLiveRun(() =>
+        beginLiveRun({
+          runId: event.run_id,
+          suiteId: event.suite_id,
+          suiteName: event.suite_name,
+          totalMembers: event.total_members,
+          // The client's clock, but only for ordering and display; the stored run keeps
+          // the server's.
+          startedAt: new Date().toISOString(),
+        }),
+      );
+      // The tab can open now: the run exists and has an id to be addressed by.
+      sink.onRunId?.(event.run_id, event.suite_name);
       addLog(
         `Running "${event.suite_name}" — ${event.total_members} ${event.total_members === 1 ? 'member' : 'members'}`,
         'info',
@@ -612,6 +662,11 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
       break;
 
     case 'member_started':
+      sink.updateLiveRun((run) =>
+        run
+          ? startMember(run, { kind: event.kind, memberId: event.member_id, name: event.name })
+          : run,
+      );
       addLog(`── ${event.ordinal + 1}/${event.total}  ${event.name}`, 'info');
       break;
 
@@ -624,6 +679,9 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
       const counts = ran === 0
         ? `nothing ran${event.skipped > 0 ? ` — ${event.skipped} skipped` : ''}`
         : `${event.passed}/${ran} passed${event.skipped > 0 ? `, ${event.skipped} skipped` : ''}`;
+      sink.updateLiveRun((run) =>
+        run ? completeMember(run, event.ordinal, event.status, event.duration_ms) : run,
+      );
       addLog(`   ${event.name}: ${event.status} — ${counts} (${event.duration_ms}ms)`, type);
       break;
     }

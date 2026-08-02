@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::api::executions::ExecutionState;
-use crate::db::models::SuiteRun;
+use crate::db::models::{RunListing, SuiteRun};
 use crate::error::AppError;
 
 #[derive(Debug, Deserialize)]
@@ -18,6 +18,10 @@ pub struct ListRunsQuery {
     /// list that shows twenty.
     #[serde(default = "default_limit")]
     pub limit: i64,
+    /// Include runs of a single flow started by hand. Off by default: running a flow is
+    /// how you author one, and twenty of those would bury last night's suite run.
+    #[serde(default)]
+    pub include_adhoc: bool,
 }
 
 fn default_limit() -> i64 {
@@ -29,9 +33,11 @@ pub async fn list_runs(
     State(state): State<ExecutionState>,
     Path(project_id): Path<String>,
     Query(query): Query<ListRunsQuery>,
-) -> Result<Json<Vec<SuiteRun>>, AppError> {
+) -> Result<Json<RunListing>, AppError> {
     let limit = query.limit.clamp(1, 500);
-    Ok(Json(state.run_repo.list(&project_id, limit).await?))
+    Ok(Json(
+        state.run_repo.list(&project_id, limit, query.include_adhoc).await?,
+    ))
 }
 
 /// GET /api/v1/runs/:id — one run in full, bodies unpacked.

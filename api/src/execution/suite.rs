@@ -132,6 +132,9 @@ impl SuiteRun<'_> {
         let _ = out
             .send(ExecutionEvent::SuiteStarted {
                 execution_id: self.execution_id.clone(),
+                // Sent after `start` and before the first member, so the client can open
+                // the run the moment it exists rather than when it finishes.
+                run_id: run_id.clone(),
                 suite_id: self.suite_id.clone(),
                 suite_name: self.suite_name.clone(),
                 total_members: members.len(),
@@ -398,6 +401,220 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    // Stubs for the two repositories a suite reads. Only the calls the runner actually
+    // makes are implemented; the rest would be a lie dressed as a fixture.
+    struct Repos {
+        flows: Vec<crate::db::models::Flow>,
+        tests: Vec<crate::db::models::TestCase>,
+    }
+
+    fn page<T>(data: Vec<T>) -> crate::db::models::PaginatedResponse<T> {
+        let total = data.len() as u64;
+        crate::db::models::PaginatedResponse {
+            data,
+            pagination: crate::db::models::PaginationMeta {
+                page: 1,
+                per_page: 1000,
+                total,
+                total_pages: 1,
+            },
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl FlowRepository for Repos {
+        async fn list_by_project(
+            &self,
+            _project_id: &str,
+            _p: crate::db::models::Pagination,
+        ) -> Result<crate::db::models::PaginatedResponse<crate::db::models::Flow>, AppError> {
+            Ok(page(self.flows.clone()))
+        }
+        async fn get_by_id(&self, id: &str) -> Result<Option<crate::db::models::Flow>, AppError> {
+            Ok(self.flows.iter().find(|f| f.id == id).cloned())
+        }
+        async fn create(&self, _: &str, _: crate::db::models::CreateFlow) -> Result<crate::db::models::Flow, AppError> { unimplemented!() }
+        async fn update(&self, _: &str, _: crate::db::models::UpdateFlow) -> Result<crate::db::models::Flow, AppError> { unimplemented!() }
+        async fn update_graph(&self, _: &str, _: crate::db::models::UpdateGraphData) -> Result<crate::db::models::Flow, AppError> { unimplemented!() }
+        async fn delete(&self, _: &str) -> Result<(), AppError> { unimplemented!() }
+        async fn find_existing_ids(&self, _: &[String]) -> Result<std::collections::HashSet<String>, AppError> { unimplemented!() }
+    }
+
+    #[async_trait::async_trait]
+    impl TestCaseRepository for Repos {
+        async fn list_by_project(
+            &self,
+            _project_id: &str,
+            _p: crate::db::models::Pagination,
+        ) -> Result<crate::db::models::PaginatedResponse<crate::db::models::TestCase>, AppError> {
+            Ok(page(self.tests.clone()))
+        }
+        async fn get_by_id(&self, id: &str) -> Result<Option<crate::db::models::TestCase>, AppError> {
+            Ok(self.tests.iter().find(|t| t.id == id).cloned())
+        }
+        async fn create(&self, _: &str, _: crate::db::models::CreateTestCase) -> Result<crate::db::models::TestCase, AppError> { unimplemented!() }
+        async fn update(&self, _: &str, _: crate::db::models::UpdateTestCase) -> Result<crate::db::models::TestCase, AppError> { unimplemented!() }
+        async fn delete(&self, _: &str) -> Result<(), AppError> { unimplemented!() }
+        async fn find_existing_ids(&self, _: &[String]) -> Result<std::collections::HashSet<String>, AppError> { unimplemented!() }
+    }
+
+    fn a_test_case(id: &str, name: &str) -> crate::db::models::TestCase {
+        crate::db::models::TestCase {
+            id: id.into(),
+            project_id: "p1".into(),
+            group_id: None,
+            name: name.into(),
+            given_condition: None,
+            when_action: None,
+            then_expected: None,
+            method: "GET".into(),
+            // Nothing listens here, so the request fails fast and the run still records.
+            endpoint: "http://127.0.0.1:1/ping".into(),
+            headers: serde_json::json!({}),
+            payload: None,
+            exports: vec![],
+            assertion_script: None,
+            pre_test_script: None,
+            dataset: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    async fn run_repo() -> Arc<dyn RunRepository> {
+        use sqlx::any::{install_default_drivers, AnyPoolOptions};
+        install_default_drivers();
+        let pool = AnyPoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE flows (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE test_cases (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
+        for statement in include_str!("../../migrations/009_runs.sql").split(';') {
+            let stmt = statement.trim();
+            if stmt.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with("--")) {
+                sqlx::query(stmt).execute(&pool).await.unwrap();
+            }
+        }
+        sqlx::query("INSERT INTO projects (id) VALUES ('p1')").execute(&pool).await.unwrap();
+        // The stub repositories serve these from memory, but flow_runs and suite_runs
+        // hold real foreign keys to them.
+        sqlx::query("INSERT INTO test_cases (id) VALUES ('t1'), ('t2')").execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO suites (id, project_id, name, created_at, updated_at) \
+             VALUES ('s1','p1','Regression','2020-01-01T00:00:00+00:00','2020-01-01T00:00:00+00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        Arc::new(crate::db::repositories::SqlxRunRepository::new(pool))
+    }
+
+    /// The client has to be able to tell which stored run a stream belongs to.
+    ///
+    /// `execution_id` is generated for the execution and the row gets its own id, so
+    /// without `run_id` on the event a run in flight cannot be opened at all — only
+    /// waited for and then looked up afterwards.
+    #[tokio::test]
+    async fn a_suite_run_announces_the_id_it_will_be_stored_under() {
+        let repos = Repos { flows: vec![], tests: vec![a_test_case("t1", "Ping")] };
+        let runs = run_repo().await;
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(64);
+
+        let runner = SuiteRun {
+            execution_id: "exec-1".into(),
+            project_id: "p1".into(),
+            suite_id: Some("s1".into()),
+            suite_name: "Regression".into(),
+            environment_name: None,
+            debug_mode: false,
+            base_url: None,
+            flow_repo: &repos,
+            tc_repo: &repos,
+            run_repo: runs.clone(),
+        };
+
+        runner
+            .execute(
+                vec![ResolvedMember { kind: MemberKind::Test, id: "t1".into(), name: "Ping".into() }],
+                HashMap::new(),
+                HashMap::new(),
+                tx,
+            )
+            .await
+            .unwrap();
+
+        let mut announced = None;
+        while let Ok(event) = rx.try_recv() {
+            if let ExecutionEvent::SuiteStarted { run_id, .. } = event {
+                announced = Some(run_id);
+            }
+        }
+
+        let stored = runs.list("p1", 10, true).await.unwrap();
+        assert_eq!(stored.runs.len(), 1);
+        assert_eq!(
+            announced.as_deref(),
+            Some(stored.runs[0].id.as_str()),
+            "the id on the event must be the id the run is stored under"
+        );
+    }
+
+    /// The member events are what a live report is drawn from, so their order and their
+    /// contents are the contract — not an incidental side effect of the loop.
+    #[tokio::test]
+    async fn a_suite_reports_its_members_and_ends_exactly_once() {
+        let repos = Repos {
+            flows: vec![],
+            tests: vec![a_test_case("t1", "Ping"), a_test_case("t2", "Pong")],
+        };
+        let runs = run_repo().await;
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(64);
+
+        let runner = SuiteRun {
+            execution_id: "exec-1".into(),
+            project_id: "p1".into(),
+            suite_id: Some("s1".into()),
+            suite_name: "Regression".into(),
+            environment_name: None,
+            debug_mode: false,
+            base_url: None,
+            flow_repo: &repos,
+            tc_repo: &repos,
+            run_repo: runs,
+        };
+
+        runner
+            .execute(
+                vec![
+                    ResolvedMember { kind: MemberKind::Test, id: "t1".into(), name: "Ping".into() },
+                    ResolvedMember { kind: MemberKind::Test, id: "t2".into(), name: "Pong".into() },
+                ],
+                HashMap::new(),
+                HashMap::new(),
+                tx,
+            )
+            .await
+            .unwrap();
+
+        let mut seen = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            seen.push(match event {
+                ExecutionEvent::SuiteStarted { total_members, .. } => format!("suite:{total_members}"),
+                ExecutionEvent::MemberStarted { name, ordinal, .. } => format!("start:{ordinal}:{name}"),
+                ExecutionEvent::MemberCompleted { name, .. } => format!("done:{name}"),
+                ExecutionEvent::NodeCompleted { .. } => "node".to_string(),
+                ExecutionEvent::Completed { .. } => "end".to_string(),
+                other => format!("unexpected:{other:?}"),
+            });
+        }
+
+        assert_eq!(seen, vec![
+            "suite:2",
+            "start:0:Ping", "node", "done:Ping",
+            "start:1:Pong", "node", "done:Pong",
+            "end",
+        ], "{seen:?}");
     }
 
     #[test]

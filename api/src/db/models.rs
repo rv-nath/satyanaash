@@ -530,6 +530,18 @@ pub struct FlowRun {
     pub results: Vec<crate::execution::NodeResult>,
 }
 
+/// A page of run history, and what it is not showing.
+///
+/// The count travels with the rows because omitting it silently would read as "that is
+/// all there is" — the same dishonest completeness a dataset hides when it reports only
+/// the rows it ran.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunListing {
+    pub runs: Vec<SuiteRun>,
+    /// Ad-hoc runs left out of this page. Zero when they were asked for.
+    pub adhoc_hidden: i64,
+}
+
 /// What a run needs before it starts. The row is written up front so a run in flight is
 /// visible, and so a server that dies mid-suite leaves a run marked `running` rather
 /// than no trace of the hour it spent.

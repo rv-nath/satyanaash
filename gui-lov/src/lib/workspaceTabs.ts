@@ -10,11 +10,19 @@
  */
 export const MAX_TABS = 8;
 
-export type TabKind = "flow" | "test" | "suite";
+export type TabKind = "flow" | "test" | "suite" | "run";
 
 export interface OpenTab {
   kind: TabKind;
   id: string;
+  /**
+   * Run tabs only: keep this one when the next run opens.
+   *
+   * A suite is a template and a run is an instance, so runs accumulate fast — a debug
+   * loop would eat the tab cap in minutes. The newest run replaces the last unpinned run
+   * tab; pinning is how you hold one back to compare against the next.
+   */
+  pinned?: boolean;
 }
 
 /**
@@ -106,6 +114,37 @@ export function openSuite(state: WorkspaceState, id: string): OpenResult {
   if (has(state, "suite", id)) return { state: setActive(state, key) };
   if (atCap(state)) return { state, capped: true };
   return { state: { ...state, tabs: [...state.tabs, { kind: "suite", id }], active: key } };
+}
+
+/**
+ * Open a run, reusing the last unpinned run tab.
+ *
+ * Runs are instances, not documents: pressing Run five times while chasing a failure
+ * should not cost five tabs. The reused slot is the *last* run tab rather than the active
+ * one — you are usually looking at the suite when you press Run, so there is no active run
+ * tab to reuse, and the one you want replaced is the previous run.
+ */
+export function openRun(state: WorkspaceState, id: string): OpenResult {
+  const key = tabKey("run", id);
+  if (has(state, "run", id)) return { state: setActive(state, key) };
+
+  const reusable = state.tabs.map((t, i) => ({ t, i })).filter(({ t }) => t.kind === "run" && !t.pinned).pop();
+  if (reusable) {
+    const tabs = state.tabs.slice();
+    tabs[reusable.i] = { kind: "run", id };
+    return { state: { ...state, tabs, active: key } };
+  }
+
+  if (atCap(state)) return { state, capped: true };
+  return { state: { ...state, tabs: [...state.tabs, { kind: "run", id }], active: key } };
+}
+
+/** Hold a run tab back so the next run opens beside it instead of over it. */
+export function togglePinned(state: WorkspaceState, key: string): WorkspaceState {
+  const tabs = state.tabs.map((t) =>
+    tabKey(t.kind, t.id) === key ? { ...t, pinned: !t.pinned } : t
+  );
+  return { ...state, tabs };
 }
 
 export function openSettings(state: WorkspaceState): WorkspaceState {

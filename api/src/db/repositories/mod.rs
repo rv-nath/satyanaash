@@ -87,7 +87,17 @@ pub trait RunRepository: Send + Sync {
         error_message: Option<String>,
     ) -> Result<(), AppError>;
     /// Newest first, headline columns only — no bodies.
-    async fn list(&self, project_id: &str, limit: i64) -> Result<Vec<SuiteRun>, AppError>;
+    ///
+    /// Ad-hoc runs (a flow run by hand, `suite_id IS NULL`) are left out unless asked
+    /// for, and counted so the caller can say how many it is not showing. Filtered here
+    /// rather than in the client because `limit` would otherwise let a debug loop of
+    /// twenty flow runs hide every suite run before the client ever saw them.
+    async fn list(
+        &self,
+        project_id: &str,
+        limit: i64,
+        include_adhoc: bool,
+    ) -> Result<RunListing, AppError>;
     /// One run in full, bodies unpacked and fan-out rows reattached to their nodes.
     async fn get(&self, id: &str) -> Result<Option<SuiteRun>, AppError>;
     async fn delete(&self, id: &str) -> Result<(), AppError>;

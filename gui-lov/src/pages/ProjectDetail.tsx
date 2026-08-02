@@ -51,6 +51,7 @@ import { useProject, useFlows, useCreateFlow, useCloneFlow, useUpdateFlow, useDe
 import { WorkspaceTabs, type RenderTab } from "@/components/WorkspaceTabs";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import RunHistory from "@/components/RunHistory";
+import RunView from "@/components/RunView";
 import SuiteEditor from "@/components/SuiteEditor";
 import { SuitesList } from "@/components/SuitesList";
 import { useQuery } from "@tanstack/react-query";
@@ -80,6 +81,9 @@ const ProjectDetailContent = () => {
     openSettingsTab,
     openRunsTab,
     openSuiteTab,
+    openRunTab,
+    toggleRunPinned,
+    liveRun,
     closeWorkspaceTab,
     setActiveWorkspaceTab,
     showConsole,
@@ -156,6 +160,8 @@ const ProjectDetailContent = () => {
   const activeIsRuns = workspace.active === 'runs';
   const activeIsSuite = !!workspace.active?.startsWith('suite:');
   const activeSuiteId = activeIsSuite ? workspace.active!.slice('suite:'.length) : null;
+  const activeIsRun = !!workspace.active?.startsWith('run:');
+  const activeRunId = activeIsRun ? workspace.active!.slice('run:'.length) : null;
   const activeTestId = activeIsTest ? workspace.active!.slice('test:'.length) : null;
 
   // Tab-bar render models
@@ -204,6 +210,15 @@ const ProjectDetailContent = () => {
     if (t.kind === 'flow') {
       const flow = testGroups.find((g) => g.id === t.id);
       return { key: tabKey('flow', t.id), kind: 'flow', label: flow?.name || 'Flow' };
+    }
+    if (t.kind === 'run') {
+      // A run is a record, so its label is what it was and when — not a name anyone
+      // chose, and not renameable.
+      const live = liveRun?.runId === t.id ? liveRun : null;
+      const label = live
+        ? `${live.suiteName} · ${new Date(live.startedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`
+        : 'Run';
+      return { key: tabKey('run', t.id), kind: 'run', label, renameable: false, pinned: t.pinned };
     }
     if (t.kind === 'suite') {
       // Renamed in the editor, where the field sits beside the Run button — so the tab is
@@ -996,6 +1011,7 @@ const ProjectDetailContent = () => {
               onActivate={activateTab}
               onClose={requestCloseTab}
               onRename={handleRenameTab}
+              onTogglePin={toggleRunPinned}
             />
             <div className="relative min-h-0 flex-1">
               {/* Every open test editor stays mounted (hidden unless active) so an
@@ -1050,7 +1066,13 @@ const ProjectDetailContent = () => {
                   history that refetches on open is a history that is up to date. */}
               {activeIsRuns && projectId && (
                 <div className="absolute inset-0">
-                  <RunHistory projectId={projectId} />
+                  <RunHistory projectId={projectId} onOpenRun={openRunTab} />
+                </div>
+              )}
+
+              {activeIsRun && activeRunId && (
+                <div className="absolute inset-0">
+                  <RunView runId={activeRunId} liveRun={liveRun} />
                 </div>
               )}
 

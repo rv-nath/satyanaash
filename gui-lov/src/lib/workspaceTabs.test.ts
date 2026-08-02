@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings, openSuite,
-  openRuns, closeTab, setActive, tabCount, atCap, isSingleton,
+  openRuns, openRun, togglePinned, closeTab, setActive, tabCount, atCap, isSingleton,
 } from "@/lib/workspaceTabs";
 
 describe("workspaceTabs", () => {
@@ -134,6 +134,65 @@ describe("suite tabs", () => {
     s = setActive(s, tabKey("suite", "s1"));
     s = closeTab(s, tabKey("suite", "s1"));
     expect(s.active).toBe(tabKey("suite", "s2"));
+  });
+});
+
+describe("run tabs", () => {
+  it("reuses the last run tab so a debug loop does not eat the cap", () => {
+    // A suite is a template and a run is an instance. Pressing Run five times chasing a
+    // failure must not cost five tabs.
+    let s = openSuite(initialWorkspaceState(), "s1").state;
+    s = openRun(s, "run-1").state;
+    s = openRun(s, "run-2").state;
+    s = openRun(s, "run-3").state;
+
+    expect(s.tabs.filter((t) => t.kind === "run").map((t) => t.id)).toEqual(["run-3"]);
+    expect(s.active).toBe(tabKey("run", "run-3"));
+    // The suite it came from is untouched.
+    expect(s.tabs.some((t) => t.kind === "suite" && t.id === "s1")).toBe(true);
+  });
+
+  it("keeps a pinned run and opens the next beside it", () => {
+    // Pinning is the only way to compare a run against the next one.
+    let s = openRun(initialWorkspaceState(), "run-1").state;
+    s = togglePinned(s, tabKey("run", "run-1"));
+    s = openRun(s, "run-2").state;
+
+    expect(s.tabs.map((t) => t.id)).toEqual(["run-1", "run-2"]);
+    // And the newest is still the unpinned one that gets replaced next time.
+    s = openRun(s, "run-3").state;
+    expect(s.tabs.map((t) => t.id)).toEqual(["run-1", "run-3"]);
+  });
+
+  it("just activates a run that is already open", () => {
+    let s = openRun(initialWorkspaceState(), "run-1").state;
+    s = togglePinned(s, tabKey("run", "run-1"));
+    s = openRun(s, "run-2").state;
+    s = openRun(s, "run-1").state;
+
+    expect(s.tabs).toHaveLength(2);
+    expect(s.active).toBe(tabKey("run", "run-1"));
+  });
+
+  it("respects the cap once every run tab is pinned", () => {
+    let s = initialWorkspaceState();
+    for (let i = 0; i < MAX_TABS; i++) {
+      s = openRun(s, `run-${i}`).state;
+      s = togglePinned(s, tabKey("run", `run-${i}`));
+    }
+    expect(atCap(s)).toBe(true);
+
+    const { state, capped } = openRun(s, "run-overflow");
+    expect(capped).toBe(true);
+    expect(tabCount(state)).toBe(MAX_TABS);
+  });
+
+  it("closes like any other tab", () => {
+    let s = openFlow(initialWorkspaceState(), "f1").state;
+    s = openRun(s, "run-1").state;
+    s = closeTab(s, tabKey("run", "run-1"));
+    expect(s.tabs.map((t) => t.kind)).toEqual(["flow"]);
+    expect(s.active).toBe(tabKey("flow", "f1"));
   });
 });
 

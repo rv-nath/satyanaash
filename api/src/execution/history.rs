@@ -160,9 +160,10 @@ mod tests {
     }
 
     async fn only_run(repo: &Arc<dyn RunRepository>) -> SuiteRun {
-        let listed = repo.list("p1", 10).await.unwrap();
-        assert_eq!(listed.len(), 1);
-        repo.get(&listed[0].id).await.unwrap().unwrap()
+        // include_adhoc: these are runs of a single flow, which the index hides by default.
+        let listed = repo.list("p1", 10, true).await.unwrap();
+        assert_eq!(listed.runs.len(), 1);
+        repo.get(&listed.runs[0].id).await.unwrap().unwrap()
     }
 
     #[tokio::test]
@@ -199,6 +200,6 @@ mod tests {
         let repo: Arc<dyn RunRepository> = Arc::new(SqlxRunRepository::new(setup().await));
         // No such project, so the insert violates its foreign key.
         record_single(&repo, "nope", MemberRef::flow("f1", "JT1 – SMS"), &a_result("completed"), None).await;
-        assert!(repo.list("nope", 10).await.unwrap().is_empty());
+        assert!(repo.list("nope", 10, true).await.unwrap().runs.is_empty());
     }
 }

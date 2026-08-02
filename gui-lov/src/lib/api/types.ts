@@ -384,6 +384,19 @@ export interface SuiteRun {
   members?: FlowRun[];
 }
 
+/**
+ * A page of run history, and what it is not showing.
+ *
+ * The count travels with the rows because omitting it silently would read as "that's all
+ * there is" — the same dishonest completeness a dataset hides when it reports only the
+ * rows it ran.
+ */
+export interface RunListing {
+  runs: SuiteRun[];
+  /** Ad-hoc runs left out of this page. Zero when they were asked for. */
+  adhoc_hidden: number;
+}
+
 // ============ Pagination ============
 
 export interface PaginationParams {

@@ -141,23 +141,55 @@ impl RunRepository for SqlxRunRepository {
         Ok(())
     }
 
-    async fn list(&self, project_id: &str, limit: i64) -> Result<Vec<SuiteRun>, AppError> {
+    async fn list(
+        &self,
+        project_id: &str,
+        limit: i64,
+        include_adhoc: bool,
+    ) -> Result<RunListing, AppError> {
         // Headline columns only. A history page wants a hundred rows of summary, not a
         // hundred runs' worth of bodies — and those are packed blobs it could not show
         // in a list anyway.
-        let rows = sqlx::query(
+        //
+        // Two statements rather than one with a conditional predicate: the Any driver
+        // binds positionally, and a query whose shape changes with a flag is the kind of
+        // thing that silently binds the wrong parameter.
+        let sql = if include_adhoc {
             r#"SELECT id, project_id, suite_id, suite_name, status, started_at, completed_at,
                       duration_ms, total, passed, failed, errors, skipped,
                       environment_name, error_message
                FROM suite_runs WHERE project_id = ?
-               ORDER BY started_at DESC LIMIT ?"#,
-        )
-        .bind(project_id)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+               ORDER BY started_at DESC LIMIT ?"#
+        } else {
+            r#"SELECT id, project_id, suite_id, suite_name, status, started_at, completed_at,
+                      duration_ms, total, passed, failed, errors, skipped,
+                      environment_name, error_message
+               FROM suite_runs WHERE project_id = ? AND suite_id IS NOT NULL
+               ORDER BY started_at DESC LIMIT ?"#
+        };
 
-        rows.iter().map(row_to_suite_run).collect()
+        let rows = sqlx::query(sql)
+            .bind(project_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let runs: Vec<SuiteRun> = rows.iter().map(row_to_suite_run).collect::<Result<_, _>>()?;
+
+        // Counted over the whole project, not the page: "23 hidden" answers "what am I
+        // not looking at", which a per-page count would understate.
+        let adhoc_hidden = if include_adhoc {
+            0
+        } else {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM suite_runs WHERE project_id = ? AND suite_id IS NULL",
+            )
+            .bind(project_id)
+            .fetch_one(&self.pool)
+            .await?
+        };
+
+        Ok(RunListing { runs, adhoc_hidden })
     }
 
     async fn get(&self, id: &str) -> Result<Option<SuiteRun>, AppError> {
@@ -453,11 +485,20 @@ mod tests {
         }
     }
 
+    /// A run of a flow started by hand — `suite_id` NULL, which is what makes it ad-hoc.
     async fn a_run(repo: &SqlxRunRepository, results: Vec<NodeResult>) -> String {
+        a_run_of(repo, None, results).await
+    }
+
+    async fn a_run_of(
+        repo: &SqlxRunRepository,
+        suite_id: Option<&str>,
+        results: Vec<NodeResult>,
+    ) -> String {
         let id = repo
             .start(SuiteRunInput {
                 project_id: "p1".into(),
-                suite_id: None,
+                suite_id: suite_id.map(str::to_string),
                 suite_name: "JT1 – SMS".into(),
                 environment_name: Some("staging".into()),
             })
@@ -560,11 +601,57 @@ mod tests {
         sqlx::query("UPDATE suite_runs SET started_at = '2020-01-01T00:00:00+00:00' WHERE id = (SELECT id FROM suite_runs LIMIT 1)")
             .execute(&pool).await.unwrap();
 
-        let runs = repo.list("p1", 50).await.unwrap();
-        assert_eq!(runs.len(), 2);
-        assert!(runs[0].started_at > runs[1].started_at);
+        let listing = repo.list("p1", 50, true).await.unwrap();
+        assert_eq!(listing.runs.len(), 2);
+        assert!(listing.runs[0].started_at > listing.runs[1].started_at);
         // The list is a hundred headlines, not a hundred runs' worth of packed bodies.
-        assert!(runs.iter().all(|r| r.members.is_empty()));
+        assert!(listing.runs.iter().all(|r| r.members.is_empty()));
+        // Nothing is hidden when everything was asked for.
+        assert_eq!(listing.adhoc_hidden, 0);
+    }
+
+    #[tokio::test]
+    async fn the_index_hides_ad_hoc_runs_by_default_and_counts_them() {
+        // Running a flow is how you author one, and a debug loop of twenty would push
+        // last night's suite run off the first screen. Filtered here rather than in the
+        // client, because `limit` would hide the suite runs before the client saw them.
+        let pool = setup().await;
+        sqlx::query(
+            "INSERT INTO suites (id, project_id, name, created_at, updated_at) \
+             VALUES ('s1','p1','Regression','2020-01-01T00:00:00+00:00','2020-01-01T00:00:00+00:00')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let repo = SqlxRunRepository::new(pool);
+
+        a_run_of(&repo, Some("s1"), vec![node("n1", NodeStatus::Passed)]).await;
+        for _ in 0..3 {
+            a_run(&repo, vec![node("n1", NodeStatus::Passed)]).await;
+        }
+
+        let listing = repo.list("p1", 50, false).await.unwrap();
+        assert_eq!(listing.runs.len(), 1, "only the suite run is listed");
+        assert_eq!(listing.runs[0].suite_id.as_deref(), Some("s1"));
+        // Said out loud rather than silently omitted: "that's all there is" would be a lie.
+        assert_eq!(listing.adhoc_hidden, 3);
+
+        let everything = repo.list("p1", 50, true).await.unwrap();
+        assert_eq!(everything.runs.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn the_hidden_count_covers_the_project_not_the_page() {
+        // "23 hidden" answers "what am I not looking at". Counting only within the page
+        // would understate it exactly when the page is full and it matters most.
+        let repo = SqlxRunRepository::new(setup().await);
+        for _ in 0..5 {
+            a_run(&repo, vec![node("n1", NodeStatus::Passed)]).await;
+        }
+
+        let listing = repo.list("p1", 2, false).await.unwrap();
+        assert!(listing.runs.is_empty());
+        assert_eq!(listing.adhoc_hidden, 5);
     }
 
     #[tokio::test]

@@ -1,16 +1,18 @@
 import { useState } from "react";
-import { X, Settings, Workflow, Layers, History } from "lucide-react";
+import { X, Settings, Workflow, Layers, History, Play, Pin } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
 export interface RenderTab {
-  key: string;            // "flow:<id>" | "test:<id>" | "suite:<id>"
-  kind: "flow" | "test" | "suite";
+  key: string;            // "flow:<id>" | "test:<id>" | "suite:<id>" | "run:<id>"
+  kind: "flow" | "test" | "suite" | "run";
   label: string;
   method?: string;        // test tabs
   dirty?: boolean;
   /** False for a tab with nothing to rename yet — an unsaved New Test has no
    *  record on the server, and its name belongs to the editor. */
   renameable?: boolean;
+  /** Run tabs: held back so the next run opens beside it rather than over it. */
+  pinned?: boolean;
 }
 
 interface Props {
@@ -24,6 +26,8 @@ interface Props {
   onClose: (key: string) => void;
   /** Commit a new name for a tab. Omit and double-clicking does nothing. */
   onRename?: (key: string, name: string) => void;
+  /** Hold a run tab back so the next run opens beside it rather than over it. */
+  onTogglePin?: (key: string) => void;
 }
 
 const base =
@@ -64,7 +68,7 @@ function TabShell({
   );
 }
 
-export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, active, onActivate, onClose, onRename }: Props) {
+export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, active, onActivate, onClose, onRename, onTogglePin }: Props) {
   // Which tab is being renamed, and the name so far. Held here rather than by the page:
   // it is nobody else's business, and the page is long enough.
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
@@ -104,6 +108,8 @@ export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, act
             <Workflow className="h-3.5 w-3.5 text-node-group" />
           ) : t.kind === "suite" ? (
             <Layers className="h-3.5 w-3.5 text-primary" />
+          ) : t.kind === "run" ? (
+            <Play className="h-3 w-3 text-primary" />
           ) : (
             <span className={`text-[9px] font-bold uppercase ${active === t.key ? "text-primary" : "text-muted-foreground"}`}>
               {t.method}
@@ -142,6 +148,30 @@ export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, act
               title="Unsaved changes"
               aria-label="Unsaved changes"
             />
+          )}
+          {/* A span, not a button: this sits inside the tab's activate button, and
+              nesting buttons is invalid HTML. */}
+          {t.kind === "run" && onTogglePin && (
+            <span
+              role="button"
+              tabIndex={-1}
+              aria-label={t.pinned ? `Unpin ${t.label}` : `Pin ${t.label}`}
+              aria-pressed={!!t.pinned}
+              title={
+                t.pinned
+                  ? "Pinned — the next run opens beside this one"
+                  : "Pin, to keep this run when the next one starts"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                onTogglePin(t.key);
+              }}
+              className={`shrink-0 rounded p-0.5 ${
+                t.pinned ? "text-primary" : "opacity-0 hover:opacity-100 group-hover:opacity-60"
+              }`}
+            >
+              <Pin className="h-3 w-3" fill={t.pinned ? "currentColor" : "none"} />
+            </span>
           )}
         </TabShell>
       ))}

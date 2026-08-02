@@ -1130,8 +1130,10 @@ export function SingleResultView({
   result: TestCaseExecutionResult;
   wordWrap: boolean;
   setWordWrap: (v: boolean) => void;
-  onRerun: () => void;
-  onClear: () => void;
+  /** Omitted by a read-only caller. A stored run has nothing to re-run from here and
+   *  nothing to clear, so the buttons are left out rather than shown doing nothing. */
+  onRerun?: () => void;
+  onClear?: () => void;
   running: boolean;
 }) {
   return (
@@ -1166,19 +1168,23 @@ export function SingleResultView({
             )}
           </div>
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" className="gap-1.5" onClick={onRerun} disabled={running}>
-              <Play className="w-3.5 h-3.5" />
-              Run Again
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground"
-              onClick={onClear}
-              title="Clear response"
-            >
-              <X className="w-4 h-4" />
-            </Button>
+            {onRerun && (
+              <Button variant="ghost" size="sm" className="gap-1.5" onClick={onRerun} disabled={running}>
+                <Play className="w-3.5 h-3.5" />
+                Run Again
+              </Button>
+            )}
+            {onClear && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                onClick={onClear}
+                title="Clear response"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            )}
           </div>
         </div>
 
@@ -1349,8 +1355,10 @@ export function DatasetResultView({
   onSelect: (i: number | null) => void;
   wordWrap: boolean;
   setWordWrap: (v: boolean) => void;
-  onRerun: () => void;
-  onClear: () => void;
+  /** Omitted by a read-only caller. A stored run has nothing to re-run from here and
+   *  nothing to clear, so the buttons are left out rather than shown doing nothing. */
+  onRerun?: () => void;
+  onClear?: () => void;
   running: boolean;
 }) {
   const rows = aggregate.iterations ?? [];
@@ -1460,18 +1468,22 @@ export function DatasetResultView({
           <span className="text-sm text-muted-foreground">{aggregate.duration_ms}ms</span>
         </div>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" className="gap-1.5" onClick={onRerun} disabled={running}>
-            <Play className="h-3.5 w-3.5" /> Run dataset again
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-muted-foreground hover:text-foreground"
-            onClick={onClear}
-            title="Clear response"
-          >
-            <X className="h-4 w-4" />
-          </Button>
+          {onRerun && (
+            <Button variant="ghost" size="sm" className="gap-1.5" onClick={onRerun} disabled={running}>
+              <Play className="h-3.5 w-3.5" /> Run dataset again
+            </Button>
+          )}
+          {onClear && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+              onClick={onClear}
+              title="Clear response"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
 
