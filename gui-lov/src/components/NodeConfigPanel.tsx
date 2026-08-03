@@ -7,6 +7,14 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Trash2, Plus, ArrowDownToLine, ArrowUpFromLine, Rows3 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { isStatusShorthand, oneLine, rowLabel } from "@/lib/dataset";
+import {
+  POLL_INTERVAL_MS,
+  POLL_TIMEOUT_MS,
+  msToSeconds,
+  pollSummary,
+  pollTiming,
+  secondsToMs,
+} from "@/lib/poll";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
 
@@ -52,6 +60,13 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const [check, setCheck] = useState("");
   const [teardown, setTeardown] = useState(false);
   const [forEachRow, setForEachRow] = useState(false);
+  /** Multi-stage: the first answer only acknowledges, so this node asks again. Off is the
+   *  absence of a `poll` block, which is every node that predates the feature. */
+  const [polls, setPolls] = useState(false);
+  const [until, setUntil] = useState("");
+  // Seconds, because that is how a wait is thought about. Milliseconds on the wire.
+  const [intervalSec, setIntervalSec] = useState(msToSeconds(POLL_INTERVAL_MS));
+  const [timeoutSec, setTimeoutSec] = useState(msToSeconds(POLL_TIMEOUT_MS));
   /** `null` means every row — the same thing an absent `rowIds` means on the wire, so a
    *  row added to the dataset later is included without anyone revisiting this node. */
   const [rowIds, setRowIds] = useState<string[] | null>(null);
@@ -66,6 +81,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
         teardown?: boolean;
         forEachRow?: boolean;
         rowIds?: string[];
+        poll?: { until?: string; intervalMs?: number; timeoutMs?: number };
       };
       setInputVars(config.inputVars || []);
       setOutputVars(config.outputVars || []);
@@ -73,6 +89,13 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
       setTeardown(config.teardown === true);
       setForEachRow(config.forEachRow === true);
       setRowIds(Array.isArray(config.rowIds) ? config.rowIds : null);
+      // An `until` is what makes a node poll, so it is what the toggle reflects — a
+      // leftover interval with no condition is not polling, here or in the engine.
+      const timing = pollTiming(config.poll);
+      setPolls(!!config.poll?.until?.trim());
+      setUntil(config.poll?.until || "");
+      setIntervalSec(msToSeconds(timing.intervalMs));
+      setTimeoutSec(msToSeconds(timing.timeoutMs));
     } else {
       setInputVars([]);
       setOutputVars([]);
@@ -80,6 +103,10 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
       setTeardown(false);
       setForEachRow(false);
       setRowIds(null);
+      setPolls(false);
+      setUntil("");
+      setIntervalSec(msToSeconds(POLL_INTERVAL_MS));
+      setTimeoutSec(msToSeconds(POLL_TIMEOUT_MS));
     }
   }, [node]);
 
@@ -100,6 +127,15 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
       config.forEachRow = true;
       // Omitted, not `[]`: absence means every row, an empty list means none.
       if (rowIds !== null) config.rowIds = rowIds;
+    }
+    // Omitted when off, for the same reason `rowIds` is: absence is how this config says
+    // "unset", and a node carrying a dormant `poll` block would read as one that polls.
+    if (polls) {
+      config.poll = {
+        until,
+        intervalMs: secondsToMs(intervalSec, POLL_INTERVAL_MS),
+        timeoutMs: secondsToMs(timeoutSec, POLL_TIMEOUT_MS),
+      };
     }
     updateNodeConfig(node.id, config, alias);
     onClose();
@@ -129,6 +165,15 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const selectedCount = willRun.length;
   const runnableTotal = (rows ?? []).filter((r) => !r.disabled).length;
   const parkedCount = (rows?.length ?? 0) - runnableTotal;
+  // Milliseconds as they will be sent, so the summary describes the saved node and not
+  // whatever the boxes happen to read.
+  const pollMs = {
+    intervalMs: secondsToMs(intervalSec, POLL_INTERVAL_MS),
+    timeoutMs: secondsToMs(timeoutSec, POLL_TIMEOUT_MS),
+  };
+  const pollLine = pollSummary(pollMs.intervalMs, pollMs.timeoutMs);
+  const pollAttemptsWarn = pollMs.timeoutMs < pollMs.intervalMs;
+
   const toggleRow = (id: string) => {
     setRowIds((current) => {
       // Unticking while "every row" is in force materialises the list minus that row.
@@ -268,6 +313,126 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                 placeholder="402   — or an expression"
                 className="h-9 font-mono text-[13px]"
               />
+            </Field>
+
+            <Field
+              label="Answer"
+              help={
+                polls
+                  ? "The first response only acknowledges. This step asks again until the condition below is true, then judges that answer."
+                  : "The first response is the outcome. True of almost every request."
+              }
+            >
+              <ToggleGroup
+                type="single"
+                value={polls ? "later" : "now"}
+                onValueChange={(v) => {
+                  if (v) setPolls(v === "later");
+                }}
+                className="justify-start gap-1"
+              >
+                <ToggleGroupItem
+                  value="now"
+                  className="h-9 px-3 text-[13px] data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+                >
+                  Ready at once
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="later"
+                  className="h-9 px-3 text-[13px] data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+                >
+                  Arrives later · ask again
+                </ToggleGroupItem>
+              </ToggleGroup>
+
+              {polls && (
+                <div className="mt-3 space-y-3 rounded-md border border-border bg-muted/20 p-3">
+                  <div>
+                    <label
+                      htmlFor="node-until"
+                      className="text-[11px] font-medium text-muted-foreground"
+                    >
+                      Settled when
+                    </label>
+                    <Input
+                      id="node-until"
+                      value={until}
+                      onChange={(e) => setUntil(e.target.value)}
+                      placeholder={'response.json.status != "pending"'}
+                      className="mt-1 h-9 font-mono text-[13px]"
+                    />
+                    {/* The division of labour, stated where the second expression is
+                        typed. Without it, "until" and Expect become a guessing game —
+                        and an author who collapses them into one gets an upload that
+                        failed reported as a timeout. */}
+                    <p className="mt-1.5 text-[11px] text-muted-foreground">
+                      Says the answer has <span className="text-foreground">settled</span>.
+                      Expect, above, says whether it was the{" "}
+                      <span className="text-foreground">right</span> answer — so an upload
+                      that comes back <code className="font-mono">failed</code> is reported
+                      as a failure, not as a timeout.
+                    </p>
+                    {!until.trim() && (
+                      <p className="mt-1.5 text-[11px] text-destructive">
+                        Without a condition this step sends once and judges the first
+                        answer — which for an upload is the 202 that says only "I have
+                        your file".
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-4">
+                    <div>
+                      <label
+                        htmlFor="node-poll-interval"
+                        className="text-[11px] font-medium text-muted-foreground"
+                      >
+                        Ask every
+                      </label>
+                      <div className="mt-1 flex items-baseline gap-1.5">
+                        <Input
+                          id="node-poll-interval"
+                          value={intervalSec}
+                          onChange={(e) => setIntervalSec(e.target.value)}
+                          inputMode="decimal"
+                          className="h-9 w-20 text-right font-mono text-[13px] tabular-nums"
+                        />
+                        <span className="text-[11px] text-muted-foreground">seconds</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label
+                        htmlFor="node-poll-timeout"
+                        className="text-[11px] font-medium text-muted-foreground"
+                      >
+                        Give up after
+                      </label>
+                      <div className="mt-1 flex items-baseline gap-1.5">
+                        <Input
+                          id="node-poll-timeout"
+                          value={timeoutSec}
+                          onChange={(e) => setTimeoutSec(e.target.value)}
+                          inputMode="decimal"
+                          className="h-9 w-20 text-right font-mono text-[13px] tabular-nums"
+                        />
+                        <span className="text-[11px] text-muted-foreground">seconds</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* A budget rather than an attempt count is what the author knows — so
+                      the count, which is the arithmetic they would otherwise do, is
+                      derived here. It also shows a budget too short to wait even once
+                      before anything is saved. */}
+                  <p
+                    className={`text-[11px] ${
+                      pollAttemptsWarn ? "text-destructive" : "text-muted-foreground"
+                    }`}
+                  >
+                    {pollLine}
+                  </p>
+                </div>
+              )}
             </Field>
           </div>
 

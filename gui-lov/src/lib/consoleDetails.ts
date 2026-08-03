@@ -6,6 +6,7 @@
  * passed" is worth testing without an event stream.
  */
 import type { TestCaseExecutionResult } from "@/lib/api/types";
+import { attemptsNote } from "@/lib/poll";
 
 export interface ConsoleLogDetail {
   label: string;
@@ -185,6 +186,12 @@ export function resultHeadline(result: TestCaseExecutionResult, name: string): s
       return `${statusIcon(result.status)} ${name}${suffix}: nothing ran — all ${rows.length} rows are parked or need a flow (${result.duration_ms}ms)`;
     }
     return `${statusIcon(result.status)} ${name}${suffix}: ${passed}/${ran} rows passed${note} (${result.duration_ms}ms)`;
+  }
+  // A poll's duration is the whole wait, so the attempt count is what makes it legible:
+  // "4.2s" alone cannot tell one slow request from three quick ones and two waits.
+  const attempts = attemptsNote(result.attempts, result.duration_ms);
+  if (attempts) {
+    return `${statusIcon(result.status)} ${name}${suffix}: ${result.status} (${attempts})`;
   }
   return `${statusIcon(result.status)} ${name}${suffix}: ${result.status} (${result.duration_ms}ms)`;
 }

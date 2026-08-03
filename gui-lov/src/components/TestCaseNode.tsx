@@ -6,6 +6,7 @@ import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
 import { statusIcon } from "@/lib/consoleDetails";
 import { exportLines } from "@/lib/executionDecor";
+import { attemptsNote, humanDuration, pollTiming } from "@/lib/poll";
 
 interface TestCaseNodeData {
   label: string;
@@ -16,7 +17,13 @@ interface TestCaseNodeData {
    *  different roles ("Login as new user" vs "Root login"); the alias is what
    *  distinguishes them. The test case name stays visible underneath. */
   alias?: string;
-  config?: { check?: string; teardown?: boolean; forEachRow?: boolean; rowIds?: string[] };
+  config?: {
+    check?: string;
+    teardown?: boolean;
+    forEachRow?: boolean;
+    rowIds?: string[];
+    poll?: { until?: string; intervalMs?: number; timeoutMs?: number };
+  };
 }
 
 interface TestCaseNodeProps {
@@ -72,6 +79,12 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
   const teardown = data.config?.teardown === true;
   const forEachRow = data.config?.forEachRow === true;
   const chosenRows = data.config?.rowIds?.length;
+  // A node that may ask the same question sixty times behaves differently enough that
+  // reading the graph should say so — otherwise a step that can take two minutes looks
+  // exactly like one that takes 40ms. An `until` is what makes it poll, in the engine and
+  // therefore here.
+  const until = data.config?.poll?.until?.trim();
+  const pollTime = pollTiming(data.config?.poll);
   const displayLabel = alias || testCaseName;
   const displayMethod = currentTestCase?.method || data.method;
   const displayEndpoint = currentTestCase?.endpoint || data.endpoint;
@@ -126,6 +139,15 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
               inheriting what earlier steps produced.
             </p>
           )}
+          {until && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Asks again every{" "}
+              <span className="text-foreground">{humanDuration(pollTime.intervalMs)}</span>{" "}
+              for up to{" "}
+              <span className="text-foreground">{humanDuration(pollTime.timeoutMs)}</span>,
+              until <code className="font-mono text-foreground">{until}</code>
+            </p>
+          )}
           {check && (
             <p className="mt-1.5 font-mono text-[11px] text-muted-foreground">
               expects <span className="text-foreground">{check}</span>
@@ -155,7 +177,11 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
               ) : (
                 <span className={statusTone(lastRun!.status)}>
                   {statusIcon(lastRun!.status)} {lastRun!.status}
-                  <span className="text-muted-foreground"> · {lastRun!.duration_ms}ms</span>
+                  <span className="text-muted-foreground">
+                    {" · "}
+                    {attemptsNote(lastRun!.attempts, lastRun!.duration_ms) ??
+                      `${lastRun!.duration_ms}ms`}
+                  </span>
                   {rows && (
                     <span className="text-muted-foreground">
                       {" · "}
@@ -200,6 +226,16 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
           }
         >
           {chosenRows === undefined ? "rows" : `${chosenRows} rows`}
+        </span>
+      )}
+      {until && (
+        <span
+          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 font-mono text-[9px] font-semibold text-amber-600 dark:text-amber-400"
+          title={`Asks again every ${humanDuration(pollTime.intervalMs)} for up to ${humanDuration(pollTime.timeoutMs)}, until ${until}`}
+        >
+          {/* Amber rather than the primary the other badges use: this one is about time,
+              and it is the reason a run that used to take seconds now takes minutes. */}
+          polls
         </span>
       )}
       {check && (

@@ -29,8 +29,13 @@ const result = (over: Partial<TestCaseExecutionResult> = {}) =>
     ...over,
   }) as TestCaseExecutionResult;
 
-const renderNode = () =>
-  render(<TestCaseNode id="n1" data={{ label: "Login", method: "POST", testCaseId: "tc1" }} />);
+const renderNode = (config?: Record<string, unknown>) =>
+  render(
+    <TestCaseNode
+      id="n1"
+      data={{ label: "Login", method: "POST", testCaseId: "tc1", config }}
+    />,
+  );
 
 describe("TestCaseNode last run", () => {
   beforeEach(() => {
@@ -120,5 +125,44 @@ describe("TestCaseNode last run", () => {
     nodeRuns = { f2: { n1: result() } };
     renderNode();
     expect(screen.queryByTitle(/last run/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("a node that polls", () => {
+  beforeEach(() => {
+    nodeRuns = {};
+    activeNodeId = null;
+  });
+
+  it("says so on the canvas", async () => {
+    // A step that can take two minutes must not look exactly like one that takes 40ms —
+    // the badge is the only thing that says the graph has a wait in it.
+    renderNode({ poll: { until: 'response.json.status != "pending"', intervalMs: 2000, timeoutMs: 120000 } });
+    const badge = screen.getByText("polls");
+    expect(badge).toHaveAttribute(
+      "title",
+      expect.stringContaining("every 2s for up to 2m"),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /request details/i }));
+    expect(screen.getByText(/response\.json\.status != "pending"/)).toBeInTheDocument();
+  });
+
+  it("says nothing when there is no condition to wait for", () => {
+    // An interval with no `until` is not polling — in the engine or here. Badging it
+    // would claim a behaviour the node does not have.
+    renderNode({ poll: { intervalMs: 5000 } });
+    expect(screen.queryByText("polls")).not.toBeInTheDocument();
+
+    renderNode({});
+    expect(screen.queryByText("polls")).not.toBeInTheDocument();
+  });
+
+  it("reports the attempts a duration cannot account for", async () => {
+    nodeRuns = { f1: { n1: result({ attempts: 3, duration_ms: 4200 }) } };
+    renderNode({ poll: { until: "x" } });
+
+    await userEvent.click(screen.getByRole("button", { name: /request details/i }));
+    expect(screen.getByText(/3 attempts · 4\.2s/)).toBeInTheDocument();
   });
 });

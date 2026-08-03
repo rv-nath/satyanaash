@@ -19,6 +19,7 @@ import {
   samePath,
   type TreePath,
 } from "@/lib/runTree";
+import { attemptsNote } from "@/lib/poll";
 import {
   countsLine,
   formatDuration,
@@ -458,6 +459,16 @@ const NodeBranch = ({
           <span className="min-w-0 flex-1 truncate">{nodeTitle(node)}</span>
           {node.teardown && (
             <span className="shrink-0 text-[10px] text-muted-foreground">teardown</span>
+          )}
+          {/* A step that asked sixty times looks like any other in a tree of one-line
+              rows, and its duration is the whole wait rather than one request. */}
+          {node.attempts !== undefined && (
+            <span
+              className="shrink-0 text-[10px] tabular-nums text-muted-foreground"
+              title={attemptsNote(node.attempts, node.duration_ms)}
+            >
+              ×{node.attempts}
+            </span>
           )}
           <span className="shrink-0 text-muted-foreground">
             {summary ?? (node.response ? String(node.response.status) : "—")}

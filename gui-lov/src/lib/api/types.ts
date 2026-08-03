@@ -308,6 +308,10 @@ export interface TestCaseExecutionResult {
    *  have been edited since the run. */
   expected?: string;
   duration_ms: number;
+  /** How many times the request was sent, on a node that polls. Absent when it does not
+   *  — the report says nothing rather than reporting "1", and a single duration cannot
+   *  tell "one slow request" from "sixty quick ones". */
+  attempts?: number;
   request?: RequestLog;
   response?: ResponseLog;
   exports?: Record<string, unknown>;
