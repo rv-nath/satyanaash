@@ -169,6 +169,9 @@ export const TestCaseEditor = ({
   const [headers, setHeaders] = useState<HeaderRow[]>([]);
   const [payload, setPayload] = useState("");
   const [bodyType, setBodyType] = useState<BodyType>("json");
+  /** Which part of the request is on screen. Not persisted — it is where you are looking,
+   *  not something about the test. */
+  const [requestSubTab, setRequestSubTab] = useState("headers");
   /**
    * The parsed field list, or null when the saved payload is not one.
    *
@@ -273,6 +276,13 @@ export const TestCaseEditor = ({
    * urlencoded → multipart keeps the fields untouched: same shape, different encoding, and
    * only multipart can carry a file.
    */
+  // What the sub-tab labels report, so you can see there are ten headers without opening
+  // the tab. Enabled only: an unticked header is not sent, so counting it would overstate.
+  const headerCount = headers.filter((h) => h.enabled && h.key.trim()).length;
+  const hasBodyContent = isForm(bodyType)
+    ? (formFields ?? []).some((f) => f.name.trim())
+    : payload.trim().length > 0;
+
   const switchBodyType = (next: BodyType) => {
     if (next === bodyType) return;
     setBodyType(next);
@@ -753,35 +763,11 @@ export const TestCaseEditor = ({
           </TabsContent>
 
           {/* Request Tab */}
-          <TabsContent value="request" className="flex-1 mt-0 overflow-hidden">
-            <ScrollArea className="h-full">
-              <div className="p-6 space-y-6 max-w-5xl mx-auto">
-                <SectionLead
-                  title="How is the request made?"
-                  helper="The actual HTTP call this test sends."
-                />
-                {/* Variables you can use here */}
-                {availableVars.length > 0 && (
-                  <div className="bg-muted/50 border border-border rounded-md p-4">
-                    <Label className="text-xs font-semibold mb-2 block" style={{ color: "hsl(var(--label-color))" }}>Variables you can use here</Label>
-                    <div className="flex flex-wrap gap-2">
-                      {availableVars.map((v, idx) => (
-                        <Badge
-                          key={idx}
-                          variant="secondary"
-                          className="text-xs cursor-help font-mono"
-                          title={`From: ${v.nodeName}`}
-                        >
-                          {v.name}
-                        </Badge>
-                      ))}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Use <code className="px-1 py-0.5 bg-background rounded text-xs">{'{{variableName}}'}</code> in endpoint or payload
-                    </p>
-                  </div>
-                )}
-
+          <TabsContent value="request" className="flex-1 mt-0 min-h-0 overflow-hidden">
+            <div className="flex h-full flex-col">
+              {/* Pinned: the call itself. Everything else is behind a sub-tab, because
+                  one long scroll of method, URL, ten headers and a body is the clutter. */}
+              <div className="border-b border-border px-6 py-4">
                 {/* Method & Endpoint */}
                 <div className="grid grid-cols-[180px_1fr] gap-4">
                   <div className="space-y-2">
@@ -843,139 +829,182 @@ export const TestCaseEditor = ({
                   </div>
                 </div>
 
-                {/* Headers */}
-                <div className="space-y-2">
-                  <Label style={{ color: "hsl(var(--label-color))" }}>Headers</Label>
-                  <HeadersEditor
-                    headers={headers}
-                    onChange={handleHeadersChange}
-                    availableVars={availableVars}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Add HTTP headers. Use the typeahead to discover common headers. Variables can be inserted with the {'{{}'} button.
-                  </p>
-                </div>
-
-                {/* Payload */}
-                {hasPayload && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Label htmlFor="payload" style={{ color: "hsl(var(--label-color))" }}>Request body</Label>
-                        {/* Postman's own vocabulary, because that is what the author
-                            already reads. `raw` is the verbatim default and what every test
-                            case written before form bodies does. */}
-                        <div className="flex items-center gap-3 text-xs">
-                          {([
-                            { id: 'multipart', label: 'form-data' },
-                            { id: 'urlencoded', label: 'x-www-form-urlencoded' },
-                            { id: 'json', label: 'raw' },
-                          ] as const).map((t) => (
-                            <label
-                              key={t.id}
-                              className="flex cursor-pointer items-center gap-1.5 text-muted-foreground"
-                            >
-                              <input
-                                type="radio"
-                                name="bodyType"
-                                checked={bodyType === t.id}
-                                onChange={() => switchBodyType(t.id)}
-                                className="h-3 w-3 accent-[hsl(var(--primary))]"
-                              />
-                              <span className={bodyType === t.id ? 'text-foreground' : undefined}>
-                                {t.label}
-                              </span>
-                            </label>
-                          ))}
-                          {bodyType === 'json' && (
-                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                              JSON
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      {availableVars.length > 0 && (
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <Button variant="ghost" size="sm" className="h-6 text-xs">
-                              <Plus className="h-3 w-3 mr-1" />
-                              Insert Var
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-56 p-2" align="end">
-                            <div className="space-y-1">
-                              {availableVars.map((v, idx) => (
-                                <Button
-                                  key={idx}
-                                  variant="ghost"
-                                  size="sm"
-                                  className="w-full justify-start text-xs font-mono h-8"
-                                  onClick={() => insertVariable(v.name, payloadRef)}
-                                >
-                                  {v.name}
-                                  <span className="ml-auto text-[10px] text-muted-foreground truncate max-w-[100px]">
-                                    {v.nodeName}
-                                  </span>
-                                </Button>
-                              ))}
-                            </div>
-                          </PopoverContent>
-                        </Popover>
-                      )}
-                    </div>
-                    {isForm(bodyType) ? (
-                      <>
-                        <FormFieldsEditor
-                          fields={formFields ?? []}
-                          onChange={(next) => {
-                            setFormFields(next);
-                            handleFieldChange(setPayload)(serialiseFields(next));
-                          }}
-                          // Only multipart can carry a file. urlencoded has nowhere to put one.
-                          allowFiles={bodyType === 'multipart'}
-                        />
-                        {formFields === null && (
-                          <p className="text-xs text-destructive">
-                            The saved body is not a field list. Switching back to JSON will show
-                            it; saving from here replaces it.
-                          </p>
-                        )}
-                        <p className="text-xs text-muted-foreground">
-                          {bodyType === 'multipart'
-                            ? 'Sent as multipart/form-data. A field with a filename is sent as a file — that is what the server reads the extension from. Do not set Content-Type yourself: the boundary is added for you.'
-                            : 'Sent as application/x-www-form-urlencoded. Values are encoded for you, so & and = are safe.'}{' '}
-                          Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> anywhere, including inside file contents.
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <Textarea
-                          ref={payloadRef}
-                          id="payload"
-                          value={payload}
-                          onChange={(e) => {
-                            handleFieldChange(setPayload)(e.target.value);
-                            // Auto-resize to fit content
-                            e.target.style.height = 'auto';
-                            e.target.style.height = e.target.scrollHeight + 'px';
-                          }}
-                          onFocus={(e) => {
-                            e.target.style.height = 'auto';
-                            e.target.style.height = e.target.scrollHeight + 'px';
-                          }}
-                          placeholder='{"token": "{{authToken}}", "userId": "{{userId}}"}'
-                          className="font-mono text-sm code-input ph-faint min-h-[150px] resize-none overflow-hidden"
-                          style={{ height: 'auto' }}
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Sent verbatim. Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> for variables.
-                        </p>
-                      </>
-                    )}
+                {availableVars.length > 0 && (
+                  <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Variables
+                    </span>
+                    {availableVars.map((v, idx) => (
+                      <Badge key={idx} variant="secondary" className="cursor-help font-mono text-[10px]" title={`From: ${v.nodeName}`}>
+                        {v.name}
+                      </Badge>
+                    ))}
                   </div>
                 )}
               </div>
-            </ScrollArea>
+
+              <Tabs value={requestSubTab} onValueChange={setRequestSubTab} className="flex min-h-0 flex-1 flex-col">
+                <TabsList className="h-9 w-full justify-start rounded-none border-b border-border bg-transparent px-6 p-0">
+                  <TabsTrigger value="headers" className="h-9 gap-1.5 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">
+                    Headers
+                    {/* The count is the point of a sub-tab: you can see there are ten
+                        without opening it. */}
+                    {headerCount > 0 && (
+                      <span className="text-[10px] tabular-nums text-muted-foreground">{headerCount}</span>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="body" className="h-9 gap-1.5 rounded-none border-b-2 border-transparent px-3 text-xs data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none">
+                    Body
+                    {hasBodyContent && <span className="h-1.5 w-1.5 rounded-full bg-success" />}
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="headers" className="mt-0 min-h-0 flex-1 overflow-hidden">
+                  <ScrollArea className="h-full">
+                    <div className="max-w-5xl space-y-2 p-6">
+              {/* Headers */}
+              <div className="space-y-2">
+                <Label style={{ color: "hsl(var(--label-color))" }}>Headers</Label>
+                <HeadersEditor
+                  headers={headers}
+                  onChange={handleHeadersChange}
+                  availableVars={availableVars}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Add HTTP headers. Use the typeahead to discover common headers. Variables can be inserted with the {'{{}'} button.
+                </p>
+              </div>
+
+                    </div>
+                  </ScrollArea>
+                </TabsContent>
+
+                <TabsContent value="body" className="mt-0 min-h-0 flex-1 overflow-hidden">
+                  <ScrollArea className="h-full">
+                    <div className="max-w-5xl space-y-2 p-6">
+              {/* Payload */}
+              {hasPayload && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="payload" style={{ color: "hsl(var(--label-color))" }}>Request body</Label>
+                      {/* Postman's own vocabulary, because that is what the author
+                          already reads. `raw` is the verbatim default and what every test
+                          case written before form bodies does. */}
+                      <div className="flex items-center gap-3 text-xs">
+                        {([
+                          { id: 'multipart', label: 'form-data' },
+                          { id: 'urlencoded', label: 'x-www-form-urlencoded' },
+                          { id: 'json', label: 'raw' },
+                        ] as const).map((t) => (
+                          <label
+                            key={t.id}
+                            className="flex cursor-pointer items-center gap-1.5 text-muted-foreground"
+                          >
+                            <input
+                              type="radio"
+                              name="bodyType"
+                              checked={bodyType === t.id}
+                              onChange={() => switchBodyType(t.id)}
+                              className="h-3 w-3 accent-[hsl(var(--primary))]"
+                            />
+                            <span className={bodyType === t.id ? 'text-foreground' : undefined}>
+                              {t.label}
+                            </span>
+                          </label>
+                        ))}
+                        {bodyType === 'json' && (
+                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            JSON
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {availableVars.length > 0 && (
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="ghost" size="sm" className="h-6 text-xs">
+                            <Plus className="h-3 w-3 mr-1" />
+                            Insert Var
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-56 p-2" align="end">
+                          <div className="space-y-1">
+                            {availableVars.map((v, idx) => (
+                              <Button
+                                key={idx}
+                                variant="ghost"
+                                size="sm"
+                                className="w-full justify-start text-xs font-mono h-8"
+                                onClick={() => insertVariable(v.name, payloadRef)}
+                              >
+                                {v.name}
+                                <span className="ml-auto text-[10px] text-muted-foreground truncate max-w-[100px]">
+                                  {v.nodeName}
+                                </span>
+                              </Button>
+                            ))}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    )}
+                  </div>
+                  {isForm(bodyType) ? (
+                    <>
+                      <FormFieldsEditor
+                        fields={formFields ?? []}
+                        onChange={(next) => {
+                          setFormFields(next);
+                          handleFieldChange(setPayload)(serialiseFields(next));
+                        }}
+                        // Only multipart can carry a file. urlencoded has nowhere to put one.
+                        allowFiles={bodyType === 'multipart'}
+                      />
+                      {formFields === null && (
+                        <p className="text-xs text-destructive">
+                          The saved body is not a field list. Switching back to JSON will show
+                          it; saving from here replaces it.
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        {bodyType === 'multipart'
+                          ? 'Sent as multipart/form-data. A field with a filename is sent as a file — that is what the server reads the extension from. Do not set Content-Type yourself: the boundary is added for you.'
+                          : 'Sent as application/x-www-form-urlencoded. Values are encoded for you, so & and = are safe.'}{' '}
+                        Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> anywhere, including inside file contents.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <Textarea
+                        ref={payloadRef}
+                        id="payload"
+                        value={payload}
+                        onChange={(e) => {
+                          handleFieldChange(setPayload)(e.target.value);
+                          // Auto-resize to fit content
+                          e.target.style.height = 'auto';
+                          e.target.style.height = e.target.scrollHeight + 'px';
+                        }}
+                        onFocus={(e) => {
+                          e.target.style.height = 'auto';
+                          e.target.style.height = e.target.scrollHeight + 'px';
+                        }}
+                        placeholder='{"token": "{{authToken}}", "userId": "{{userId}}"}'
+                        className="font-mono text-sm code-input ph-faint min-h-[150px] resize-none overflow-hidden"
+                        style={{ height: 'auto' }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Sent verbatim. Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> for variables.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+                    </div>
+                  </ScrollArea>
+                </TabsContent>
+              </Tabs>
+            </div>
           </TabsContent>
 
           {/* Scripts Tab */}
