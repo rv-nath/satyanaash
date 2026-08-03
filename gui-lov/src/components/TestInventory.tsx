@@ -156,7 +156,16 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
         { projectId, name },
         {
           onSuccess: () => toast.success(`Created group "${name}"`),
-          onError: () => toast.error("Failed to create group"),
+          // The server's own words. A duplicate name comes back as a 409 saying which
+          // name is taken, and "Failed to create group" threw that away — the same
+          // discarding that once made every API error in this app read "Unknown error".
+          onError: (e: Error) => {
+            toast.error(e.message || "Failed to create group");
+            // Hand the field back with what was typed, rather than making the author
+            // retype a name that was refused for one fixable reason.
+            setCreatingGroup(true);
+            setNewGroupName(name);
+          },
         }
       );
     }
@@ -170,9 +179,16 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
   const commitRename = () => {
     const name = renameValue.trim();
     if (renamingId && name && projectId) {
+      const wasRenaming = renamingId;
       renameGroup.mutate(
         { id: renamingId, name, projectId },
-        { onError: () => toast.error("Failed to rename group") }
+        {
+          onError: (e: Error) => {
+            toast.error(e.message || "Failed to rename group");
+            setRenamingId(wasRenaming);
+            setRenameValue(name);
+          },
+        }
       );
     }
     setRenamingId(null);
