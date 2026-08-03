@@ -8,7 +8,7 @@ import { ResizablePanel, ResizablePanelGroup, ResizableHandle } from "@/componen
 import { Button } from "@/components/ui/button";
 import { SingleResultView, DatasetResultView } from "@/components/TestCaseEditor";
 import RunChart from "@/components/RunChart";
-import { CHART_VIEWS, rowsNote, type RunChartView } from "@/lib/runCharts";
+import { CHART_VIEWS, DEFAULT_VIEW, rowsNote, type RunChartView } from "@/lib/runCharts";
 import { liveRunToSuiteRun, progressLine, type LiveRun } from "@/lib/liveRun";
 import {
   breadcrumb,
@@ -52,7 +52,10 @@ function useChartView(projectId: string): [RunChartView, (v: RunChartView) => vo
   const key = `sat.runChart.view.${projectId}`;
   const [view, setView] = useState<RunChartView>(() => {
     const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
-    return CHART_VIEWS.some((v) => v.id === stored) ? (stored as RunChartView) : 'profile';
+    // Validated against the current list, not trusted: anyone who used the chart before
+    // `Profile` was dropped has its name in storage, and an unknown view would render a
+    // blank panel with no clue why.
+    return CHART_VIEWS.some((v) => v.id === stored) ? (stored as RunChartView) : DEFAULT_VIEW;
   });
   return [
     view,

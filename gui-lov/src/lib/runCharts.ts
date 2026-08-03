@@ -14,14 +14,27 @@ import type { FlowRun, SuiteRun, TestCaseExecutionResult } from '@/lib/api/types
 import type { TreePath } from '@/lib/runTree';
 import { nodeTitle } from '@/lib/runHistory';
 
-export type RunChartView = 'profile' | 'breakdown' | 'slowest' | 'hierarchy';
+export type RunChartView = 'breakdown' | 'slowest' | 'hierarchy';
 
+/**
+ * There was a fourth, `Profile`: a bar per slice of the current level.
+ *
+ * It was dropped rather than fixed, because it earned nothing at either level. At the run
+ * level its four bars restated the summary line directly above it. One level down, every
+ * bar was the same length — each member contributes exactly one failure, so length encoded
+ * a constant, which is a list wearing a chart's clothes.
+ *
+ * If a bar chart comes back here it should encode the failure *ratio* — "1 of 8 steps" and
+ * "1 of 1" are very different states and only the second means the member is entirely
+ * broken. That is a different chart, not a fix to this one.
+ */
 export const CHART_VIEWS: { id: RunChartView; label: string; answers: string }[] = [
-  { id: 'profile', label: 'Profile', answers: 'where did it break' },
-  { id: 'breakdown', label: 'Breakdown', answers: "what's inside this slice" },
+  { id: 'breakdown', label: 'Breakdown', answers: 'what is inside this slice' },
   { id: 'slowest', label: 'Slowest', answers: 'where did the time go' },
   { id: 'hierarchy', label: 'Hierarchy', answers: "the whole run's shape" },
 ];
+
+export const DEFAULT_VIEW: RunChartView = 'breakdown';
 
 export type Verdict = 'passed' | 'failed' | 'errored' | 'skipped';
 

@@ -81,7 +81,7 @@ const RunChart = ({ run, view, onViewChange, selected, onSelect }: Props) => {
 
   return (
     <div className="flex h-full flex-col">
-      <Summary run={run} level={level} onCrumb={goTo} />
+      <Summary run={run} />
 
       <div className="flex items-center gap-1 border-b border-border px-3 py-1">
         {CHART_VIEWS.map((v) => (
@@ -106,8 +106,12 @@ const RunChart = ({ run, view, onViewChange, selected, onSelect }: Props) => {
         </span>
       </div>
 
+      {/* Below the view pills, not above them. Sandwiched between the summary and the
+          pills it read as a third header and was easy to miss; here it sits against the
+          thing it describes, and only appears when there is somewhere to go back to. */}
+      {level.crumbs.length > 1 && <Crumbs level={level} onCrumb={goTo} />}
+
       <div className="min-h-0 flex-1">
-        {view === "profile" && <LevelBars level={level} onOpen={open} />}
         {view === "breakdown" && <LevelDonut level={level} onOpen={open} />}
         {view === "slowest" && <Slowest run={run} selected={selected} onSelect={onSelect} />}
         {view === "hierarchy" && <Hierarchy run={run} selected={selected} onSelect={onSelect} />}
@@ -122,15 +126,7 @@ const RunChart = ({ run, view, onViewChange, selected, onSelect }: Props) => {
  * Present in all four views precisely because it was missing from all four — a chart whose
  * numbers you have to hover for is a chart you read once and stop trusting.
  */
-const Summary = ({
-  run,
-  level,
-  onCrumb,
-}: {
-  run: SuiteRun;
-  level: Level;
-  onCrumb: (focus: Focus) => void;
-}) => {
+const Summary = ({ run }: { run: SuiteRun }) => {
   const nodes = runCounts(run);
   const rows = rowCounts(run);
 
@@ -170,48 +166,54 @@ const Summary = ({
         </span>
       </div>
 
-      <div className="mt-1 flex items-center gap-1.5 text-[10px]">
-        {/* An explicit way out. The breadcrumb alone did not read as navigable — it looked
-            like a caption, so drilling in felt like a one-way door. */}
-        {level.crumbs.length > 1 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-5 gap-1 px-1.5 text-[10px]"
-            onClick={() => onCrumb(level.crumbs[level.crumbs.length - 2].focus)}
-          >
-            <ChevronLeft className="h-3 w-3" /> Back
-          </Button>
-        )}
-        {level.crumbs.map((crumb, i) => {
-          const here = i === level.crumbs.length - 1;
-          return (
-            <span key={i} className="flex items-center gap-1.5">
-              {i > 0 && <ChevronRight className="h-2.5 w-2.5 shrink-0 text-muted-foreground/50" />}
-              <button
-                type="button"
-                disabled={here}
-                onClick={() => onCrumb(crumb.focus)}
-                className={
-                  here
-                    ? "font-medium text-foreground"
-                    : "text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
-                }
-              >
-                {crumb.label}
-              </button>
-            </span>
-          );
-        })}
-        <span className="ml-1 text-muted-foreground">
-          · {level.slices.length} {level.unit}
-          {level.unit !== "verdicts" && ran(level.counts) > 0 &&
-            ` · ${level.counts.passed}/${ran(level.counts)} passed`}
-        </span>
-      </div>
     </div>
   );
 };
+
+/**
+ * Where you are, and the way back.
+ *
+ * Its own strip below the view pills rather than a line inside the summary: between two
+ * headers it read as a third one and was easy to miss. It carries an explicit Back button
+ * because the crumbs alone read as a caption, so drilling in felt like a one-way door.
+ */
+const Crumbs = ({ level, onCrumb }: { level: Level; onCrumb: (focus: Focus) => void }) => (
+  <div className="flex items-center gap-1.5 border-b border-border bg-muted/30 px-3 py-1 text-[10px]">
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-5 shrink-0 gap-1 px-1.5 text-[10px]"
+      onClick={() => onCrumb(level.crumbs[level.crumbs.length - 2].focus)}
+    >
+      <ChevronLeft className="h-3 w-3" /> Back
+    </Button>
+    {level.crumbs.map((crumb, i) => {
+      const here = i === level.crumbs.length - 1;
+      return (
+        <span key={i} className="flex min-w-0 items-center gap-1.5">
+          {i > 0 && <ChevronRight className="h-2.5 w-2.5 shrink-0 text-muted-foreground/50" />}
+          <button
+            type="button"
+            disabled={here}
+            onClick={() => onCrumb(crumb.focus)}
+            className={`truncate ${
+              here
+                ? "font-medium text-foreground"
+                : "text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
+            }`}
+          >
+            {crumb.label}
+          </button>
+        </span>
+      );
+    })}
+    <span className="ml-1 shrink-0 text-muted-foreground">
+      · {level.slices.length} {level.unit}
+      {level.unit !== "verdicts" && ran(level.counts) > 0 &&
+        ` · ${level.counts.passed}/${ran(level.counts)} passed`}
+    </span>
+  </div>
+);
 
 /**
  * The label past the end of a bar, addressed by index.
@@ -256,77 +258,6 @@ const sliceTooltip = (slice: Slice | undefined) => {
       </div>
       {slice.next && <div className="text-primary">click to open</div>}
     </Box>
-  );
-};
-
-// ---------------------------------------------------------------- Profile
-
-/**
- * The current level as bars — one per slice, longest first at the run level.
- *
- * At the run level that is four bars, not seventeen: `passed 2 · failed 2`. The members
- * are one click in, which is where they mean something.
- */
-const LevelBars = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void }) => {
-  if (level.slices.length === 0) return <Empty>Nothing to show at this level.</Empty>;
-
-  const height = Math.max(level.slices.length * 28 + 16, 96);
-  // Room at the right for the label that sits past the bar end. Without it the longest
-  // bar runs to the edge and its number is clipped.
-  const gutter = level.slices.some((s) => s.note) ? 140 : 56;
-
-  return (
-    <div className="h-full overflow-y-auto px-2 py-1 focus:outline-none">
-      <ResponsiveContainer width="100%" height={height}>
-        <BarChart
-          data={level.slices}
-          layout="vertical"
-          barSize={14}
-          margin={{ left: 4, right: gutter, top: 4, bottom: 4 }}
-        >
-          <XAxis type="number" hide />
-          <YAxis
-            type="category"
-            dataKey="label"
-            width={150}
-            tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <Tooltip
-            cursor={{ fill: "hsl(var(--muted) / 0.3)" }}
-            content={({ payload }) => sliceTooltip(payload?.[0]?.payload as Slice | undefined)}
-          />
-          <Bar
-            dataKey="value"
-            isAnimationActive={false}
-            radius={[0, 4, 4, 0]}
-            // On the bar, not in a footnote underneath. A number listed somewhere else is
-            // a number the reader has to pair up by eye, which is the same as hiding it.
-            label={barLabel((i) => {
-              const slice = level.slices[i];
-              if (!slice) return "";
-              return slice.note ? `${slice.value}  ${slice.note}` : String(slice.value);
-            })}
-          >
-            {level.slices.map((slice, i) => (
-              <Cell
-                key={i}
-                fill={CHART_FILL[slice.verdict]}
-                cursor={slice.next ? "pointer" : "default"}
-                onClick={() => onOpen(slice)}
-              />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-
-      {level.slices.some((s) => s.next) && (
-        <p className="px-2 pb-1 text-[10px] text-muted-foreground/70">
-          Click a bar to open it.
-        </p>
-      )}
-    </div>
   );
 };
 
