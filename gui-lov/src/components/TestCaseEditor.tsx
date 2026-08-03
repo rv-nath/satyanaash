@@ -862,29 +862,36 @@ export const TestCaseEditor = ({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Label htmlFor="payload" style={{ color: "hsl(var(--label-color))" }}>Request body</Label>
-                        {/* JSON is the default and what every test case written before form
-                            bodies does; switching is what makes `payload` a field list. */}
-                        <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
-                          {(["json", "urlencoded", "multipart"] as const).map((t) => (
-                            <Button
-                              key={t}
-                              variant="ghost"
-                              size="sm"
-                              className={`h-5 px-1.5 text-[10px] ${
-                                bodyType === t ? "bg-primary/15 text-foreground" : "text-muted-foreground"
-                              }`}
-                              onClick={() => switchBodyType(t)}
-                              title={
-                                t === "json"
-                                  ? "Sent verbatim"
-                                  : t === "urlencoded"
-                                    ? "application/x-www-form-urlencoded"
-                                    : "multipart/form-data — the only type that can carry files"
-                              }
+                        {/* Postman's own vocabulary, because that is what the author
+                            already reads. `raw` is the verbatim default and what every test
+                            case written before form bodies does. */}
+                        <div className="flex items-center gap-3 text-xs">
+                          {([
+                            { id: 'multipart', label: 'form-data' },
+                            { id: 'urlencoded', label: 'x-www-form-urlencoded' },
+                            { id: 'json', label: 'raw' },
+                          ] as const).map((t) => (
+                            <label
+                              key={t.id}
+                              className="flex cursor-pointer items-center gap-1.5 text-muted-foreground"
                             >
-                              {t === "json" ? "JSON" : t === "urlencoded" ? "Form fields" : "Form + files"}
-                            </Button>
+                              <input
+                                type="radio"
+                                name="bodyType"
+                                checked={bodyType === t.id}
+                                onChange={() => switchBodyType(t.id)}
+                                className="h-3 w-3 accent-[hsl(var(--primary))]"
+                              />
+                              <span className={bodyType === t.id ? 'text-foreground' : undefined}>
+                                {t.label}
+                              </span>
+                            </label>
                           ))}
+                          {bodyType === 'json' && (
+                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                              JSON
+                            </span>
+                          )}
                         </div>
                       </div>
                       {availableVars.length > 0 && (
