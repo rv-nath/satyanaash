@@ -69,6 +69,40 @@ export interface Dataset {
   rows: DataRow[];
 }
 
+
+/**
+ * How to read a test case's `payload`.
+ *
+ * `json` sends it verbatim — the default, and what every test case written before form
+ * bodies existed does. The form types read it as a JSON array of {@link FormField}.
+ *
+ * One column, not two, deliberately: `DataRow.body` already overrides `payload` wholesale,
+ * so a dataset row can replace a form body with no new concept and no second override path.
+ */
+export type BodyType = 'json' | 'urlencoded' | 'multipart';
+
+/**
+ * One part of a form body.
+ *
+ * A part carrying a `filename` **is** a file part — there is no separate mode, because
+ * multipart has none. The server reads the extension off it and nothing else, which is how
+ * `/api/v1/numbers/upload` answers "Only XLSX, XLS or CSV files are allowed".
+ *
+ * Several fields may share one `name`: that is exactly how an array of files is encoded, so
+ * nothing may dedupe by name.
+ */
+export interface FormField {
+  name: string;
+  value: string;
+  /** Unticked fields are not sent. Stored as the exception, so an ordinary field says
+   *  nothing and a saved payload does not churn. */
+  disabled?: boolean;
+  /** Present ⇒ a file part. */
+  filename?: string;
+  /** Defaults from the filename's extension when unset. */
+  content_type?: string;
+}
+
 export interface TestCase {
   id: string;
   project_id: string;
@@ -81,6 +115,8 @@ export interface TestCase {
   endpoint: string;
   headers: Record<string, string>;
   payload: string | null;  // Stored as JSON string in backend
+  /** How to read `payload`. Absent means `json` — sent verbatim. */
+  body_type?: BodyType | null;
   exports: ExportVariable[];
   assertion_script: string | null;
   pre_test_script: string | null;
@@ -99,6 +135,7 @@ export interface CreateTestCaseRequest {
   endpoint: string;
   headers?: Record<string, string>;  // JSON Value in backend
   payload?: string;                   // String in backend (not parsed JSON)
+  body_type?: BodyType;
   exports?: ExportVariable[];
   assertion_script?: string;
   pre_test_script?: string;
@@ -117,6 +154,7 @@ export interface UpdateTestCaseRequest {
   endpoint?: string;
   headers?: Record<string, string>;  // JSON Value in backend
   payload?: string;                   // String in backend (not parsed JSON)
+  body_type?: BodyType;
   exports?: ExportVariable[];
   assertion_script?: string;
   pre_test_script?: string;

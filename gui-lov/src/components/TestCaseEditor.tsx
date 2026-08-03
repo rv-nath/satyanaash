@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import FormFieldsEditor from "@/components/FormFieldsEditor";
+import { isForm, parseFields, serialiseFields } from "@/lib/formFields";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -17,7 +19,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { getUpstreamVariables } from "@/lib/variableUtils";
 import { preTestSnippets, postTestSnippets, getSnippetsByCategory } from "@/lib/testSnippets";
 import { HeadersEditor, HeaderRow, headersToJson, jsonToHeaders } from "@/components/HeadersEditor";
-import type { Dataset, TestCaseExecutionResult } from "@/lib/api/types";
+import type { BodyType, Dataset, FormField, TestCaseExecutionResult } from "@/lib/api/types";
 import { DatasetEditor } from "@/components/DatasetEditor";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { emptyDataset, runnableAlone, runnableLabel } from "@/lib/dataset";
@@ -166,6 +168,18 @@ export const TestCaseEditor = ({
   const [endpoint, setEndpoint] = useState("");
   const [headers, setHeaders] = useState<HeaderRow[]>([]);
   const [payload, setPayload] = useState("");
+  const [bodyType, setBodyType] = useState<BodyType>("json");
+  /**
+   * The parsed field list, or null when the saved payload is not one.
+   *
+   * Held beside `payload` rather than derived on every render, because the author is
+   * editing it — re-parsing a half-typed field name would fight the keystrokes. `payload`
+   * stays the source of truth for saving; this is the working copy.
+   *
+   * null is not the same as "no fields yet": it means a JSON body is sitting in the column
+   * and the editor must say so before replacing it.
+   */
+  const [formFields, setFormFields] = useState<FormField[] | null>([]);
   const [preTestScript, setPreTestScript] = useState("");
   const [postTestScript, setPostTestScript] = useState("");
   const [dataset, setDataset] = useState<Dataset>(emptyDataset);
@@ -206,6 +220,8 @@ export const TestCaseEditor = ({
       setEndpoint("");
       setHeaders(jsonToHeaders(""));
       setPayload("");
+      setBodyType("json");
+      setFormFields([]);
       setPreTestScript("");
       setPostTestScript("");
       setDataset(emptyDataset());
@@ -220,6 +236,9 @@ export const TestCaseEditor = ({
       setEndpoint(testCase.endpoint || "");
       setHeaders(jsonToHeaders(testCase.headers ? JSON.stringify(testCase.headers) : ""));
       setPayload(testCase.payload || "");
+      const loaded = (testCase.body_type as BodyType) || "json";
+      setBodyType(loaded);
+      setFormFields(isForm(loaded) ? parseFields(testCase.payload) : []);
       setPreTestScript(testCase.pre_test_script || "");
       setPostTestScript(testCase.assertion_script || "");
       setDataset(testCase.dataset ?? emptyDataset());
@@ -242,6 +261,32 @@ export const TestCaseEditor = ({
       setIsDirty(true);
     };
   }, []);
+
+  /**
+   * Change how the body is authored, keeping what is already there.
+   *
+   * The two shapes share one column, so the switch is destructive **on save** — not on the
+   * click. JSON → form parses what is there if it happens to be a field list and otherwise
+   * shows an empty grid with a warning; form → JSON puts the field array back in the
+   * textarea, where it is at least visible rather than silently gone.
+   *
+   * urlencoded → multipart keeps the fields untouched: same shape, different encoding, and
+   * only multipart can carry a file.
+   */
+  const switchBodyType = (next: BodyType) => {
+    if (next === bodyType) return;
+    setBodyType(next);
+    setIsDirty(true);
+
+    if (isForm(next)) {
+      // Already fields? Keep them. Otherwise parse, which yields null for a JSON body so
+      // the grid can warn instead of pretending the body was empty.
+      if (!isForm(bodyType)) setFormFields(parseFields(payload));
+      return;
+    }
+    // Back to verbatim: leave `payload` exactly as stored so nothing is lost.
+    setFormFields([]);
+  };
 
   const insertVariable = (varName: string, fieldRef: React.RefObject<HTMLInputElement | HTMLTextAreaElement>) => {
     if (!fieldRef.current) return;
@@ -324,8 +369,10 @@ export const TestCaseEditor = ({
     // Convert headers to JSON string
     const headersJson = headersToJson(headers);
 
-    // Validate JSON payload if provided
-    if (hasPayload && payload.trim()) {
+    // Validate JSON payload if provided. Only for a verbatim body — a form body's payload
+    // is a field array this editor generated, so parsing it proves nothing and failing on
+    // it would report "Invalid JSON payload" about a body the author never wrote as JSON.
+    if (hasPayload && !isForm(bodyType) && payload.trim()) {
       try {
         JSON.parse(payload);
       } catch {
@@ -348,6 +395,10 @@ export const TestCaseEditor = ({
       endpoint,
       headers: headersJson ? JSON.parse(headersJson) : undefined,
       payload: hasPayload && payload.trim() ? payload : undefined,
+      // Always sent, for the same reason as `dataset` below: the backend PATCH is
+      // `input.x.or(existing.x)`, so omitting it would make switching back to JSON
+      // impossible — the stored form type would win forever.
+      body_type: bodyType,
       assertion_script: postTestScript || undefined,
       pre_test_script: preTestScript || undefined,
       // Always sent, even when empty. The backend PATCH keeps the stored dataset
@@ -809,7 +860,33 @@ export const TestCaseEditor = ({
                 {hasPayload && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <Label htmlFor="payload" style={{ color: "hsl(var(--label-color))" }}>Request body <span className="ml-1 text-[10px] uppercase tracking-wide" style={{ color: "hsl(var(--hint-color))" }}>JSON</span></Label>
+                      <div className="flex items-center gap-2">
+                        <Label htmlFor="payload" style={{ color: "hsl(var(--label-color))" }}>Request body</Label>
+                        {/* JSON is the default and what every test case written before form
+                            bodies does; switching is what makes `payload` a field list. */}
+                        <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5">
+                          {(["json", "urlencoded", "multipart"] as const).map((t) => (
+                            <Button
+                              key={t}
+                              variant="ghost"
+                              size="sm"
+                              className={`h-5 px-1.5 text-[10px] ${
+                                bodyType === t ? "bg-primary/15 text-foreground" : "text-muted-foreground"
+                              }`}
+                              onClick={() => switchBodyType(t)}
+                              title={
+                                t === "json"
+                                  ? "Sent verbatim"
+                                  : t === "urlencoded"
+                                    ? "application/x-www-form-urlencoded"
+                                    : "multipart/form-data — the only type that can carry files"
+                              }
+                            >
+                              {t === "json" ? "JSON" : t === "urlencoded" ? "Form fields" : "Form + files"}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
                       {availableVars.length > 0 && (
                         <Popover>
                           <PopoverTrigger asChild>
@@ -839,27 +916,55 @@ export const TestCaseEditor = ({
                         </Popover>
                       )}
                     </div>
-                    <Textarea
-                      ref={payloadRef}
-                      id="payload"
-                      value={payload}
-                      onChange={(e) => {
-                        handleFieldChange(setPayload)(e.target.value);
-                        // Auto-resize to fit content
-                        e.target.style.height = 'auto';
-                        e.target.style.height = e.target.scrollHeight + 'px';
-                      }}
-                      onFocus={(e) => {
-                        e.target.style.height = 'auto';
-                        e.target.style.height = e.target.scrollHeight + 'px';
-                      }}
-                      placeholder='{"token": "{{authToken}}", "userId": "{{userId}}"}'
-                      className="font-mono text-sm code-input ph-faint min-h-[150px] resize-none overflow-hidden"
-                      style={{ height: 'auto' }}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Enter valid JSON payload. Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> for variables.
-                    </p>
+                    {isForm(bodyType) ? (
+                      <>
+                        <FormFieldsEditor
+                          fields={formFields ?? []}
+                          onChange={(next) => {
+                            setFormFields(next);
+                            handleFieldChange(setPayload)(serialiseFields(next));
+                          }}
+                          // Only multipart can carry a file. urlencoded has nowhere to put one.
+                          allowFiles={bodyType === 'multipart'}
+                        />
+                        {formFields === null && (
+                          <p className="text-xs text-destructive">
+                            The saved body is not a field list. Switching back to JSON will show
+                            it; saving from here replaces it.
+                          </p>
+                        )}
+                        <p className="text-xs text-muted-foreground">
+                          {bodyType === 'multipart'
+                            ? 'Sent as multipart/form-data. A field with a filename is sent as a file — that is what the server reads the extension from. Do not set Content-Type yourself: the boundary is added for you.'
+                            : 'Sent as application/x-www-form-urlencoded. Values are encoded for you, so & and = are safe.'}{' '}
+                          Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> anywhere, including inside file contents.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <Textarea
+                          ref={payloadRef}
+                          id="payload"
+                          value={payload}
+                          onChange={(e) => {
+                            handleFieldChange(setPayload)(e.target.value);
+                            // Auto-resize to fit content
+                            e.target.style.height = 'auto';
+                            e.target.style.height = e.target.scrollHeight + 'px';
+                          }}
+                          onFocus={(e) => {
+                            e.target.style.height = 'auto';
+                            e.target.style.height = e.target.scrollHeight + 'px';
+                          }}
+                          placeholder='{"token": "{{authToken}}", "userId": "{{userId}}"}'
+                          className="font-mono text-sm code-input ph-faint min-h-[150px] resize-none overflow-hidden"
+                          style={{ height: 'auto' }}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Sent verbatim. Use <code className="px-1 py-0.5 bg-muted rounded text-xs">{'{{variableName}}'}</code> for variables.
+                        </p>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

@@ -129,7 +129,22 @@ impl HttpExecutor {
                     let fields = crate::execution::body::parse_fields(body_str);
                     let mut form = reqwest::multipart::Form::new();
                     for field in &fields {
-                        form = form.text(field.name.clone(), field.value.clone());
+                        if field.is_file() {
+                            // A part with a filename is a file part — there is no separate
+                            // mode. Several fields may share one name, which is exactly how
+                            // an array of files is encoded (`recipientFiles` twice).
+                            // `Part` is not Clone and `mime_str` consumes it, so the
+                            // fallback rebuilds rather than reuses. An author's typo in the
+                            // content type should cost the header, not the whole request.
+                            let fresh = || {
+                                reqwest::multipart::Part::text(field.value.clone())
+                                    .file_name(field.filename.clone().unwrap_or_default())
+                            };
+                            let part = fresh().mime_str(&field.mime()).unwrap_or_else(|_| fresh());
+                            form = form.part(field.name.clone(), part);
+                        } else {
+                            form = form.text(field.name.clone(), field.value.clone());
+                        }
                     }
                     request_builder = request_builder.multipart(form);
                     logged_body = Some(crate::execution::body::describe(&fields));

@@ -78,10 +78,61 @@ pub struct FormField {
     /// an ordinary field says nothing.
     #[serde(default, skip_serializing_if = "is_not_set")]
     pub disabled: bool,
+    /// Present ⇒ send as a file part rather than a plain value.
+    ///
+    /// There is no separate "is a file" flag, because in multipart there is no separate
+    /// mode: a part carrying a filename *is* a file part. The distinction matters to the
+    /// server — `/api/v1/numbers/upload` answers "Only XLSX, XLS or CSV files are allowed"
+    /// by reading the extension off this and nothing else.
+    ///
+    /// Absence as the discriminator is the habit `rowIds` and `needs_flow` already follow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// Defaults from the filename's extension when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 fn is_not_set(flag: &bool) -> bool {
     !*flag
+}
+
+impl FormField {
+    /// A file part carries a filename. Anything else is a plain value.
+    pub fn is_file(&self) -> bool {
+        self.filename.as_ref().is_some_and(|f| !f.trim().is_empty())
+    }
+
+    /// What to declare for this part: the author's choice, else the extension's, else a
+    /// safe fallback.
+    pub fn mime(&self) -> String {
+        if let Some(declared) = self.content_type.as_ref().filter(|c| !c.trim().is_empty()) {
+            return declared.clone();
+        }
+        mime_for(self.filename.as_deref().unwrap_or(""))
+    }
+}
+
+/// Content type implied by a filename's extension.
+///
+/// Only the handful a test fixture actually is. Anything else falls back to
+/// `application/octet-stream`, which is what an unknown body is.
+pub fn mime_for(filename: &str) -> String {
+    let ext = filename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "csv" => "text/csv",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls" => "application/vnd.ms-excel",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }
 
 /// The fields a form body will send, in order.
@@ -113,7 +164,21 @@ pub fn looks_like_fields(payload: &str) -> bool {
 pub fn describe(fields: &[FormField]) -> String {
     fields
         .iter()
-        .map(|f| format!("{}={}", f.name, f.value))
+        .map(|f| {
+            if f.is_file() {
+                // A file part's own metadata, because that is what the server checks. The
+                // content follows so the log still shows what was actually uploaded.
+                format!(
+                    "{} (file: {}, {})\n{}",
+                    f.name,
+                    f.filename.as_deref().unwrap_or(""),
+                    f.mime(),
+                    f.value
+                )
+            } else {
+                format!("{}={}", f.name, f.value)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -156,6 +221,8 @@ mod tests {
             name: "a".into(),
             value: "1".into(),
             disabled: false,
+            filename: None,
+            content_type: None,
         })
         .unwrap();
         assert_eq!(json, r#"{"name":"a","value":"1"}"#);
@@ -209,5 +276,71 @@ mod tests {
         // percent-encoding answers that worse than the plain text does.
         let described = describe(&parse_fields(PAYLOAD));
         assert_eq!(described, "token={{authToken}}\nuserId=42\nnote=a & b = c");
+    }
+
+    #[test]
+    fn a_filename_is_what_makes_a_part_a_file() {
+        // There is no separate "is a file" flag, because multipart has no separate mode.
+        // The server reads the extension off this and nothing else — which is how
+        // /api/v1/numbers/upload answers "Only XLSX, XLS or CSV files are allowed".
+        let fields = parse_fields(
+            r#"[{"name":"file","value":"msisdn","filename":"numbers.csv"}]"#,
+        );
+        assert!(fields[0].is_file());
+        assert_eq!(fields[0].mime(), "text/csv");
+
+        // A blank filename is not a filename.
+        let blank = parse_fields(r#"[{"name":"a","value":"1","filename":"   "}]"#);
+        assert!(!blank[0].is_file());
+    }
+
+    #[test]
+    fn the_content_type_comes_from_the_extension_unless_stated() {
+        assert_eq!(mime_for("numbers.csv"), "text/csv");
+        assert_eq!(mime_for("payload.JSON"), "application/json");
+        // Unknown, and no extension at all, are both "some bytes".
+        assert_eq!(mime_for("thing.bin"), "application/octet-stream");
+        assert_eq!(mime_for("README"), "application/octet-stream");
+
+        // An author who states one wins over the extension.
+        let stated = parse_fields(
+            r#"[{"name":"f","value":"x","filename":"a.csv","content_type":"text/plain"}]"#,
+        );
+        assert_eq!(stated[0].mime(), "text/plain");
+    }
+
+    #[test]
+    fn several_fields_may_share_one_name() {
+        // A multipart array of files *is* repeated parts sharing a name, which is what
+        // `recipientFiles: {type: array, items: {format: binary}}` means on the wire. So
+        // nothing here may dedupe by name.
+        let fields = parse_fields(
+            r#"[{"name":"recipientFiles","value":"a","filename":"a.csv"},
+                {"name":"recipientFiles","value":"b","filename":"b.csv"}]"#,
+        );
+        assert_eq!(fields.len(), 2);
+        assert!(fields.iter().all(|f| f.name == "recipientFiles"));
+        assert_eq!(fields[1].filename.as_deref(), Some("b.csv"));
+    }
+
+    #[test]
+    fn the_log_names_a_file_part_and_still_shows_its_content() {
+        // The metadata is what the server checks, the content is what was uploaded. A log
+        // with only one of the two cannot answer "did the right thing go out".
+        let described = describe(&parse_fields(
+            r#"[{"name":"file","value":"447700900123","filename":"numbers.csv"},
+                {"name":"sourceType","value":"0"}]"#,
+        ));
+        assert!(described.contains("file (file: numbers.csv, text/csv)"), "{described}");
+        assert!(described.contains("447700900123"));
+        assert!(described.contains("sourceType=0"));
+    }
+
+    #[test]
+    fn a_field_with_no_file_stores_nothing_for_it() {
+        // Same rule as `disabled`: an ordinary field says nothing, so payloads written
+        // before file parts existed read back unchanged and a saved one does not churn.
+        let json = serde_json::to_string(&parse_fields(r#"[{"name":"a","value":"1"}]"#)).unwrap();
+        assert_eq!(json, r#"[{"name":"a","value":"1"}]"#);
     }
 }
