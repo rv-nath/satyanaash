@@ -278,14 +278,24 @@ const HeaderRowComponent = ({
     }
   };
 
+  // Dimming an unticked header goes on the *controls*, never on the row.
+  //
+  // `opacity` on the row does two things at once, and both broke the typeahead: it
+  // inherits to every descendant and cannot be undone by a child, so the suggestion list
+  // rendered half-transparent with the page showing through it; and it creates a stacking
+  // context, which trapped the list's z-index inside the row so it painted under the
+  // "Add Header" button below. CLAUDE.md already records this for the dataset editor —
+  // "dim on the cells, not the row".
+  const dim = header.enabled ? '' : 'opacity-50';
+
   return (
-    <div className={`grid grid-cols-[auto_1fr_1fr_auto] gap-2 px-2 py-1.5 items-center ${!header.enabled ? 'opacity-50' : ''}`}>
+    <div className="grid grid-cols-[auto_1fr_1fr_auto] gap-2 px-2 py-1.5 items-center">
       {/* Enable/Disable Checkbox */}
       <div className="flex items-center">
         <Checkbox
           checked={header.enabled}
           onCheckedChange={(checked) => onUpdate(header.id, 'enabled', !!checked)}
-          className="h-4 w-4"
+          className={`h-4 w-4 ${dim}`}
         />
       </div>
 
@@ -313,7 +323,7 @@ const HeaderRowComponent = ({
           }}
           onKeyDown={handleKeyDown}
           placeholder="Header name"
-          className="h-8 text-sm font-mono code-input ph-faint"
+          className={`h-8 text-sm font-mono code-input ph-faint ${dim}`}
           autoComplete="off"
         />
         {isPopoverOpen && visibleSuggestions.length > 0 && (
@@ -357,7 +367,7 @@ const HeaderRowComponent = ({
           value={header.value}
           onChange={(e) => onUpdate(header.id, 'value', e.target.value)}
           placeholder="Value"
-          className="h-8 text-sm font-mono code-input ph-faint pr-8"
+          className={`h-8 text-sm font-mono code-input ph-faint pr-8 ${dim}`}
         />
         {availableVars.length > 0 && (
           <Popover open={showVarPopover} onOpenChange={setShowVarPopover}>
@@ -365,7 +375,7 @@ const HeaderRowComponent = ({
               <Button
                 variant="ghost"
                 size="icon"
-                className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 text-muted-foreground hover:text-foreground"
+                className={`absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 text-muted-foreground hover:text-foreground ${dim}`}
               >
                 <span className="text-xs font-mono">{'{}'}</span>
               </Button>
