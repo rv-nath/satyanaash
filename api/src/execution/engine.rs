@@ -148,6 +148,60 @@ fn is_teardown(node: &GraphNode) -> bool {
         .unwrap_or(false)
 }
 
+/// A polled response in one line, for the attempt log.
+///
+/// The whole body would flood sixty attempts; the fields a poll turns on — status, counts —
+/// are what the reader is watching change.
+fn summarise_body(body: &str) -> String {
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= 120 {
+        return flat;
+    }
+    format!("{}…", flat.chars().take(120).collect::<String>())
+}
+
+/// A node that may have to ask more than once.
+///
+/// Multi-stage uploads answer 202 with `{"status":"pending",…}` and the real outcome only
+/// exists after polling. This is **not** a loop: nothing iterates, one request is re-sent
+/// until its answer settles, so it is a property of the node rather than a structure around
+/// it.
+///
+/// **`until` and `check` have distinct jobs, deliberately.** `until` says the answer has
+/// settled; `check` says whether it was the right answer. Collapsing them lies: an upload
+/// whose status becomes `"failed"` would be retried to the budget and reported as "timed
+/// out" rather than "the upload failed", hiding the real result behind a slow one.
+#[derive(Debug, Clone, PartialEq)]
+struct PollConfig {
+    /// Rhai, interpolated exactly like `check`.
+    until: String,
+    interval_ms: u64,
+    timeout_ms: u64,
+}
+
+/// Shared with `validation::graph`, so the warning about a budget shorter than an interval
+/// is measured against the same numbers the engine will actually use.
+pub const POLL_INTERVAL_MS: u64 = 2_000;
+pub const POLL_TIMEOUT_MS: u64 = 120_000;
+
+/// `config.poll.until` marks a node. Absent means no polling, which is every node that
+/// existed before this.
+fn poll_config(node: &GraphNode) -> Option<PollConfig> {
+    let poll = node.data.get("config").and_then(|c| c.get("poll"))?;
+    let until = poll.get("until").and_then(|v| v.as_str()).map(str::trim)?;
+    if until.is_empty() {
+        return None;
+    }
+    let ms = |key: &str, fallback: u64| {
+        poll.get(key).and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(fallback)
+    };
+    Some(PollConfig {
+        until: until.to_string(),
+        interval_ms: ms("intervalMs", POLL_INTERVAL_MS),
+        timeout_ms: ms("timeoutMs", POLL_TIMEOUT_MS),
+    })
+}
+
 /// A node's fan-out choice, as the canvas stores it.
 #[derive(Debug, PartialEq)]
 enum FanOut {
@@ -426,6 +480,23 @@ struct RunOptions<'a> {
     /// in one scenario and a 402 in another — and like a dataset row it stands
     /// alone: the test case's post-test script does not run for that node.
     node_check: Option<&'a str>,
+    /// Set when this node may have to ask more than once. Wraps only the send — the
+    /// verdict and exports still run once, against the final response.
+    poll: Option<&'a PollConfig>,
+    /// The stream this run reports to, when there is one.
+    ///
+    /// Read between poll attempts, for the same reason `RunState::should_stop` reads it at
+    /// every node boundary: a poll can hold a run open for two minutes, which is long
+    /// enough that "a run nobody is watching stops" has to be true inside a node and not
+    /// just between them.
+    watcher: Option<&'a mpsc::Sender<ExecutionEvent>>,
+}
+
+impl RunOptions<'_> {
+    /// True when the only client for this run has gone.
+    fn unwatched(&self) -> bool {
+        self.watcher.is_some_and(|tx| tx.is_closed())
+    }
 }
 
 /// The only differences between the editor's "Run dataset" and a flow node running one
@@ -440,6 +511,11 @@ struct RowRunOptions<'a> {
     extra_exports: &'a [ExportVariable],
     /// This node's Expect, applied to any row that hasn't stated one of its own.
     node_check: Option<&'a str>,
+    /// Set when this node may have to ask more than once. Wraps only the send — the
+    /// verdict and exports still run once, against the final response.
+    poll: Option<&'a PollConfig>,
+    /// The stream this run reports to, passed through to each row's send.
+    watcher: Option<&'a mpsc::Sender<ExecutionEvent>>,
     /// True only for the editor's "Run dataset", which has no earlier steps: a row
     /// marked `needs_flow` is reported as skipped instead of being sent, because
     /// running it there produces a failure that says nothing about the request. A flow
@@ -512,6 +588,10 @@ pub struct NodeResult {
     /// Label for that row — its name, else "Row N".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_label: Option<String>,
+    /// How many times this node asked, when it polled. Absent for the ordinary single
+    /// request, so nothing changes for a node that does not poll.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<usize>,
     /// Per-row results. Present only on the aggregate of a "run all rows" run;
     /// every other producer leaves it None so the wire format is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1132,6 +1212,7 @@ impl ExecutionEngine {
                     logs,
                     row_index: None,
                     row_label: None,
+                    attempts: None,
                     iterations: None,
                 };
             }
@@ -1164,6 +1245,7 @@ impl ExecutionEngine {
                         logs,
                         row_index: None,
                         row_label: None,
+                        attempts: None,
                         iterations: None,
                     };
                 }
@@ -1185,6 +1267,7 @@ impl ExecutionEngine {
                         logs,
                         row_index: None,
                         row_label: None,
+                        attempts: None,
                         iterations: None,
                     };
                 }
@@ -1266,6 +1349,7 @@ impl ExecutionEngine {
                     logs,
                     row_index: None,
                     row_label: None,
+                    attempts: None,
                     iterations: None,
                 };
             }
@@ -1314,6 +1398,10 @@ impl ExecutionEngine {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
+        // May this node have to ask more than once? A property of the node, like teardown
+        // and fan-out — not a structure around it, because nothing iterates.
+        let poll = poll_config(node);
+
         // Once, or once per data row? Decided here rather than in run_once, because a
         // fan-out sends N requests and run_once is the one-request cycle.
         let mut result = match plan {
@@ -1326,6 +1414,8 @@ impl ExecutionEngine {
                         node_id: &node.id,
                         extra_exports: &node_output_vars,
                         node_check,
+                        poll: poll.as_ref(),
+                        watcher: event_tx.as_ref(),
                         // Was false here and true on the standalone path —
                         // unintentional drift. An unresolved {{var}} shipping as a
                         // literal is worth saying out loud wherever it happens; in a
@@ -1370,6 +1460,8 @@ impl ExecutionEngine {
                         node_id: &node.id,
                         extra_exports: &[],
                         node_check,
+                        poll: poll.as_ref(),
+                        watcher: event_tx.as_ref(),
                         // A flow node runs every row it selected: the flow is what
                         // satisfies them.
                         honour_needs_flow: false,
@@ -1402,6 +1494,7 @@ impl ExecutionEngine {
                     logs,
                     row_index: None,
                     row_label: None,
+                    attempts: None,
                     iterations: None,
                 }
             }
@@ -1596,6 +1689,7 @@ impl ExecutionEngine {
                     logs,
                     row_index: opts.row_index,
                     row_label: opts.row_label.clone(),
+                    attempts: None,
                     iterations: None,
                 }
             };
@@ -1629,6 +1723,14 @@ impl ExecutionEngine {
         let endpoint_template = resolve_endpoint(row, test_case);
 
         // Interpolate endpoint URL and prepend base URL if needed
+        // Interpolated like `check` is, so a node or row variable can supply a value.
+        // Falls back to the literal when a name does not resolve, matching what `check` does
+        // rather than failing the request over a placeholder.
+        let interpolated_until = opts
+            .poll
+            .map(|p| ctx.interpolate(&p.until).unwrap_or_else(|_| p.until.clone()))
+            .unwrap_or_default();
+
         let endpoint = match ctx.interpolate(&endpoint_template) {
             Ok(u) => u,
             Err(e) => bail!(format!("URL interpolation failed: {}", e), None, None),
@@ -1731,26 +1833,126 @@ impl ExecutionEngine {
             body: body.clone(),
         };
 
-        // Execute HTTP request
-        let http_result = match self
-            .http
-            .execute(
-                &test_case.method,
-                &url,
-                &headers,
-                body.as_deref(),
-                // NULL and anything unrecognised read as verbatim JSON, which is what every
-                // test case written before form bodies existed already does.
-                test_case.body_type.as_deref().map(BodyType::parse).unwrap_or_default(),
-            )
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => bail!(
-                format!("HTTP request failed: {}", e),
-                Some(request_log),
-                None
-            ),
+        // Execute HTTP request.
+        //
+        // Wrapped in an attempt loop when the node polls. Only the *send* is repeated: the
+        // verdict cascade and the exports below run once, against the final response. A
+        // verdict evaluated per attempt would report the first "pending" as a failure, and
+        // exports run per attempt would fire three times.
+        let body_type = test_case.body_type.as_deref().map(BodyType::parse).unwrap_or_default();
+        let mut attempts: usize = 0;
+        let poll_deadline = opts
+            .poll
+            .map(|p| std::time::Instant::now() + std::time::Duration::from_millis(p.timeout_ms));
+
+        // Set when the poll ran out of budget or was cut short. A poll that never settled
+        // has no outcome, and that is not the same as a request that failed — so it is
+        // carried to the verdict rather than decided here.
+        let mut poll_unsettled: Option<String> = None;
+        let http_result = loop {
+            attempts += 1;
+            let sent = match self
+                .http
+                .execute(&test_case.method, &url, &headers, body.as_deref(), body_type)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => bail!(
+                    format!("HTTP request failed: {}", e),
+                    Some(request_log),
+                    None
+                ),
+            };
+
+            let Some(poll) = opts.poll else { break sent };
+            let status = sent.response.status;
+
+            // One line per attempt with the polled values. `0/2 → 1/2 → 2/2` is exactly what
+            // an author debugging a slow upload wants, and a node that gave up shows every
+            // attempt it made.
+            logs.push(format!(
+                "poll attempt {}: {} {}",
+                attempts,
+                status,
+                summarise_body(&sent.response.body)
+            ));
+
+            // A 404 means the id is wrong and a 401 means the token expired. Neither
+            // improves by asking again, so retrying for the whole budget would waste the
+            // wait and bury the reason.
+            if (400..500).contains(&status) {
+                logs.push(format!(
+                    "stopped polling: {} will not change on a retry — check the id the \
+                     earlier step exported",
+                    status
+                ));
+                break sent;
+            }
+
+            match self.assertions.evaluate(AssertionInput {
+                script: &interpolated_until,
+                status,
+                body: &sent.response.body,
+                json: &sent.response.json,
+                headers: &sent.response.headers,
+                env: &ctx.environment_snapshot(),
+            }) {
+                Ok(outcome) => match outcome.passed {
+                    Some(true) => {
+                        logs.push(format!("settled after {} attempt(s)", attempts));
+                        break sent;
+                    }
+                    Some(false) => {}
+                    // Not a boolean at all. Waiting out the budget would only delay a report
+                    // about the author's expression, same as `check` refuses a non-boolean.
+                    // Not a boolean at all — an assignment, or a value. Waiting out the
+                    // budget would only delay a report about the author's expression, the
+                    // same refusal `check` already makes.
+                    None => bail!(
+                        "\"until\" must be an expression that is true or false".to_string(),
+                        Some(request_log),
+                        Some(sent.response)
+                    ),
+                },
+                Err(e) => {
+                    // An `until` that cannot be evaluated is the author's mistake and will
+                    // not fix itself, so waiting out the budget would only delay the report.
+                    bail!(
+                        format!("\"until\" could not be evaluated: {}", plain(&e)),
+                        Some(request_log),
+                        Some(sent.response)
+                    );
+                }
+            }
+
+            let out_of_time = poll_deadline.is_some_and(|d| std::time::Instant::now() >= d);
+            if out_of_time {
+                // Failed, never Error: the request worked every time — the wait ran out.
+                // `Error` would abort the flow and claim something systemic went wrong,
+                // which is a different and worse story.
+                let reason = format!(
+                    "gave up after {} attempt(s) — \"until\" never became true within {}ms",
+                    attempts, poll.timeout_ms
+                );
+                logs.push(reason.clone());
+                poll_unsettled = Some(reason);
+                break sent;
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(poll.interval_ms)).await;
+
+            // Between attempts is a boundary like any other: a run nobody is watching, or a
+            // process going down, must not keep polling for two minutes.
+            if self.stop.load(std::sync::atomic::Ordering::Relaxed) || opts.unwatched() {
+                let reason = format!(
+                    "stopped polling after {} attempt(s): the run was abandoned before \
+                     \"until\" became true",
+                    attempts
+                );
+                logs.push(reason.clone());
+                poll_unsettled = Some(reason);
+                break sent;
+            }
         };
 
         if self.debug_mode {
@@ -1817,153 +2019,166 @@ impl ExecutionEngine {
 
         // What was required, in the words the author would recognise. Kept beside the
         // verdict so the two can't disagree.
-        let mut expected: Option<String> = None;
+        // No initialiser: every path through the verdict below states what was required,
+        // and the compiler is a better guarantee of that than a `None` default which would
+        // silently mean "nothing was expected" if a path ever forgot.
+        let expected: Option<String>;
 
-        let assertion_passed = match own_check {
-            Some((ref raw, what)) => {
-                expected = Some(match parse_check(raw.as_deref()) {
-                    Check::Status(code) => format!("HTTP {}", code),
-                    Check::Expr(expr) => expr.to_string(),
-                    Check::Unstated => "any 2xx".to_string(),
-                });
-                let passed = match parse_check(raw.as_deref()) {
-                    Check::Status(expected) => {
-                        let ok = status_code == expected;
-                        if !ok {
-                            assertion_failure =
-                                Some(format!("Expected HTTP {}, got {}", expected, status_code));
+        // A poll that never settled has nothing to judge, so the cascade must not run.
+        // The last response is mid-flight by definition, and a 202 satisfies the default
+        // 2xx check — reporting "passed" on an upload whose outcome nobody waited for is
+        // exactly the dishonest green this feature exists to remove.
+        let assertion_passed = if let Some(reason) = poll_unsettled {
+            expected = Some(format!("\"until\" to become true: {}", interpolated_until));
+            assertion_failure = Some(reason);
+            false
+        } else {
+            match own_check {
+                Some((ref raw, what)) => {
+                    expected = Some(match parse_check(raw.as_deref()) {
+                        Check::Status(code) => format!("HTTP {}", code),
+                        Check::Expr(expr) => expr.to_string(),
+                        Check::Unstated => "any 2xx".to_string(),
+                    });
+                    let passed = match parse_check(raw.as_deref()) {
+                        Check::Status(expected) => {
+                            let ok = status_code == expected;
+                            if !ok {
+                                assertion_failure =
+                                    Some(format!("Expected HTTP {}, got {}", expected, status_code));
+                            }
+                            ok
                         }
-                        ok
-                    }
-                    Check::Expr(expr) => match self.assertions.evaluate(AssertionInput {
-                        script: expr,
-                        status: status_code,
-                        body: &http_result.response.body,
-                        json: &http_result.response.json,
-                        headers: &http_result.response.headers,
-                        env: &ctx.environment_snapshot(),
-                    }) {
-                        Ok(outcome) => {
-                            logs.extend(outcome.output);
-                            // A check may capture on its way to a verdict.
-                            for (k, v) in outcome.vars {
-                                ctx.set(&k, v);
-                            }
-                            for (k, v) in outcome.env {
-                                ctx.set_environment_var(&k, v.clone());
-                                env_writes.insert(k, v);
-                            }
-                            match outcome.passed {
-                                Some(true) => true,
-                                Some(false) => {
-                                    assertion_failure = Some(format!(
-                                        "Check returned false: {}  (actual: HTTP {})",
-                                        last_expression(expr), status_code
-                                    ));
-                                    false
+                        Check::Expr(expr) => match self.assertions.evaluate(AssertionInput {
+                            script: expr,
+                            status: status_code,
+                            body: &http_result.response.body,
+                            json: &http_result.response.json,
+                            headers: &http_result.response.headers,
+                            env: &ctx.environment_snapshot(),
+                        }) {
+                            Ok(outcome) => {
+                                logs.extend(outcome.output);
+                                // A check may capture on its way to a verdict.
+                                for (k, v) in outcome.vars {
+                                    ctx.set(&k, v);
                                 }
-                                // Not a yes/no answer — say so rather than guessing.
-                                None => {
-                                    assertion_failure = Some(format!(
-                                        "{} must be a status code or an expression that is \
-                                         true or false — got: {}",
-                                        what,
-                                        last_expression(expr)
-                                    ));
-                                    false
+                                for (k, v) in outcome.env {
+                                    ctx.set_environment_var(&k, v.clone());
+                                    env_writes.insert(k, v);
+                                }
+                                match outcome.passed {
+                                    Some(true) => true,
+                                    Some(false) => {
+                                        assertion_failure = Some(format!(
+                                            "Check returned false: {}  (actual: HTTP {})",
+                                            last_expression(expr), status_code
+                                        ));
+                                        false
+                                    }
+                                    // Not a yes/no answer — say so rather than guessing.
+                                    None => {
+                                        assertion_failure = Some(format!(
+                                            "{} must be a status code or an expression that is \
+                                             true or false — got: {}",
+                                            what,
+                                            last_expression(expr)
+                                        ));
+                                        false
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => bail!(
-                            format!("{} could not run: {}", what, plain(&e)),
-                            Some(http_result.request),
-                            Some(http_result.response)
-                        ),
-                    },
-                    Check::Unstated => {
-                        let ok = AssertionEngine::default_assertion(status_code);
-                        if !ok {
-                            assertion_failure = Some(format!(
-                                "No check given, so a 2xx was required — got HTTP {}",
-                                status_code
-                            ));
-                        }
-                        ok
-                    }
-                };
-                if let Some(ref reason) = assertion_failure {
-                    logs.push(reason.clone());
-                }
-                passed
-            }
-            None => {
-                // Post-test script: runs for its side effects (SAT.vars / SAT.env)
-                // and decides the verdict when it ends in a boolean.
-                let mut script_verdict: Option<bool> = None;
-                let script = shared_script(test_case);
-                if let Some(script) = script {
-                    match self.assertions.evaluate(AssertionInput {
-                        script,
-                        status: status_code,
-                        body: &http_result.response.body,
-                        json: &http_result.response.json,
-                        headers: &http_result.response.headers,
-                        env: &ctx.environment_snapshot(),
-                    }) {
-                        Ok(outcome) => {
-                            script_verdict = outcome.passed;
-                            logs.extend(outcome.output);
-                            for (k, v) in outcome.vars {
-                                ctx.set(&k, v);
+                            Err(e) => bail!(
+                                format!("{} could not run: {}", what, plain(&e)),
+                                Some(http_result.request),
+                                Some(http_result.response)
+                            ),
+                        },
+                        Check::Unstated => {
+                            let ok = AssertionEngine::default_assertion(status_code);
+                            if !ok {
+                                assertion_failure = Some(format!(
+                                    "No check given, so a 2xx was required — got HTTP {}",
+                                    status_code
+                                ));
                             }
-                            for (k, v) in outcome.env {
-                                ctx.set_environment_var(&k, v.clone());
-                                env_writes.insert(k, v);
-                            }
+                            ok
                         }
-                        // The script couldn't run at all — a defect in the test, not
-                        // a failed check. Don't persist whatever it wrote before
-                        // throwing: half-captured values poison later runs.
-                        Err(e) => bail!(
-                            format!("Post-test script could not run: {}", plain(&e)),
-                            Some(http_result.request),
-                            Some(http_result.response)
-                        ),
+                    };
+                    if let Some(ref reason) = assertion_failure {
+                        logs.push(reason.clone());
                     }
+                    passed
                 }
-
-                expected = Some(match script_verdict {
-                    // What the script's last expression asserted.
-                    Some(_) => last_expression(script.unwrap_or("")).to_string(),
-                    // A capture-only script leaves the verdict to the 2xx rule.
-                    None => "any 2xx".to_string(),
-                });
-
-                match script_verdict {
-                    Some(verdict) => {
-                        if !verdict {
-                            let reason = format!(
-                                "Assertion returned false: {}  (actual: HTTP {})",
-                                last_expression(script.unwrap_or("")), status_code
-                            );
-                            logs.push(reason.clone());
-                            assertion_failure = Some(reason);
+                None => {
+                    // Post-test script: runs for its side effects (SAT.vars / SAT.env)
+                    // and decides the verdict when it ends in a boolean.
+                    let mut script_verdict: Option<bool> = None;
+                    let script = shared_script(test_case);
+                    if let Some(script) = script {
+                        match self.assertions.evaluate(AssertionInput {
+                            script,
+                            status: status_code,
+                            body: &http_result.response.body,
+                            json: &http_result.response.json,
+                            headers: &http_result.response.headers,
+                            env: &ctx.environment_snapshot(),
+                        }) {
+                            Ok(outcome) => {
+                                script_verdict = outcome.passed;
+                                logs.extend(outcome.output);
+                                for (k, v) in outcome.vars {
+                                    ctx.set(&k, v);
+                                }
+                                for (k, v) in outcome.env {
+                                    ctx.set_environment_var(&k, v.clone());
+                                    env_writes.insert(k, v);
+                                }
+                            }
+                            // The script couldn't run at all — a defect in the test, not
+                            // a failed check. Don't persist whatever it wrote before
+                            // throwing: half-captured values poison later runs.
+                            Err(e) => bail!(
+                                format!("Post-test script could not run: {}", plain(&e)),
+                                Some(http_result.request),
+                                Some(http_result.response)
+                            ),
                         }
-                        verdict
                     }
-                    // No boolean to judge by — a capture-only script is legitimate —
-                    // so fall back to the same rule a dataset row uses.
-                    None => {
-                        let ok = AssertionEngine::default_assertion(status_code);
-                        if !ok {
-                            let reason = format!(
-                                "Assertion failed: expected a 2xx status, got HTTP {}",
-                                status_code
-                            );
-                            logs.push(reason.clone());
-                            assertion_failure = Some(reason);
+
+                    expected = Some(match script_verdict {
+                        // What the script's last expression asserted.
+                        Some(_) => last_expression(script.unwrap_or("")).to_string(),
+                        // A capture-only script leaves the verdict to the 2xx rule.
+                        None => "any 2xx".to_string(),
+                    });
+
+                    match script_verdict {
+                        Some(verdict) => {
+                            if !verdict {
+                                let reason = format!(
+                                    "Assertion returned false: {}  (actual: HTTP {})",
+                                    last_expression(script.unwrap_or("")), status_code
+                                );
+                                logs.push(reason.clone());
+                                assertion_failure = Some(reason);
+                            }
+                            verdict
                         }
-                        ok
+                        // No boolean to judge by — a capture-only script is legitimate —
+                        // so fall back to the same rule a dataset row uses.
+                        None => {
+                            let ok = AssertionEngine::default_assertion(status_code);
+                            if !ok {
+                                let reason = format!(
+                                    "Assertion failed: expected a 2xx status, got HTTP {}",
+                                    status_code
+                                );
+                                logs.push(reason.clone());
+                                assertion_failure = Some(reason);
+                            }
+                            ok
+                        }
                     }
                 }
             }
@@ -1999,6 +2214,9 @@ impl ExecutionEngine {
             logs,
             row_index: opts.row_index,
             row_label: opts.row_label,
+            // Only when it polled. A node that asked once says nothing, so the report reads
+            // unchanged for every request that is not multi-staged.
+            attempts: opts.poll.map(|_| attempts),
             iterations: None,
         }
     }
@@ -2035,6 +2253,10 @@ impl ExecutionEngine {
                 extra_exports: &[],
                 node_check: None,
                 honour_needs_flow: true,
+                // The editor's own run has no stream to lose and does not poll: polling
+                // lives on the node, so "Run request" sends exactly once.
+                poll: None,
+                watcher: None,
             },
             Vec::new(),
             &mut env_writes,
@@ -2108,6 +2330,7 @@ impl ExecutionEngine {
                     logs: vec![reason],
                     row_index: Some(*index),
                     row_label: Some(label),
+                    attempts: None,
                     iterations: None,
                 });
                 continue;
@@ -2139,6 +2362,10 @@ impl ExecutionEngine {
                         report_unresolved: true,
                         row_index: Some(*index),
                         row_label: Some(label.clone()),
+                        // Passed through, not dropped: a fan-out node's rows each poll,
+                        // because the node is what says the request is multi-staged.
+                        poll: opts.poll,
+                        watcher: opts.watcher,
                     },
                     Vec::new(),
                     &mut row_env,
@@ -2175,6 +2402,7 @@ impl ExecutionEngine {
                 logs,
                 row_index: None,
                 row_label: None,
+                attempts: None,
                 iterations: Some(Vec::new()),
             };
         }
@@ -2245,6 +2473,7 @@ impl ExecutionEngine {
             logs,
             row_index: None,
             row_label: None,
+            attempts: None,
             iterations: Some(iterations),
         }
     }
@@ -2279,6 +2508,8 @@ impl ExecutionEngine {
                 report_unresolved: true,
                 row_index: None,
                 row_label: None,
+                poll: None,
+                watcher: None,
             },
             logs,
             &mut env_writes,
@@ -2779,6 +3010,55 @@ mod tests {
         format!("http://{}/", addr)
     }
 
+    /// A stub that answers a different body each time, in order, then repeats the last.
+    ///
+    /// The shape a poll actually meets: pending, pending, complete. Repeating the last means
+    /// a test that gives up does not also fail on a closed socket, so a timeout test reports
+    /// the timeout rather than a connection error.
+    async fn stub_sequence(responses: Vec<(u16, &'static str)>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut i = 0usize;
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { break };
+                let (status, body) = responses[i.min(responses.len() - 1)];
+                i += 1;
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status, body.len(), body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    /// A flow of one node that polls. The interval is 1ms so the tests do not sleep — the
+    /// behaviour under test is the sequence of attempts, not the wall clock.
+    fn polling_flow(url: &str, until: &str, timeout_ms: u64, check: Option<&str>) -> Flow {
+        let mut config = serde_json::json!({
+            "poll": { "until": until, "intervalMs": 1, "timeoutMs": timeout_ms }
+        });
+        if let Some(check) = check {
+            config["check"] = serde_json::json!(check);
+        }
+        let data = serde_json::json!({ "testCaseId": "poll", "config": config });
+        let _ = url;
+        make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("p", "testCase", data),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "p", None),
+            make_edge("e2", "p", "end", Some("success")),
+        ])
+    }
+
     async fn stub_once(status: u16, body: &'static str) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2940,6 +3220,272 @@ mod tests {
             "paused:nt", "started:nt", "completed:nt",
             "run-completed",
         ], "{:?}", seen);
+    }
+
+    // ---------------------------------------------------------------- poll-until
+
+    const PENDING: &str = r#"{"status":"pending","id":"abc","processed":0,"toProcess":2,"error":0}"#;
+    const HALFWAY: &str = r#"{"status":"pending","id":"abc","processed":1,"toProcess":2,"error":0}"#;
+    const DONE: &str = r#"{"status":"complete","id":"abc","processed":2,"toProcess":2,"error":0}"#;
+    const FAILED: &str = r#"{"status":"failed","id":"abc","processed":1,"toProcess":2,"error":1}"#;
+
+    async fn run_poll(
+        url: &str,
+        until: &str,
+        timeout_ms: u64,
+        check: Option<&str>,
+    ) -> NodeResult {
+        let engine = ExecutionEngine::new(true, None);
+        let tc = make_test_case("poll", "Upload Status", &format!("{url}/status"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = polling_flow(url, until, timeout_ms, check);
+        let mut results = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results;
+        results.remove(0)
+    }
+
+    /// The shape a multi-stage upload actually has: 202 pending, then pending, then complete.
+    #[tokio::test]
+    async fn a_poll_node_asks_again_until_until_is_met() {
+        let url = stub_sequence(vec![(202, PENDING), (200, HALFWAY), (200, DONE)]).await;
+        let result = run_poll(&url, r#"response.json.status != "pending""#, 5_000, None).await;
+
+        assert_eq!(result.status, NodeStatus::Passed);
+        // One node result, not one per attempt — a poll is one step of the flow.
+        assert_eq!(result.attempts, Some(3));
+        // …and every attempt is on the record, which is what an author debugging a slow
+        // upload is reading.
+        let log = result.logs.join("\n");
+        assert!(log.contains("poll attempt 1"), "{log}");
+        assert!(log.contains("poll attempt 3"), "{log}");
+        assert!(log.contains("settled after 3 attempt(s)"), "{log}");
+    }
+
+    /// The responsibility split, and the reason `until` and Expect are separate.
+    #[tokio::test]
+    async fn the_verdict_is_judged_once_against_the_last_response() {
+        let url = stub_sequence(vec![(202, PENDING), (200, DONE)]).await;
+        let result = run_poll(
+            &url,
+            r#"response.json.status != "pending""#,
+            5_000,
+            Some("response.json.processed == response.json.toProcess"),
+        )
+        .await;
+
+        // The pending attempt would fail this check. It must not be judged at all — only
+        // the response that settled is.
+        assert_eq!(result.status, NodeStatus::Passed);
+        assert_eq!(result.attempts, Some(2));
+        // The response kept is the final one, not the first.
+        assert!(result.response.unwrap().body.contains("complete"));
+    }
+
+    /// The whole argument for two expressions rather than one.
+    #[tokio::test]
+    async fn a_failed_upload_reports_the_failure_not_a_timeout() {
+        // "failed" satisfies `until` — the answer has settled — so Expect judges it at once
+        // and says what is wrong. With one expression this would retry to the budget and
+        // report "timed out", hiding the real result behind a slow one.
+        let url = stub_sequence(vec![(200, FAILED)]).await;
+        let result = run_poll(
+            &url,
+            r#"response.json.status != "pending""#,
+            5_000,
+            Some("response.json.error == 0"),
+        )
+        .await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert_eq!(result.attempts, Some(1), "it should not have waited at all");
+        let message = result.error_message.unwrap_or_default();
+        assert!(!message.contains("gave up"), "reported as a timeout: {message}");
+    }
+
+    #[tokio::test]
+    async fn a_4xx_stops_polling_at_once() {
+        // A 404 means the id is wrong. Sixty attempts would waste the budget and bury the
+        // reason behind a timeout.
+        let url = stub_sequence(vec![(404, r#"{"message":"not found"}"#)]).await;
+        let result = run_poll(&url, r#"response.json.status != "pending""#, 5_000, None).await;
+
+        assert_eq!(result.attempts, Some(1));
+        assert_eq!(result.status, NodeStatus::Failed);
+        let log = result.logs.join("\n");
+        assert!(log.contains("will not change on a retry"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn running_out_of_budget_fails_rather_than_errors() {
+        // The request worked every time; the wait ran out. `Error` would abort the flow and
+        // claim something systemic went wrong, which is a different and worse story.
+        let url = stub_sequence(vec![(202, PENDING)]).await;
+        let result = run_poll(&url, r#"response.json.status != "pending""#, 30, None).await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(result.attempts.unwrap() >= 1);
+        let log = result.logs.join("\n");
+        assert!(log.contains("gave up after"), "{log}");
+        assert!(log.contains("never became true"), "{log}");
+    }
+
+    #[tokio::test]
+    async fn an_until_that_is_not_a_condition_is_refused_at_once() {
+        // An expression that yields a value rather than a verdict will not fix itself, so
+        // waiting out the budget would only delay a report about the author's mistake.
+        let url = stub_sequence(vec![(200, PENDING)]).await;
+        let result = run_poll(&url, "response.json.processed", 5_000, None).await;
+
+        assert_eq!(result.status, NodeStatus::Error);
+        assert!(
+            result.error_message.unwrap_or_default().contains("true or false"),
+            "should name the problem"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_without_poll_config_asks_exactly_once() {
+        // Nothing changes for the requests that are not multi-staged, and the report says
+        // nothing about attempts rather than reporting "1".
+        let url = stub_once(200, DONE).await;
+        let engine = ExecutionEngine::new(false, None);
+        let tc = make_test_case("t", "Plain", &format!("{url}/x"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("n", "testCase", serde_json::json!({"testCaseId": "t"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "n", None),
+            make_edge("e2", "n", "end", Some("success")),
+        ]);
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .remove(0);
+        assert_eq!(result.attempts, None);
+    }
+
+    #[tokio::test]
+    async fn until_is_interpolated_like_every_other_string() {
+        // `until` is the third expression beside a row's Expect and a node's, and it gets
+        // the same treatment: a name resolves, so one flow can state the settled condition
+        // once and the environment supply the value.
+        let url = stub_sequence(vec![(202, PENDING), (200, DONE)]).await;
+        let engine = ExecutionEngine::new(true, None);
+        let tc = make_test_case("poll", "Upload Status", &format!("{url}/status"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = polling_flow(&url, r#"response.json.status == "{{settled}}""#, 5_000, None);
+        let environment =
+            HashMap::from([("settled".to_string(), serde_json::json!("complete"))]);
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, environment, HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .remove(0);
+
+        // Uninterpolated, `{{settled}}` would never match and this would time out instead.
+        assert_eq!(result.status, NodeStatus::Passed);
+        assert_eq!(result.attempts, Some(2));
+    }
+
+    /// A poll can hold a run open for two minutes, so the rule has to apply inside a node.
+    #[tokio::test]
+    async fn a_poll_node_notices_the_run_being_abandoned() {
+        // Answers "pending" for ever: without the check between attempts this polls its
+        // whole budget for a stream that nobody is reading.
+        let url = stub_sequence(vec![(202, PENDING)]).await;
+        let engine = ExecutionEngine::new(false, None);
+        let tc = make_test_case("poll", "Upload Status", &format!("{url}/status"), "GET");
+        let cleanup = make_test_case("t", "Cleanup", "http://127.0.0.1:1/t", "DELETE");
+        let repo = MockTestCaseRepository::new().with_test_case(tc).with_test_case(cleanup);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("p", "testCase", serde_json::json!({
+                "testCaseId": "poll",
+                "config": { "poll": {
+                    "until": r#"response.json.status != "pending""#,
+                    "intervalMs": 1,
+                    // Long enough that finishing on the budget would take the test with it.
+                    "timeoutMs": 600_000
+                }}
+            })),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "p", None),
+            make_edge("e2", "p", "end", Some("success")),
+        ]);
+
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(100);
+        tokio::spawn(async move {
+            // Watch until the poll is under way, then walk away — what closing the tab does.
+            while let Some(event) = rx.recv().await {
+                if matches!(event, ExecutionEvent::NodeStarted { .. }) {
+                    break;
+                }
+            }
+            drop(rx);
+        });
+
+        let result = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), Some(tx))
+            .await
+            .unwrap();
+
+        let poll = &result.results[0];
+        // Not a pass: the 202 it stopped on says only "I have your file".
+        assert_eq!(poll.status, NodeStatus::Failed);
+        assert!(
+            poll.logs.iter().any(|l| l.contains("the run was abandoned")),
+            "{:?}",
+            poll.logs
+        );
+        // And the account it created is still cleaned up.
+        let ran: Vec<&str> = result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        assert_eq!(ran, vec!["Upload Status", "Cleanup"], "{:?}", ran);
+    }
+
+    #[test]
+    fn poll_config_is_absent_unless_until_says_something() {
+        // Absence is the discriminator, the same habit as rowIds and needs_flow.
+        let none = make_node("n", "testCase", serde_json::json!({"testCaseId": "t"}));
+        assert!(poll_config(&make_node("n", "testCase", serde_json::json!({
+            "testCaseId": "t", "config": {}
+        }))).is_none());
+        assert!(poll_config(&none).is_none());
+
+        let blank = make_node("n", "testCase", serde_json::json!({
+            "testCaseId": "t", "config": { "poll": { "until": "   " } }
+        }));
+        assert!(poll_config(&blank).is_none(), "a blank until is not a poll");
+
+        // Defaults, so an author who states only the condition gets sensible waiting.
+        let defaulted = make_node("n", "testCase", serde_json::json!({
+            "testCaseId": "t", "config": { "poll": { "until": "response.status == 200" } }
+        }));
+        let poll = poll_config(&defaulted).unwrap();
+        assert_eq!(poll.interval_ms, POLL_INTERVAL_MS);
+        assert_eq!(poll.timeout_ms, POLL_TIMEOUT_MS);
+
+        // A zero interval or budget is nonsense, not a request for a tight loop.
+        let zeroed = make_node("n", "testCase", serde_json::json!({
+            "testCaseId": "t", "config": { "poll": { "until": "x", "intervalMs": 0, "timeoutMs": 0 } }
+        }));
+        let poll = poll_config(&zeroed).unwrap();
+        assert_eq!(poll.interval_ms, POLL_INTERVAL_MS);
+        assert_eq!(poll.timeout_ms, POLL_TIMEOUT_MS);
     }
 
     /// Ctrl+C stops a run at its next step — and still cleans up after it.

@@ -19,6 +19,9 @@ mod script_log;
 
 pub use variables::{ExecutionContext, VarSource};
 pub use assertions::AssertionEngine;
+// Named in `HttpExecutor::execute`'s signature and in a test case's stored body, so they
+// belong in this list for the same reason `ResponseLog` does.
+#[allow(unused_imports)]
 pub use body::{BodyType, FormField};
 // `ResponseLog` and `ResolvedMember` are the types of a public field and a public
 // return value, so they belong in this list even though nothing outside names them yet
@@ -31,5 +34,5 @@ pub use suite::{resolve_members, ResolvedMember, SuiteRun};
 pub use pre_test_script::PreTestScriptEngine;
 pub use engine::{
     ExecutionEngine, ExecutionEvent, ExecutionStats, FlowExecutionResult, NodeResult, NodeStatus,
-    StepCommand,
+    StepCommand, POLL_INTERVAL_MS, POLL_TIMEOUT_MS,
 };

@@ -349,6 +349,7 @@ fn failed_to_start(member: &ResolvedMember, error: &AppError) -> FlowExecutionRe
         teardown: None,
         row_index: None,
         row_label: None,
+        attempts: None,
         iterations: None,
     };
     FlowExecutionResult {
@@ -762,6 +763,7 @@ mod tests {
             teardown: None,
             row_index: None,
             row_label: None,
+            attempts: None,
             iterations: None,
         };
 

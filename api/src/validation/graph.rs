@@ -234,6 +234,12 @@ impl<'a> GraphValidator<'a> {
             warnings.extend(fan_out_warnings(node, test_case.as_ref()));
         }
 
+        // 6c. Nodes that may have to ask more than once. No test case needed: polling is
+        // a property of this step in this flow, not of the request.
+        for node in graph.nodes.iter().filter(|n| n.node_type == "testCase") {
+            warnings.extend(poll_warnings(node));
+        }
+
         // 7. Check group node flow references
         let referenced_flow_ids: Vec<String> = graph.nodes.iter()
             .filter(|n| n.node_type == "group")
@@ -415,6 +421,49 @@ fn extract_flow_id(data: &serde_json::Value) -> Option<String> {
 /// Check if edge has a specific type
 fn edge_type_is(edge: &GraphEdge, expected: &str) -> bool {
     edge.edge_type.as_ref().map(|t| t == expected).unwrap_or(false)
+}
+
+/// Problems with a node that polls.
+///
+/// Both of these fail quietly, which is why they are worth saying before a run: one turns
+/// the polling off without removing it from the panel, the other leaves it on but gives it
+/// no room to work.
+fn poll_warnings(node: &GraphNode) -> Vec<ValidationIssue> {
+    let Some(poll) = node.data.get("config").and_then(|c| c.get("poll")) else {
+        return Vec::new();
+    };
+
+    // Absence of `until` is how the engine says "this node does not poll", so a panel with
+    // an interval and no condition sends once and judges the 202 — the answer that says
+    // only "I have your file".
+    let until = poll.get("until").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if until.is_empty() {
+        return vec![ValidationIssue::warning_with_node(
+            "POLL_WITHOUT_UNTIL",
+            "This step is set to poll but has no \"until\" condition, so it will send once \
+             and judge the first answer — say what makes the answer settled, or turn the \
+             polling off",
+            &node.id,
+        )];
+    }
+
+    let ms = |key: &str| poll.get(key).and_then(|v| v.as_u64()).filter(|n| *n > 0);
+    let interval = ms("intervalMs").unwrap_or(crate::execution::POLL_INTERVAL_MS);
+    let budget = ms("timeoutMs").unwrap_or(crate::execution::POLL_TIMEOUT_MS);
+    if budget < interval {
+        return vec![ValidationIssue::warning_with_node(
+            "POLL_BUDGET_BELOW_INTERVAL",
+            format!(
+                "This step waits {}ms between attempts but gives up after {}ms, so it will \
+                 ask once and report that it never settled — raise the budget above the \
+                 interval",
+                interval, budget
+            ),
+            &node.id,
+        )];
+    }
+
+    Vec::new()
 }
 
 /// Problems with a node set to run once per data row — all findable before a run, and
@@ -610,6 +659,53 @@ mod tests {
         assert_eq!(codes(issues.clone()), vec!["FANOUT_DISCARDS_OUTPUT_VARS"]);
         // Names the variable, and ignores the half-filled row.
         assert!(issues[0].message.contains("token"), "{}", issues[0].message);
+    }
+
+    #[test]
+    fn a_node_that_polls_without_a_condition_is_flagged() {
+        // The failure this catches: the author fills in an interval, leaves `until` blank,
+        // and the step sends once and passes on the 202 that says only "I have your file".
+        let blank = fan_out_node(serde_json::json!({"poll": {"intervalMs": 5000}}));
+        assert_eq!(codes(poll_warnings(&blank)), vec!["POLL_WITHOUT_UNTIL"]);
+
+        let whitespace = fan_out_node(serde_json::json!({"poll": {"until": "  "}}));
+        assert_eq!(codes(poll_warnings(&whitespace)), vec!["POLL_WITHOUT_UNTIL"]);
+
+        // A condition is all that is required — the interval and budget have defaults.
+        let stated = fan_out_node(serde_json::json!({
+            "poll": {"until": "response.json.status != \"pending\""}
+        }));
+        assert!(poll_warnings(&stated).is_empty());
+
+        // And a node with no poll block at all is every node that existed before this.
+        assert!(poll_warnings(&fan_out_node(serde_json::json!({}))).is_empty());
+    }
+
+    #[test]
+    fn a_budget_shorter_than_the_interval_is_flagged() {
+        // It would ask once and report that it never settled — polling in name only.
+        let node = fan_out_node(serde_json::json!({
+            "poll": {"until": "x", "intervalMs": 5000, "timeoutMs": 3000}
+        }));
+        let issues = poll_warnings(&node);
+        assert_eq!(codes(issues.clone()), vec!["POLL_BUDGET_BELOW_INTERVAL"]);
+        // Both numbers named, so the fix is obvious without opening the panel.
+        assert!(issues[0].message.contains("5000"), "{}", issues[0].message);
+        assert!(issues[0].message.contains("3000"), "{}", issues[0].message);
+
+        // Equal is not a problem: one wait still fits.
+        let equal = fan_out_node(serde_json::json!({
+            "poll": {"until": "x", "intervalMs": 3000, "timeoutMs": 3000}
+        }));
+        assert!(poll_warnings(&equal).is_empty());
+
+        // A blank interval or budget means the default, measured against the same
+        // constants the engine uses — an interval above the default budget is a real
+        // problem even though the author only typed one number.
+        let defaulted = fan_out_node(serde_json::json!({
+            "poll": {"until": "x", "intervalMs": crate::execution::POLL_TIMEOUT_MS + 1}
+        }));
+        assert_eq!(codes(poll_warnings(&defaulted)), vec!["POLL_BUDGET_BELOW_INTERVAL"]);
     }
 
     /// A step whose every row is parked sends nothing. That is honest at run time — it

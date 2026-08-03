@@ -152,6 +152,7 @@ mod tests {
                 teardown: None,
                 row_index: None,
                 row_label: None,
+                attempts: None,
                 iterations: None,
             }],
             context: Default::default(),

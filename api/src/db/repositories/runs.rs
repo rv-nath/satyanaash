@@ -398,6 +398,7 @@ fn row_to_node_result(row: &sqlx::any::AnyRow) -> Result<NodeResult, AppError> {
         teardown: (teardown != 0).then_some(true),
         row_index: row_index.map(|i| i.max(0) as usize),
         row_label: row.try_get("row_label")?,
+        attempts: None,
         iterations: None,
     })
 }
@@ -466,6 +467,7 @@ mod tests {
             teardown: None,
             row_index: None,
             row_label: None,
+            attempts: None,
             iterations: None,
         }
     }
