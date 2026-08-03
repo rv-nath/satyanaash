@@ -3,6 +3,7 @@ import {
   Bar,
   BarChart,
   Cell,
+  Label,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -10,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { SuiteRun } from "@/lib/api/types";
 import { Button } from "@/components/ui/button";
 import { formatDuration } from "@/lib/runHistory";
@@ -98,7 +99,11 @@ const RunChart = ({ run, view, onViewChange, selected, onSelect }: Props) => {
           </Button>
         ))}
         <div className="flex-1" />
-        <span className="text-[10px] text-muted-foreground">{CHART_VIEWS.find((v) => v.id === view)?.answers}</span>
+        {/* Hidden rather than clipped on a narrow pane — "where" on its own said nothing.
+            Each button also carries this as its title. */}
+        <span className="hidden shrink-0 whitespace-nowrap text-[10px] text-muted-foreground lg:inline">
+          {CHART_VIEWS.find((v) => v.id === view)?.answers}
+        </span>
       </div>
 
       <div className="min-h-0 flex-1">
@@ -154,25 +159,41 @@ const Summary = ({
         </span>
       </div>
 
-      <div className="mt-1 flex items-center gap-1 text-[10px]">
-        {level.crumbs.map((crumb, i) => (
-          <span key={i} className="flex items-center gap-1">
-            {i > 0 && <ChevronRight className="h-2.5 w-2.5 text-muted-foreground/50" />}
-            <button
-              type="button"
-              onClick={() => onCrumb(crumb.focus)}
-              className={
-                i === level.crumbs.length - 1
-                  ? "text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:underline"
-              }
-            >
-              {crumb.label}
-            </button>
-          </span>
-        ))}
-        <span className="ml-2 text-muted-foreground">
-          {level.slices.length} {level.unit}
+      <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+        {/* An explicit way out. The breadcrumb alone did not read as navigable — it looked
+            like a caption, so drilling in felt like a one-way door. */}
+        {level.crumbs.length > 1 && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-5 gap-1 px-1.5 text-[10px]"
+            onClick={() => onCrumb(level.crumbs[level.crumbs.length - 2].focus)}
+          >
+            <ChevronLeft className="h-3 w-3" /> Back
+          </Button>
+        )}
+        {level.crumbs.map((crumb, i) => {
+          const here = i === level.crumbs.length - 1;
+          return (
+            <span key={i} className="flex items-center gap-1.5">
+              {i > 0 && <ChevronRight className="h-2.5 w-2.5 shrink-0 text-muted-foreground/50" />}
+              <button
+                type="button"
+                disabled={here}
+                onClick={() => onCrumb(crumb.focus)}
+                className={
+                  here
+                    ? "font-medium text-foreground"
+                    : "text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                }
+              >
+                {crumb.label}
+              </button>
+            </span>
+          );
+        })}
+        <span className="ml-1 text-muted-foreground">
+          · {level.slices.length} {level.unit}
           {level.unit !== "verdicts" && ran(level.counts) > 0 &&
             ` · ${level.counts.passed}/${ran(level.counts)} passed`}
         </span>
@@ -214,22 +235,25 @@ const sliceTooltip = (slice: Slice | undefined) => {
 const LevelBars = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void }) => {
   if (level.slices.length === 0) return <Empty>Nothing to show at this level.</Empty>;
 
-  const height = Math.max(level.slices.length * 26 + 16, 96);
+  const height = Math.max(level.slices.length * 28 + 16, 96);
+  // Room at the right for the label that sits past the bar end. Without it the longest
+  // bar runs to the edge and its number is clipped.
+  const gutter = level.slices.some((s) => s.note) ? 140 : 56;
 
   return (
-    <div className="h-full overflow-y-auto px-2 py-1">
+    <div className="h-full overflow-y-auto px-2 py-1 focus:outline-none">
       <ResponsiveContainer width="100%" height={height}>
         <BarChart
           data={level.slices}
           layout="vertical"
           barSize={14}
-          margin={{ left: 4, right: 56, top: 4, bottom: 4 }}
+          margin={{ left: 4, right: gutter, top: 4, bottom: 4 }}
         >
           <XAxis type="number" hide />
           <YAxis
             type="category"
             dataKey="label"
-            width={140}
+            width={150}
             tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
             axisLine={false}
             tickLine={false}
@@ -238,7 +262,22 @@ const LevelBars = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void
             cursor={{ fill: "hsl(var(--muted) / 0.3)" }}
             content={({ payload }) => sliceTooltip(payload?.[0]?.payload as Slice | undefined)}
           />
-          <Bar dataKey="value" isAnimationActive={false} radius={[0, 4, 4, 0]}>
+          <Bar
+            dataKey="value"
+            isAnimationActive={false}
+            radius={[0, 4, 4, 0]}
+            // On the bar, not in a footnote underneath. A number listed somewhere else is
+            // a number the reader has to pair up by eye, which is the same as hiding it.
+            label={{
+              position: "right",
+              fontSize: 11,
+              fill: "hsl(var(--foreground))",
+              formatter: (value: number) => {
+                const slice = level.slices.find((s) => s.value === value);
+                return slice?.note ? `${value}  ${slice.note}` : String(value);
+              },
+            }}
+          >
             {level.slices.map((slice, i) => (
               <Cell
                 key={i}
@@ -251,18 +290,11 @@ const LevelBars = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void
         </BarChart>
       </ResponsiveContainer>
 
-      {/* Direct labels, because four classes is where colour alone stops being enough —
-          and because a value you have to hover for is a value the reader will not read. */}
-      <ul className="px-2 pb-1 text-[10px] text-muted-foreground">
-        {level.slices.map((slice, i) => (
-          <li key={i} className="flex gap-2">
-            <span aria-hidden>{VERDICT_ICON[slice.verdict]}</span>
-            <span className="truncate">{slice.label}</span>
-            <span className="tabular-nums">{slice.value}</span>
-            {slice.note && <span className="truncate opacity-70">{slice.note}</span>}
-          </li>
-        ))}
-      </ul>
+      {level.slices.some((s) => s.next) && (
+        <p className="px-2 pb-1 text-[10px] text-muted-foreground/70">
+          Click a bar to open it.
+        </p>
+      )}
     </div>
   );
 };
@@ -272,19 +304,25 @@ const LevelBars = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void
 const LevelDonut = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void }) => {
   if (level.slices.length === 0) return <Empty>Nothing to break down at this level.</Empty>;
 
+  const whole = Math.max(total(level.counts), 1);
+
   return (
-    <div className="flex h-full items-center gap-3 p-2">
-      <div className="h-full min-h-0 flex-1">
+    <div className="flex h-full items-center justify-center gap-6 p-2">
+      {/* `focus:outline-none` on the wrapper: Recharts makes its surface focusable, and a
+          browser drew a black rectangle round the whole donut on click. The keyboard ring
+          is kept — it is the mouse-click outline that is noise. */}
+      <div className="h-full min-h-0 w-[45%] max-w-[280px] [&_.recharts-surface]:outline-none [&_.recharts-wrapper]:outline-none">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
               data={level.slices}
               dataKey="value"
               nameKey="label"
-              innerRadius="52%"
-              outerRadius="82%"
+              innerRadius="56%"
+              outerRadius="84%"
               paddingAngle={2}
               isAnimationActive={false}
+              rootTabIndex={-1}
             >
               {level.slices.map((slice, i) => (
                 <Cell
@@ -296,6 +334,32 @@ const LevelDonut = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => voi
                   onClick={() => onOpen(slice)}
                 />
               ))}
+              {/* The hole is the obvious place for the total, and it was empty. */}
+              <Label
+                position="center"
+                content={() => (
+                  <>
+                    <text
+                      x="50%"
+                      y="47%"
+                      textAnchor="middle"
+                      className="fill-foreground"
+                      style={{ fontSize: 18, fontWeight: 500 }}
+                    >
+                      {whole}
+                    </text>
+                    <text
+                      x="50%"
+                      y="59%"
+                      textAnchor="middle"
+                      className="fill-muted-foreground"
+                      style={{ fontSize: 9 }}
+                    >
+                      {level.unit}
+                    </text>
+                  </>
+                )}
+              />
             </Pie>
             <Tooltip
               content={({ payload }) => sliceTooltip(payload?.[0]?.payload as Slice | undefined)}
@@ -304,28 +368,31 @@ const LevelDonut = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => voi
         </ResponsiveContainer>
       </div>
 
-      {/* A donut without its numbers beside it is a shape. Every slice is named, counted
-          and given its share, so nothing has to be hovered for. */}
-      <ul className="max-h-full w-[46%] overflow-y-auto pr-1 text-[11px]">
+      {/* A donut without its numbers beside it is a shape. Kept narrow and left-aligned:
+          stretched across the pane, the name sat on one side and its count on the other,
+          which is a table you have to read across a gap. */}
+      <ul className="max-h-full min-w-0 max-w-[300px] flex-1 overflow-y-auto text-[11px]">
         {level.slices.map((slice, i) => {
-          const share = Math.round((slice.value / Math.max(total(level.counts), 1)) * 100);
+          const share = Math.round((slice.value / whole) * 100);
           return (
             <li key={i}>
               <button
                 type="button"
                 onClick={() => onOpen(slice)}
-                className="flex w-full items-baseline gap-1.5 rounded px-1 py-0.5 text-left hover:bg-muted/30"
+                className="flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/30"
               >
                 <span
                   className="inline-block h-2 w-2 shrink-0 translate-y-[1px] rounded-sm"
                   style={{ background: CHART_FILL[slice.verdict] }}
                   aria-hidden
                 />
-                <span className="min-w-0 flex-1 truncate">{slice.label}</span>
-                <span className="shrink-0 tabular-nums">{slice.value}</span>
+                <span className="w-7 shrink-0 text-right font-medium tabular-nums">
+                  {slice.value}
+                </span>
                 <span className="w-8 shrink-0 text-right tabular-nums text-muted-foreground">
                   {share}%
                 </span>
+                <span className="min-w-0 truncate">{slice.label}</span>
               </button>
             </li>
           );
