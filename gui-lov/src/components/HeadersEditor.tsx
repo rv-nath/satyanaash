@@ -36,6 +36,35 @@ const COMMON_HEADERS = [
   { name: "X-Custom-Header", description: "Custom application header", example: "custom-value" },
 ];
 
+/**
+ * Picking a suggestion: set the name, and its example value if the row has none.
+ *
+ * **One update, both fields.** This used to call an `updateHeader` helper twice, and each
+ * call mapped over the `headers` array the render had closed over — so the second built its
+ * list from the *original* headers and threw the first away. Every entry in
+ * `COMMON_HEADERS` carries an example, so the value branch always fired and the name was
+ * always the one discarded: you picked `Authorization`, got `Bearer {{token}}`, and no key.
+ *
+ * Extracted and exported so the fix is pinned by a test rather than by a comment.
+ *
+ * Returns the same array when there is nothing to change, so the caller can skip the update.
+ */
+export function applyHeaderSuggestion(
+  headers: HeaderRow[],
+  index: number,
+  headerName: string,
+): HeaderRow[] {
+  const header = headers[index];
+  if (!header) return headers;
+
+  const suggestion = COMMON_HEADERS.find((h) => h.name === headerName);
+  const changes: Partial<HeaderRow> = { key: headerName };
+  // Only when the row is empty — an author who typed a value keeps it.
+  if (suggestion && !header.value) changes.value = suggestion.example;
+
+  return headers.map((h) => (h.id === header.id ? { ...h, ...changes } : h));
+}
+
 export interface HeaderRow {
   id: string;
   key: string;
@@ -69,12 +98,8 @@ export const HeadersEditor = ({ headers, onChange, availableVars = [], className
   }, [headers, onChange]);
 
   const handleSelectHeader = (index: number, headerName: string) => {
-    const header = headers[index];
-    const suggestion = COMMON_HEADERS.find(h => h.name === headerName);
-    updateHeader(header.id, 'key', headerName);
-    if (suggestion && !header.value) {
-      updateHeader(header.id, 'value', suggestion.example);
-    }
+    const next = applyHeaderSuggestion(headers, index, headerName);
+    if (next !== headers) onChange(next);
     setOpenPopoverIndex(null);
     setSearchValue("");
   };
