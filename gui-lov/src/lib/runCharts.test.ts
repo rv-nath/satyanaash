@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   arcPath,
-  breakdownAt,
   CHART_FILL,
+  focusPath,
+  levelAt,
   memberSeries,
+  RUN,
   ran,
   rowCounts,
   runCounts,
@@ -161,10 +163,12 @@ describe("a member that ran nothing", () => {
     expect(total(flow1)).toBe(0);
   });
 
-  it("still gets a slice in the breakdown", () => {
-    const slice = breakdownAt(realish, null).slices.find((s) => s.label === "Flow 1")!;
+  it("still gets a slice once you drill to its verdict", () => {
+    const slice = levelAt(realish, { kind: "verdict", verdict: "skipped" }).slices.find(
+      (s) => s.label === "Flow 1",
+    )!;
     expect(slice.value).toBeGreaterThan(0);
-    expect(slice.drillable).toBe(false);
+    expect(slice.note).toBe("nothing ran");
   });
 
   it("still gets an arc in the sunburst", () => {
@@ -173,25 +177,46 @@ describe("a member that ran nothing", () => {
   });
 });
 
-describe("breakdownAt", () => {
-  it("starts at members and says so", () => {
-    const level = breakdownAt(realish, null);
-    expect(level.unit).toBe("members");
-    expect(level.slices.map((s) => s.label)).toEqual([
-      "Pause campaign Tests", "Flow 1", "JT1 - SMS", "Balance Enquiry",
-    ]);
+describe("levelAt — one navigation model for every view", () => {
+  it("leads with the verdict, not a wall of members", () => {
+    // Seventeen bars make you read every label to find the point. "2 passed, 2 failed"
+    // is the point, and the members are the answer to a follow-up question.
+    const level = levelAt(realish, RUN);
+    expect(level.unit).toBe("verdicts");
+    expect(level.slices.map((s) => s.label)).toEqual(["passed", "failed"]);
+    expect(level.slices.map((s) => s.value)).toEqual([2, 2]);
   });
 
-  it("drills a member to its nodes", () => {
-    const level = breakdownAt(realish, { member: 0 });
-    expect(level.unit).toBe("nodes");
+  it("leaves out a verdict that did not happen", () => {
+    // A zero-width "0 errored" segment is noise; the totals row already says zero.
+    expect(levelAt(realish, RUN).slices.map((s) => s.label)).not.toContain("errored");
+  });
+
+  it("drills a verdict to the members that caused it", () => {
+    const level = levelAt(realish, { kind: "verdict", verdict: "failed" });
+    expect(level.unit).toBe("members");
+    expect(level.slices.map((s) => s.label)).toEqual(["JT1 - SMS", "Balance Enquiry"]);
+    // …and says how much of each member it was.
+    expect(level.slices[0].note).toBe("1 of 1");
+  });
+
+  it("keeps a member that ran nothing visible under its own verdict", () => {
+    // `Flow 1` contributes no verdict of its own. Dropping it is how the current view
+    // loses it entirely.
+    const level = levelAt(realish, { kind: "verdict", verdict: "skipped" });
+    const flow1 = level.slices.find((s) => s.label === "Flow 1");
+    expect(flow1?.note).toBe("nothing ran");
+  });
+
+  it("drills a member to its steps", () => {
+    const level = levelAt(realish, { kind: "member", member: 0 });
+    expect(level.unit).toBe("steps");
     expect(level.slices.map((s) => s.label)).toEqual(["Login", "Reset Password"]);
   });
 
-  it("drills a fan-out to its rows, and the unit changes with it", () => {
-    // The whole point of reporting the unit: at this level the two skips finally appear,
-    // where the headline said zero.
-    const level = breakdownAt(realish, { member: 2, node: 0 });
+  it("drills a fan-out step to its rows, and the unit changes with it", () => {
+    // At this level the two skips finally appear, where the headline said zero.
+    const level = levelAt(realish, { kind: "node", member: 2, node: 0 });
     expect(level.unit).toBe("rows");
     expect(level.slices.map((s) => s.label)).toEqual([
       "valid", "no sender", "needs a flow", "parked",
@@ -199,24 +224,38 @@ describe("breakdownAt", () => {
     expect(level.counts.skipped).toBe(2);
   });
 
-  it("marks a leaf as not drillable", () => {
-    const rows = breakdownAt(realish, { member: 2, node: 0 }).slices;
-    expect(rows.every((s) => s.drillable === false)).toBe(true);
-    // …and a node carrying rows as drillable.
-    const nodes = breakdownAt(realish, { member: 2 }).slices;
-    expect(nodes[0].drillable).toBe(true);
+  it("offers no way further in from a leaf", () => {
+    const rows = levelAt(realish, { kind: "node", member: 2, node: 0 }).slices;
+    expect(rows.every((s) => s.next === undefined)).toBe(true);
+    // …and a step carrying rows does offer one.
+    const steps = levelAt(realish, { kind: "member", member: 2 }).slices;
+    expect(steps[0].next).toEqual({ kind: "node", member: 2, node: 0 });
   });
 
-  it("takes a member's verdict from its nodes, worst first", () => {
-    const slices = breakdownAt(realish, null).slices;
-    // "completed" is not "passed" — the member's verdict is what its nodes did.
-    expect(slices.find((s) => s.label === "Pause campaign Tests")!.verdict).toBe("passed");
-    expect(slices.find((s) => s.label === "JT1 - SMS")!.verdict).toBe("failed");
+  it("summarises a fan-out step without opening it", () => {
+    const step = levelAt(realish, { kind: "member", member: 2 }).slices[0];
+    expect(step.note).toBe("1/2 rows · 2 skipped");
   });
 
-  it("survives a path that no longer resolves", () => {
-    // A live run grows between renders; a stale path must not throw.
-    expect(breakdownAt(realish, { member: 99 }).slices).toEqual([]);
+  it("builds a breadcrumb you can climb back out of", () => {
+    const level = levelAt(realish, { kind: "node", member: 2, node: 0 });
+    expect(level.crumbs.map((c) => c.label)).toEqual(["Run", "JT1 - SMS", "Send SMS"]);
+    expect(level.crumbs[0].focus).toEqual(RUN);
+  });
+
+  it("carries a tree path everywhere one exists, and nowhere it does not", () => {
+    // A verdict is not a place in the run, so it selects nothing.
+    expect(levelAt(realish, RUN).slices.every((s) => s.path === undefined)).toBe(true);
+    expect(levelAt(realish, { kind: "member", member: 0 }).slices[0].path).toEqual({
+      member: 0, node: 0,
+    });
+    expect(focusPath({ kind: "node", member: 1, node: 2 })).toEqual({ member: 1, node: 2 });
+    expect(focusPath(RUN)).toBeNull();
+  });
+
+  it("survives a focus that no longer resolves", () => {
+    // A live run grows between renders; a stale focus must not throw.
+    expect(levelAt(realish, { kind: "member", member: 99 }).slices).toEqual([]);
   });
 });
 

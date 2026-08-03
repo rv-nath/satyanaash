@@ -10,40 +10,48 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ChevronLeft } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import type { SuiteRun } from "@/lib/api/types";
 import { Button } from "@/components/ui/button";
 import { formatDuration } from "@/lib/runHistory";
 import { samePath, type TreePath } from "@/lib/runTree";
 import {
   arcPath,
-  breakdownAt,
   CHART_FILL,
   CHART_VIEWS,
+  focusPath,
+  levelAt,
   LABEL_MIN_DEGREES,
-  memberSeries,
   ran,
+  rowCounts,
+  RUN,
   runCounts,
   slowestSteps,
   sunburstArcs,
   total,
   VERDICT_ICON,
   VERDICTS,
+  type Focus,
+  type Level,
   type RunChartView,
-  type Verdict,
+  type Slice,
 } from "@/lib/runCharts";
 
 /**
- * A run as a picture, with the tree beside it.
+ * A run as a picture: totals first, then drill in.
  *
- * Four presentations named by the question they answer, not by their geometry. Clicking
- * any mark reports a `TreePath` — the same selection the tree uses — so the two are one
- * state and the chart is a drill-down rather than a decoration.
+ * The first version gave each view its own idea of position — seventeen bars in one, an
+ * unrelated donut in another, no totals anywhere — which made four views read as four
+ * puzzle pieces. Now there is **one** navigation (`Focus`), **one** summary, and the
+ * switcher changes only the geometry. Switching view never moves you.
  *
- * Fills come from `CHART_FILL`, which is re-stepped from the app's status hues and
- * validated: the theme's own green and red are ΔE 5.2 apart under deuteranopia, i.e.
- * indistinguishable. The tree survives that because ✓ and ✗ carry the meaning; a stacked
- * bar has no such help, which is why every legend entry and tooltip here carries its icon.
+ * It also leads with the verdict rather than the member list. "38 failed → which members?"
+ * is the question; a wall of seventeen labelled bars makes you answer it by reading.
+ *
+ * Fills come from `CHART_FILL`, re-stepped from the app's status hues and validated: the
+ * theme's own green and red are ΔE 5.2 apart under deuteranopia, i.e. indistinguishable.
+ * The tree survives that because ✓ and ✗ carry the meaning; a bar has no such help, which
+ * is why every legend entry, label and tooltip here carries its icon.
  */
 interface Props {
   run: SuiteRun;
@@ -54,9 +62,27 @@ interface Props {
 }
 
 const RunChart = ({ run, view, onViewChange, selected, onSelect }: Props) => {
+  // Where the reader is looking. Owned here, so every view shares it.
+  const [focus, setFocus] = useState<Focus>(RUN);
+  const level = useMemo(() => levelAt(run, focus), [run, focus]);
+
+  // Opening a slice also selects it, so the tree follows what you are exploring.
+  const open = (slice: Slice) => {
+    if (slice.path) onSelect(slice.path);
+    if (slice.next) setFocus(slice.next);
+  };
+
+  const goTo = (next: Focus) => {
+    setFocus(next);
+    const path = focusPath(next);
+    if (path) onSelect(path);
+  };
+
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-1 border-b border-border px-3 py-1.5">
+      <Summary run={run} level={level} onCrumb={goTo} />
+
+      <div className="flex items-center gap-1 border-b border-border px-3 py-1">
         {CHART_VIEWS.map((v) => (
           <Button
             key={v.id}
@@ -72,12 +98,12 @@ const RunChart = ({ run, view, onViewChange, selected, onSelect }: Props) => {
           </Button>
         ))}
         <div className="flex-1" />
-        <Legend />
+        <span className="text-[10px] text-muted-foreground">{CHART_VIEWS.find((v) => v.id === view)?.answers}</span>
       </div>
 
       <div className="min-h-0 flex-1">
-        {view === "profile" && <Profile run={run} selected={selected} onSelect={onSelect} />}
-        {view === "breakdown" && <Breakdown run={run} onSelect={onSelect} />}
+        {view === "profile" && <LevelBars level={level} onOpen={open} />}
+        {view === "breakdown" && <LevelDonut level={level} onOpen={open} />}
         {view === "slowest" && <Slowest run={run} selected={selected} onSelect={onSelect} />}
         {view === "hierarchy" && <Hierarchy run={run} selected={selected} onSelect={onSelect} />}
       </div>
@@ -85,165 +111,178 @@ const RunChart = ({ run, view, onViewChange, selected, onSelect }: Props) => {
   );
 };
 
-/** Always present, and every entry carries its mark — status is never colour alone. */
-const Legend = () => (
-  <div className="flex items-center gap-2.5 text-[10px] text-muted-foreground">
-    {VERDICTS.map((v) => (
-      <span key={v} className="flex items-center gap-1">
-        <span
-          className="inline-block h-2 w-2 rounded-sm"
-          style={{ background: CHART_FILL[v] }}
-          aria-hidden
-        />
-        <span aria-hidden>{VERDICT_ICON[v]}</span>
-        {v}
-      </span>
-    ))}
-  </div>
-);
+/**
+ * The line every view sits under: what this run did, where you are, and the key.
+ *
+ * Present in all four views precisely because it was missing from all four — a chart whose
+ * numbers you have to hover for is a chart you read once and stop trusting.
+ */
+const Summary = ({
+  run,
+  level,
+  onCrumb,
+}: {
+  run: SuiteRun;
+  level: Level;
+  onCrumb: (focus: Focus) => void;
+}) => {
+  const nodes = runCounts(run);
+  const rows = rowCounts(run);
+
+  return (
+    <div className="border-b border-border px-3 py-1.5">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        {VERDICTS.map((v) => (
+          <span key={v} className="flex items-baseline gap-1.5">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 translate-y-[1px] rounded-sm"
+              style={{ background: CHART_FILL[v] }}
+              aria-hidden
+            />
+            <span className="text-sm font-medium tabular-nums">{nodes[v]}</span>
+            <span className="text-[10px] text-muted-foreground">
+              {VERDICT_ICON[v]} {v}
+            </span>
+          </span>
+        ))}
+        <span className="text-[10px] text-muted-foreground">
+          of {total(nodes)} steps
+          {/* The unit, always. This is where the headline's "0 skipped" turns out to have
+              meant "0 steps skipped". */}
+          {total(rows) > 0 &&
+            ` · ${total(rows)} data rows underneath${rows.skipped > 0 ? `, ${rows.skipped} skipped` : ""}`}
+        </span>
+      </div>
+
+      <div className="mt-1 flex items-center gap-1 text-[10px]">
+        {level.crumbs.map((crumb, i) => (
+          <span key={i} className="flex items-center gap-1">
+            {i > 0 && <ChevronRight className="h-2.5 w-2.5 text-muted-foreground/50" />}
+            <button
+              type="button"
+              onClick={() => onCrumb(crumb.focus)}
+              className={
+                i === level.crumbs.length - 1
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:underline"
+              }
+            >
+              {crumb.label}
+            </button>
+          </span>
+        ))}
+        <span className="ml-2 text-muted-foreground">
+          {level.slices.length} {level.unit}
+          {level.unit !== "verdicts" && ran(level.counts) > 0 &&
+            ` · ${level.counts.passed}/${ran(level.counts)} passed`}
+        </span>
+      </div>
+    </div>
+  );
+};
 
 const Empty = ({ children }: { children: React.ReactNode }) => (
   <p className="p-4 text-xs text-muted-foreground">{children}</p>
 );
 
-/** Shared tooltip shell — Recharts' default is unstyled and unthemed. */
 const Box = ({ children }: { children: React.ReactNode }) => (
   <div className="rounded border border-border bg-card px-2 py-1 text-xs shadow-md">{children}</div>
 );
 
+const sliceTooltip = (slice: Slice | undefined) => {
+  if (!slice) return null;
+  return (
+    <Box>
+      <div className="font-medium">{slice.label}</div>
+      <div className="text-muted-foreground">
+        {VERDICT_ICON[slice.verdict]} {slice.verdict}
+        {slice.note && ` · ${slice.note}`}
+      </div>
+      {slice.next && <div className="text-primary">click to open</div>}
+    </Box>
+  );
+};
+
 // ---------------------------------------------------------------- Profile
 
-const Profile = ({
-  run,
-  selected,
-  onSelect,
-}: {
-  run: SuiteRun;
-  selected: TreePath | null;
-  onSelect: (p: TreePath) => void;
-}) => {
-  const bars = useMemo(() => memberSeries(run), [run]);
-  if (bars.length === 0) return <Empty>Nothing has run yet.</Empty>;
+/**
+ * The current level as bars — one per slice, longest first at the run level.
+ *
+ * At the run level that is four bars, not seventeen: `passed 2 · failed 2`. The members
+ * are one click in, which is where they mean something.
+ */
+const LevelBars = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void }) => {
+  if (level.slices.length === 0) return <Empty>Nothing to show at this level.</Empty>;
 
-  const counts = runCounts(run);
-  // Height per bar rather than a fixed chart height: seventeen members squeezed into
-  // 200px is a smear.
-  const height = Math.max(bars.length * 22 + 28, 120);
+  const height = Math.max(level.slices.length * 26 + 16, 96);
 
   return (
     <div className="h-full overflow-y-auto px-2 py-1">
-      <p className="px-2 pb-1 text-[10px] text-muted-foreground">
-        {total(counts)} nodes · one bar per member, in run order
-      </p>
       <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={bars} layout="vertical" barSize={12} margin={{ left: 4, right: 24 }}>
+        <BarChart
+          data={level.slices}
+          layout="vertical"
+          barSize={14}
+          margin={{ left: 4, right: 56, top: 4, bottom: 4 }}
+        >
           <XAxis type="number" hide />
           <YAxis
             type="category"
-            dataKey="name"
-            width={150}
-            tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+            dataKey="label"
+            width={140}
+            tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
             axisLine={false}
             tickLine={false}
           />
           <Tooltip
             cursor={{ fill: "hsl(var(--muted) / 0.3)" }}
-            content={({ payload }) => {
-              const bar = payload?.[0]?.payload as (typeof bars)[number] | undefined;
-              if (!bar) return null;
-              return (
-                <Box>
-                  <div className="font-medium">{bar.name}</div>
-                  {bar.empty ? (
-                    <div className="text-warning">nothing ran</div>
-                  ) : (
-                    <div className="text-muted-foreground">
-                      {bar.passed}/{ran(bar)} passed
-                      {bar.rows > 0 && ` · ${bar.rows} rows underneath`}
-                    </div>
-                  )}
-                  <div className="text-muted-foreground">{formatDuration(bar.durationMs)}</div>
-                </Box>
-              );
-            }}
+            content={({ payload }) => sliceTooltip(payload?.[0]?.payload as Slice | undefined)}
           />
-          {VERDICTS.map((v) => (
-            <Bar key={v} dataKey={v} stackId="a" fill={CHART_FILL[v]} isAnimationActive={false}>
-              {bars.map((bar, i) => (
-                // A 2px surface gap between segments, and an outline on the selected bar.
-                <Cell
-                  key={i}
-                  cursor="pointer"
-                  stroke={samePath(selected, bar.path) ? "hsl(var(--foreground))" : "hsl(var(--card))"}
-                  strokeWidth={samePath(selected, bar.path) ? 1.5 : 2}
-                  onClick={() => onSelect(bar.path)}
-                />
-              ))}
-            </Bar>
-          ))}
+          <Bar dataKey="value" isAnimationActive={false} radius={[0, 4, 4, 0]}>
+            {level.slices.map((slice, i) => (
+              <Cell
+                key={i}
+                fill={CHART_FILL[slice.verdict]}
+                cursor={slice.next ? "pointer" : "default"}
+                onClick={() => onOpen(slice)}
+              />
+            ))}
+          </Bar>
         </BarChart>
       </ResponsiveContainer>
 
-      {/* Said in the open rather than left as an absent bar — a member that ran nothing is
-          how a suite reports coverage it does not have. */}
-      {bars.some((b) => b.empty) && (
-        <p className="px-2 pt-1 text-[10px] text-warning">
-          {bars.filter((b) => b.empty).map((b) => b.name).join(", ")} — nothing ran
-        </p>
-      )}
+      {/* Direct labels, because four classes is where colour alone stops being enough —
+          and because a value you have to hover for is a value the reader will not read. */}
+      <ul className="px-2 pb-1 text-[10px] text-muted-foreground">
+        {level.slices.map((slice, i) => (
+          <li key={i} className="flex gap-2">
+            <span aria-hidden>{VERDICT_ICON[slice.verdict]}</span>
+            <span className="truncate">{slice.label}</span>
+            <span className="tabular-nums">{slice.value}</span>
+            {slice.note && <span className="truncate opacity-70">{slice.note}</span>}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 };
 
 // ---------------------------------------------------------------- Breakdown
 
-const Breakdown = ({ run, onSelect }: { run: SuiteRun; onSelect: (p: TreePath) => void }) => {
-  // Its own drill state: where you are *looking* is not the same as what you have
-  // selected, and collapsing them would move the detail pane every time you opened a ring.
-  const [at, setAt] = useState<TreePath | null>(null);
-  const level = useMemo(() => breakdownAt(run, at), [run, at]);
-
-  if (level.slices.length === 0) return <Empty>Nothing to break down yet.</Empty>;
-
-  const crumbs = ["Run"];
-  if (at) {
-    crumbs.push(run.members?.[at.member]?.name ?? "member");
-    if (at.node !== undefined) {
-      crumbs.push(run.members?.[at.member]?.results?.[at.node]?.test_case_name ?? "step");
-    }
-  }
+const LevelDonut = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void }) => {
+  if (level.slices.length === 0) return <Empty>Nothing to break down at this level.</Empty>;
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center gap-1 px-3 pt-1 text-[10px] text-muted-foreground">
-        {at && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-4 w-4"
-            onClick={() => setAt(at.node === undefined ? null : { member: at.member })}
-            aria-label="Back"
-          >
-            <ChevronLeft className="h-3 w-3" />
-          </Button>
-        )}
-        <span>{crumbs.join(" / ")}</span>
-        {/* The unit, always. This is the level at which the headline's "0 skipped" turns
-            out to have meant "0 nodes skipped". */}
-        <span className="ml-auto">
-          {level.slices.length} {level.unit}
-          {level.counts.skipped > 0 && ` · ${level.counts.skipped} skipped`}
-        </span>
-      </div>
-      <div className="min-h-0 flex-1">
+    <div className="flex h-full items-center gap-3 p-2">
+      <div className="h-full min-h-0 flex-1">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
               data={level.slices}
               dataKey="value"
               nameKey="label"
-              innerRadius="45%"
-              outerRadius="78%"
+              innerRadius="52%"
+              outerRadius="82%"
               paddingAngle={2}
               isAnimationActive={false}
             >
@@ -253,32 +292,45 @@ const Breakdown = ({ run, onSelect }: { run: SuiteRun; onSelect: (p: TreePath) =
                   fill={CHART_FILL[slice.verdict]}
                   stroke="hsl(var(--card))"
                   strokeWidth={2}
-                  cursor="pointer"
-                  onClick={() => {
-                    onSelect(slice.path);
-                    if (slice.drillable) setAt(slice.path);
-                  }}
+                  cursor={slice.next ? "pointer" : "default"}
+                  onClick={() => onOpen(slice)}
                 />
               ))}
             </Pie>
             <Tooltip
-              content={({ payload }) => {
-                const slice = payload?.[0]?.payload as (typeof level.slices)[number] | undefined;
-                if (!slice) return null;
-                return (
-                  <Box>
-                    <div className="font-medium">{slice.label}</div>
-                    <div className="text-muted-foreground">
-                      {VERDICT_ICON[slice.verdict]} {slice.verdict}
-                      {slice.drillable && " · click to open"}
-                    </div>
-                  </Box>
-                );
-              }}
+              content={({ payload }) => sliceTooltip(payload?.[0]?.payload as Slice | undefined)}
             />
           </PieChart>
         </ResponsiveContainer>
       </div>
+
+      {/* A donut without its numbers beside it is a shape. Every slice is named, counted
+          and given its share, so nothing has to be hovered for. */}
+      <ul className="max-h-full w-[46%] overflow-y-auto pr-1 text-[11px]">
+        {level.slices.map((slice, i) => {
+          const share = Math.round((slice.value / Math.max(total(level.counts), 1)) * 100);
+          return (
+            <li key={i}>
+              <button
+                type="button"
+                onClick={() => onOpen(slice)}
+                className="flex w-full items-baseline gap-1.5 rounded px-1 py-0.5 text-left hover:bg-muted/30"
+              >
+                <span
+                  className="inline-block h-2 w-2 shrink-0 translate-y-[1px] rounded-sm"
+                  style={{ background: CHART_FILL[slice.verdict] }}
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate">{slice.label}</span>
+                <span className="shrink-0 tabular-nums">{slice.value}</span>
+                <span className="w-8 shrink-0 text-right tabular-nums text-muted-foreground">
+                  {share}%
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 };
@@ -297,20 +349,22 @@ const Slowest = ({
   const steps = useMemo(() => slowestSteps(run, 12), [run]);
   if (steps.length === 0) return <Empty>No step has taken measurable time yet.</Empty>;
 
-  const height = Math.max(steps.length * 22 + 28, 120);
+  const height = Math.max(steps.length * 22 + 16, 120);
+  const slowest = steps[0].ms;
 
   return (
     <div className="h-full overflow-y-auto px-2 py-1">
       <p className="px-2 pb-1 text-[10px] text-muted-foreground">
-        slowest {steps.length} steps · {formatDuration(run.duration_ms)} for the whole run
+        slowest {steps.length} of {run.members?.length ?? 0} members ·{" "}
+        {formatDuration(run.duration_ms)} for the whole run
       </p>
       <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={steps} layout="vertical" barSize={12} margin={{ left: 4, right: 48 }}>
-          <XAxis type="number" hide />
+        <BarChart data={steps} layout="vertical" barSize={12} margin={{ left: 4, right: 64 }}>
+          <XAxis type="number" hide domain={[0, slowest]} />
           <YAxis
             type="category"
             dataKey="label"
-            width={160}
+            width={150}
             tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
             axisLine={false}
             tickLine={false}
@@ -323,8 +377,8 @@ const Slowest = ({
               return (
                 <Box>
                   <div className="font-medium">{step.label}</div>
-                  {/* Which member it came from. Four `Reset Password` bars are
-                      meaningless without it. */}
+                  {/* Which member it came from. Four `Reset Password` bars are meaningless
+                      without it. */}
                   <div className="text-muted-foreground">in {step.member}</div>
                   <div className="text-muted-foreground">
                     {formatDuration(step.ms)} · {VERDICT_ICON[step.verdict]} {step.verdict}
@@ -347,17 +401,26 @@ const Slowest = ({
           </Bar>
         </BarChart>
       </ResponsiveContainer>
+      <ul className="px-2 pb-1 text-[10px] text-muted-foreground">
+        {steps.slice(0, 6).map((step, i) => (
+          <li key={i} className="flex gap-2">
+            <span className="w-12 shrink-0 text-right tabular-nums">{formatDuration(step.ms)}</span>
+            <span className="truncate">{step.label}</span>
+            <span className="truncate opacity-70">in {step.member}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 };
 
 // ---------------------------------------------------------------- Hierarchy
 
-const SIZE = 260;
+const SIZE = 250;
 const RINGS = [
-  { inner: 34, outer: 62 },
-  { inner: 64, outer: 92 },
-  { inner: 94, outer: 118 },
+  { inner: 32, outer: 58 },
+  { inner: 60, outer: 86 },
+  { inner: 88, outer: 110 },
 ];
 
 const Hierarchy = ({
@@ -370,23 +433,24 @@ const Hierarchy = ({
   onSelect: (p: TreePath) => void;
 }) => {
   const arcs = useMemo(() => sunburstArcs(run), [run]);
-  const [hovered, setHovered] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<(typeof arcs)[number] | null>(null);
   if (arcs.length === 0) return <Empty>Nothing has run yet.</Empty>;
 
   const counts = runCounts(run);
+  const RING_NAMES = ["member", "step", "row"];
 
   return (
     <div className="flex h-full items-center justify-center gap-4 p-2">
       <svg
         viewBox={`${-SIZE / 2} ${-SIZE / 2} ${SIZE} ${SIZE}`}
-        className="h-full max-h-[260px] w-auto"
+        className="h-full max-h-[240px] w-auto shrink-0"
         role="img"
-        aria-label={`Run shape: ${total(counts)} nodes, ${counts.passed} passed, ${counts.failed} failed`}
+        aria-label={`Run shape: ${total(counts)} steps, ${counts.passed} passed, ${counts.failed} failed`}
       >
         {arcs.map((arc) => {
           const ring = RINGS[arc.ring];
-          const wide = arc.endAngle - arc.startAngle >= LABEL_MIN_DEGREES;
           const isSelected = samePath(selected, arc.path);
+          const dimmed = hovered !== null && hovered.label !== arc.label;
           return (
             <path
               key={`${arc.ring}:${arc.path.member}:${arc.path.node ?? ""}:${arc.path.row ?? ""}`}
@@ -394,41 +458,55 @@ const Hierarchy = ({
               fill={CHART_FILL[arc.verdict]}
               stroke={isSelected ? "hsl(var(--foreground))" : "hsl(var(--card))"}
               strokeWidth={isSelected ? 2 : 1}
-              opacity={hovered === null || hovered === arc.label ? 1 : 0.55}
+              opacity={dimmed ? 0.5 : 1}
               cursor="pointer"
               onClick={() => onSelect(arc.path)}
-              onMouseEnter={() => setHovered(arc.label)}
+              onMouseEnter={() => setHovered(arc)}
               onMouseLeave={() => setHovered(null)}
             >
-              {/* Thin arcs cannot hold text, so every arc carries its name here — the
-                  hover layer is the label for the ones too narrow to print. */}
-              <title>{`${arc.label} — ${VERDICT_ICON[arc.verdict]} ${arc.verdict}${wide ? "" : ""}`}</title>
+              {/* Thin arcs cannot hold text — below LABEL_MIN_DEGREES the hover layer *is*
+                  the label, which is the selective-labelling rule rather than a shortcut. */}
+              <title>{`${arc.label} — ${VERDICT_ICON[arc.verdict]} ${arc.verdict}`}</title>
             </path>
           );
         })}
-        <text
-          textAnchor="middle"
-          className="fill-foreground"
-          style={{ fontSize: 13, fontWeight: 500 }}
-        >
+        <text textAnchor="middle" className="fill-foreground" style={{ fontSize: 14, fontWeight: 500 }}>
           {counts.passed}/{ran(counts)}
         </text>
-        <text
-          y={14}
-          textAnchor="middle"
-          className="fill-muted-foreground"
-          style={{ fontSize: 9 }}
-        >
-          nodes passed
+        <text y={13} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 9 }}>
+          steps passed
         </text>
       </svg>
 
-      <div className="max-w-[40%] text-[10px] text-muted-foreground">
-        <div className="mb-1 font-medium text-foreground">
-          {hovered ?? "member · step · row"}
-        </div>
-        <p>Rings go outward: members, their steps, then each step&apos;s data rows.</p>
-        <p className="mt-1">Click any arc to open it beside the tree.</p>
+      <div className="min-w-0 flex-1 text-[11px]">
+        {hovered ? (
+          <>
+            <div className="truncate font-medium text-foreground">{hovered.label}</div>
+            <div className="text-muted-foreground">
+              {VERDICT_ICON[hovered.verdict]} {hovered.verdict} · {RING_NAMES[hovered.ring]}
+            </div>
+          </>
+        ) : (
+          <div className="text-muted-foreground">
+            Hover an arc to name it. Rings go outward: members, their steps, then each
+            step&apos;s data rows.
+          </div>
+        )}
+        <ul className="mt-2 space-y-0.5 text-[10px] text-muted-foreground">
+          {RING_NAMES.map((name, i) => (
+            <li key={name} className="flex items-center gap-1.5">
+              <span className="tabular-nums opacity-60">ring {i + 1}</span>
+              <span>{name}</span>
+              <span className="tabular-nums opacity-60">
+                {arcs.filter((a) => a.ring === i).length}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-1 text-[10px] text-muted-foreground/70">
+          {LABEL_MIN_DEGREES}° is the narrowest arc that could hold a label, so none are
+          printed — hover instead.
+        </p>
       </div>
     </div>
   );

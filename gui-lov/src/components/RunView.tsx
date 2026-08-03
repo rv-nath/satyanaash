@@ -147,8 +147,16 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
   const [chartView, setChartView] = useChartView(run.project_id);
   const [chartOpen, setChartOpen] = useChartOpen();
 
-  // The chart and the tree are one selection, not two. Clicking a mark opens the branch
-  // it lives in, or the tree would highlight something the reader cannot see.
+  const toggle = (path: TreePath) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      const key = pathKey(path);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  // The chart and the tree are one selection, not two. Clicking a mark also opens the
+  // branch it lives in, or the tree would highlight something the reader cannot see.
   const selectFromChart = (path: TreePath) => {
     setSelected(path);
     setRowInNode(path.row ?? null);
@@ -160,16 +168,78 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
     });
   };
 
-  const toggle = (path: TreePath) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      const key = pathKey(path);
-      next.has(key) ? next.delete(key) : next.add(key);
-      return next;
-    });
-
   const chosen = selected ? resultAt(run, selected) : undefined;
   const v = verdict(run);
+
+  const treeAndDetail = (
+    <ResizablePanelGroup direction="horizontal">
+      <ResizablePanel defaultSize={38} minSize={22}>
+        <ScrollArea className="h-full">
+          <div className="p-2 font-mono text-xs">
+            {(run.members ?? []).map((member, m) => (
+              <MemberBranch
+                key={member.id}
+                member={member}
+                index={m}
+                expanded={expanded}
+                selected={selected}
+                onToggle={toggle}
+                onSelect={(path) => {
+                  setSelected(path);
+                  setRowInNode(null);
+                }}
+              />
+            ))}
+            {(run.members ?? []).length === 0 && (
+              <p className="p-2 text-muted-foreground">Nothing has run yet.</p>
+            )}
+          </div>
+        </ScrollArea>
+      </ResizablePanel>
+
+      <ResizableHandle />
+
+      <ResizablePanel defaultSize={62} minSize={30}>
+        {!chosen ? (
+          <p className="p-6 text-sm text-muted-foreground">
+            Pick a step to see what it sent and what came back.
+          </p>
+        ) : (
+          <div className="flex h-full flex-col">
+            <div className="flex items-center gap-1 border-b border-border px-4 py-1.5 text-xs text-muted-foreground">
+              {breadcrumb(run, selected!).map((crumb, i, all) => (
+                <span key={i} className={i === all.length - 1 ? "text-foreground" : undefined}>
+                  {crumb}
+                  {i < all.length - 1 && <span className="px-1 opacity-50">/</span>}
+                </span>
+              ))}
+            </div>
+            <div className="min-h-0 flex-1">
+              {/* A fan-out aggregate selected at step level gets the row matrix the
+                  dataset editor already uses; anything else is one request. */}
+              {chosen.iterations ? (
+                <DatasetResultView
+                  aggregate={chosen}
+                  selected={rowInNode}
+                  onSelect={setRowInNode}
+                  wordWrap={wordWrap}
+                  setWordWrap={setWordWrap}
+                  running={false}
+                />
+              ) : (
+                <SingleResultView
+                  result={chosen}
+                  wordWrap={wordWrap}
+                  setWordWrap={setWordWrap}
+                  running={false}
+                />
+              )}
+            </div>
+          </div>
+        )}
+      </ResizablePanel>
+    </ResizablePanelGroup>
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -188,98 +258,35 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
       </div>
 
       <div className="min-h-0 flex-1">
-        <ResizablePanelGroup direction="vertical">
-          {chartOpen && (
-            <>
-              <ResizablePanel defaultSize={38} minSize={18}>
-                <RunChart
-                  run={run}
-                  view={chartView}
-                  onViewChange={setChartView}
-                  selected={selected}
-                  onSelect={selectFromChart}
-                />
-              </ResizablePanel>
-              <ResizableHandle />
-            </>
-          )}
-
-          <ResizablePanel defaultSize={chartOpen ? 62 : 100} minSize={30}>
-            <ResizablePanelGroup direction="horizontal">
-          <ResizablePanel defaultSize={38} minSize={22}>
-            <ScrollArea className="h-full">
-              <div className="p-2 font-mono text-xs">
-                {(run.members ?? []).map((member, m) => (
-                  <MemberBranch
-                    key={member.id}
-                    member={member}
-                    index={m}
-                    expanded={expanded}
-                    selected={selected}
-                    onToggle={toggle}
-                    onSelect={(path) => {
-                      setSelected(path);
-                      setRowInNode(null);
-                    }}
-                  />
-                ))}
-                {(run.members ?? []).length === 0 && (
-                  <p className="p-2 text-muted-foreground">Nothing has run yet.</p>
-                )}
-              </div>
-            </ScrollArea>
-          </ResizablePanel>
-
-          <ResizableHandle />
-
-          <ResizablePanel defaultSize={62} minSize={30}>
-            {!chosen ? (
-              <p className="p-6 text-sm text-muted-foreground">
-                Pick a step to see what it sent and what came back.
-              </p>
-            ) : (
-              <div className="flex h-full flex-col">
-                <div className="flex items-center gap-1 border-b border-border px-4 py-1.5 text-xs text-muted-foreground">
-                  {breadcrumb(run, selected!).map((crumb, i, all) => (
-                    <span key={i} className={i === all.length - 1 ? "text-foreground" : undefined}>
-                      {crumb}
-                      {i < all.length - 1 && <span className="px-1 opacity-50">/</span>}
-                    </span>
-                  ))}
-                </div>
-                <div className="min-h-0 flex-1">
-                  {/* A fan-out aggregate selected at node level gets the row matrix the
-                      dataset editor already uses; anything else is one request. */}
-                  {chosen.iterations ? (
-                    <DatasetResultView
-                      aggregate={chosen}
-                      selected={rowInNode}
-                      onSelect={setRowInNode}
-                      wordWrap={wordWrap}
-                      setWordWrap={setWordWrap}
-                      running={false}
-                    />
-                  ) : (
-                    <SingleResultView
-                      result={chosen}
-                      wordWrap={wordWrap}
-                      setWordWrap={setWordWrap}
-                      running={false}
-                    />
-                  )}
-                </div>
-              </div>
-            )}
-          </ResizablePanel>
-            </ResizablePanelGroup>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+        {/* Two whole groups rather than one with a conditional panel.
+            `react-resizable-panels` registers panels by walking its *direct* children, so
+            wrapping a panel and its handle in a Fragment scrambled the order and the drag
+            came out inverted — pulling the divider down grew the tree. */}
+        {chartOpen ? (
+          <ResizablePanelGroup direction="vertical">
+            <ResizablePanel defaultSize={40} minSize={20}>
+              <RunChart
+                run={run}
+                view={chartView}
+                onViewChange={setChartView}
+                selected={selected}
+                onSelect={selectFromChart}
+              />
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel defaultSize={60} minSize={25}>
+              {treeAndDetail}
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        ) : (
+          treeAndDetail
+        )}
       </div>
 
       <div className="flex items-center gap-3 border-t border-border px-4 py-1.5 text-xs">
         <span className={verdictClass[v]}>{countsLine(run)}</span>
         {/* What the headline leaves out. `countsLine` reports the stored figures, which
-            count nodes, so a run whose rows were mostly skipped says nothing about them. */}
+            count steps, so a run whose rows were mostly skipped says nothing about them. */}
         {rowsNote(run) && <span className="text-muted-foreground">· {rowsNote(run)}</span>}
         <div className="flex-1" />
         <Button
@@ -304,6 +311,7 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
     </div>
   );
 };
+
 
 const MemberBranch = ({
   member,

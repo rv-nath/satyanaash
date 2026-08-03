@@ -112,81 +112,154 @@ export function memberSeries(run: SuiteRun): MemberBar[] {
   });
 }
 
-// ---------------------------------------------------------------- Breakdown
+// ---------------------------------------------------------------- Drill-down
 
-/** What unit the level being shown is counting, said in words. */
-export type Unit = 'members' | 'nodes' | 'rows';
+/**
+ * Where the reader is looking.
+ *
+ * One navigation model, shared by every presentation. The first version gave each view its
+ * own idea of position — seventeen bars in one, an unrelated donut in another — which is
+ * how four views became four puzzle pieces instead of one picture. Switching view now
+ * changes only the geometry, never where you are.
+ *
+ * It leads with the verdict rather than the member list, because "38 failed → which
+ * members?" is the question, and a wall of seventeen bars makes you answer it by reading
+ * every label.
+ */
+export type Focus =
+  | { kind: 'run' }
+  | { kind: 'verdict'; verdict: Verdict }
+  | { kind: 'member'; member: number }
+  | { kind: 'node'; member: number; node: number };
+
+/** What the level being shown is counting, said in words. */
+export type Unit = 'verdicts' | 'members' | 'steps' | 'rows';
 
 export interface Slice {
-  path: TreePath;
   label: string;
   value: number;
   verdict: Verdict;
-  /** Can this slice be opened? A row is a leaf, and so is a node without rows. */
-  drillable: boolean;
+  /** Where clicking goes, when there is anywhere to go. */
+  next?: Focus;
+  /** What clicking selects in the tree. Absent at the run level — a verdict is not a
+   *  place in the run. */
+  path?: TreePath;
+  /** Shown beside the label: a duration, a row count, whatever the level makes useful. */
+  note?: string;
 }
 
-export interface Breakdown {
+export interface Level {
   unit: Unit;
-  slices: Slice[];
+  /** Outermost first, so it renders as a breadcrumb and each crumb is clickable. */
+  crumbs: { label: string; focus: Focus }[];
+  /** Totals for what is on screen. Every level answers "how many, of what". */
   counts: Counts;
+  slices: Slice[];
 }
 
-/**
- * One level of the drill-down.
- *
- * `null` is the run: one slice per member. Into a member: its nodes. Into a fan-out node:
- * its rows — and the unit changes with it, which is the whole point of reporting it.
- */
-export function breakdownAt(run: SuiteRun, path: TreePath | null): Breakdown {
+export const RUN: Focus = { kind: 'run' };
+
+export function focusPath(focus: Focus): TreePath | null {
+  if (focus.kind === 'member') return { member: focus.member };
+  if (focus.kind === 'node') return { member: focus.member, node: focus.node };
+  return null;
+}
+
+export function levelAt(run: SuiteRun, focus: Focus): Level {
   const members = run.members ?? [];
+  const crumbs: { label: string; focus: Focus }[] = [{ label: 'Run', focus: RUN }];
 
-  if (path === null) {
-    const slices = members.map((member, index) => {
-      const nodes = member.results ?? [];
-      return {
-        path: { member: index },
-        label: member.name,
-        // A member that ran nothing still gets a slice, or the picture hides it.
-        value: Math.max(nodes.length, 1),
-        verdict: worstOf(tally(nodes), member.status),
-        drillable: nodes.length > 0,
-      };
-    });
-    return { unit: 'members', slices, counts: runCounts(run) };
-  }
-
-  const member = members[path.member];
-  if (!member) return { unit: 'members', slices: [], counts: emptyCounts() };
-  const nodes = member.results ?? [];
-
-  if (path.node === undefined) {
+  if (focus.kind === 'run') {
+    const counts = runCounts(run);
     return {
-      unit: 'nodes',
-      slices: nodes.map((node, index) => ({
-        path: { member: path.member, node: index },
-        label: nodeTitle(node),
-        value: 1,
-        verdict: verdictOf(node.status),
-        drillable: (node.iterations?.length ?? 0) > 0,
+      unit: 'verdicts',
+      crumbs,
+      counts,
+      // Only verdicts that happened. A zero-width "0 errored" segment is noise, and the
+      // totals row above already says it was zero.
+      slices: VERDICTS.filter((v) => counts[v] > 0).map((v) => ({
+        label: v,
+        value: counts[v],
+        verdict: v,
+        next: { kind: 'verdict', verdict: v },
       })),
-      counts: tally(nodes),
     };
   }
 
-  const node = nodes[path.node];
+  if (focus.kind === 'verdict') {
+    crumbs.push({ label: focus.verdict, focus });
+    const slices: Slice[] = [];
+    const counts = emptyCounts();
+
+    members.forEach((member, index) => {
+      const nodes = member.results ?? [];
+      const own = tally(nodes)[focus.verdict];
+      // A member that ran nothing has no verdict of its own to contribute, but hiding it
+      // is how the current view loses `Flow 1`. It shows under whatever the fold made it.
+      const empty = nodes.length === 0 && verdictOf(member.status) === focus.verdict;
+      if (own === 0 && !empty) return;
+      counts[focus.verdict] += own || 1;
+      slices.push({
+        label: member.name,
+        value: own || 1,
+        verdict: focus.verdict,
+        next: { kind: 'member', member: index },
+        path: { member: index },
+        note: empty ? 'nothing ran' : `${own} of ${nodes.length}`,
+      });
+    });
+
+    return { unit: 'members', crumbs, counts, slices };
+  }
+
+  const member = members[focus.member];
+  if (!member) return { unit: 'members', crumbs, counts: emptyCounts(), slices: [] };
+  const nodes = member.results ?? [];
+  crumbs.push({ label: member.name, focus: { kind: 'member', member: focus.member } });
+
+  if (focus.kind === 'member') {
+    return {
+      unit: 'steps',
+      crumbs,
+      counts: tally(nodes),
+      slices: nodes.map((node, index) => {
+        const rows = node.iterations ?? [];
+        return {
+          label: nodeTitle(node),
+          value: 1,
+          verdict: verdictOf(node.status),
+          next: rows.length > 0 ? { kind: 'node', member: focus.member, node: index } : undefined,
+          path: { member: focus.member, node: index },
+          note: rows.length > 0 ? rowSummaryOf(rows) : undefined,
+        };
+      }),
+    };
+  }
+
+  const node = nodes[focus.node];
   const rows = node?.iterations ?? [];
+  crumbs.push({ label: node ? nodeTitle(node) : 'step', focus });
+
   return {
     unit: 'rows',
+    crumbs,
+    counts: tally(rows),
     slices: rows.map((row, index) => ({
-      path: { member: path.member, node: path.node, row: index },
       label: row.row_label ?? `Row ${(row.row_index ?? index) + 1}`,
       value: 1,
       verdict: verdictOf(row.status),
-      drillable: false,
+      path: { member: focus.member, node: focus.node, row: index },
     })),
-    counts: tally(rows),
   };
+}
+
+function rowSummaryOf(rows: TestCaseExecutionResult[]): string {
+  const counts = tally(rows);
+  const denominator = ran(counts);
+  if (denominator === 0) return `${rows.length} rows, none ran`;
+  return counts.skipped > 0
+    ? `${counts.passed}/${denominator} rows · ${counts.skipped} skipped`
+    : `${counts.passed}/${denominator} rows`;
 }
 
 /** Worst-of across a member's nodes, falling back to the member's own recorded status
