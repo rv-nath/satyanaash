@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Layers, Workflow, Loader2 } from "lucide-react";
 import { runsApi } from "@/lib/api";
@@ -149,6 +149,7 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
   const [rowInNode, setRowInNode] = useState<number | null>(null);
   const [chartView, setChartView] = useChartView(run.project_id);
   const [chartOpen, setChartOpen] = useChartOpen();
+  const treeRef = useRef<HTMLDivElement>(null);
 
   const toggle = (path: TreePath) =>
     setExpanded((prev) => {
@@ -174,11 +175,29 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
   const chosen = selected ? resultAt(run, selected) : undefined;
   const v = verdict(run);
 
+  /**
+   * Bring the selected row into view.
+   *
+   * Selecting from the chart moved the detail pane and highlighted a tree row that could be
+   * fifty rows down — so the highlight was somewhere off-screen and the tree looked like it
+   * had ignored the click.
+   *
+   * Runs after the render that expands the branch, because the row does not exist in the
+   * DOM until then. `block: 'nearest'` so a row already on screen does not jolt the list.
+   */
+  useEffect(() => {
+    if (!selected) return;
+    const row = treeRef.current?.querySelector<HTMLElement>(
+      `[data-treepath="${pathKey(selected)}"]`,
+    );
+    row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selected, expanded]);
+
   const treeAndDetail = (
     <ResizablePanelGroup direction="horizontal">
       <ResizablePanel defaultSize={38} minSize={22}>
         <ScrollArea className="h-full">
-          <div className="p-2 font-mono text-xs">
+          <div ref={treeRef} className="p-2 font-mono text-xs">
             {(run.members ?? []).map((member, m) => (
               <MemberBranch
                 key={member.id}
@@ -339,9 +358,15 @@ const MemberBranch = ({
     <div>
       <button
         type="button"
+        data-treepath={pathKey(path)}
         onClick={() => onToggle(path)}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-left hover:bg-muted/20"
+        // Highlighted when it is the selection, the same as a step row. Drilling to a
+        // member in the chart used to expand its branch and mark nothing, so the tree
+        // looked like it had ignored the click.
+        className={`flex w-full items-center gap-1.5 rounded px-1 py-1 text-left ${
+          samePath(selected, path) ? "bg-primary/15" : "hover:bg-muted/20"
+        }`}
       >
         {open ? (
           <ChevronDown className="h-3 w-3 shrink-0" />
@@ -406,6 +431,7 @@ const NodeBranch = ({
   return (
     <div>
       <div
+        data-treepath={pathKey(path)}
         className={`flex items-center gap-1.5 rounded px-1 py-0.5 ${
           isSelected ? "bg-primary/15" : "hover:bg-muted/20"
         }`}
@@ -448,6 +474,7 @@ const NodeBranch = ({
               <button
                 key={r}
                 type="button"
+                data-treepath={pathKey(rowPath)}
                 onClick={() => onSelect(rowPath)}
                 className={`flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left ${
                   samePath(selected, rowPath) ? "bg-primary/15" : "hover:bg-muted/20"

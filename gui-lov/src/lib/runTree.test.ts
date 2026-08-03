@@ -142,6 +142,32 @@ describe("addressing", () => {
     expect(breadcrumb(unlabelled, { member: 0, node: 0, row: 0 })).toEqual(["M", "send", "Row 7"]);
   });
 
+  it("makes a key that is safe to put in a CSS attribute selector", () => {
+    // The tree scrolls the selected row into view by querying
+    // `[data-treepath="${pathKey(selected)}"]`. A key carrying a quote or a bracket would
+    // break that selector silently — the scroll would simply stop happening.
+    const keys = [
+      pathKey({ member: 0 }),
+      pathKey({ member: 0, node: 1 }),
+      pathKey({ member: 0, node: 1, row: 2 }),
+      pathKey({ member: 10, node: 11, row: 12 }),
+    ];
+    for (const key of keys) expect(key).toMatch(/^[0-9:]*$/);
+    // …and distinct, or the query would scroll to the wrong row.
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("keeps a member, its first step and that step's first row apart", () => {
+    // All three are "position 0" at their own level, and a key that collapsed them would
+    // highlight a member when a row was picked.
+    const keys = [
+      pathKey({ member: 0 }),
+      pathKey({ member: 0, node: 0 }),
+      pathKey({ member: 0, node: 0, row: 0 }),
+    ];
+    expect(new Set(keys).size).toBe(3);
+  });
+
   it("compares paths without caring about object identity", () => {
     expect(samePath({ member: 0, node: 1 }, { member: 0, node: 1 })).toBe(true);
     expect(samePath({ member: 0, node: 1 }, { member: 0, node: 2 })).toBe(false);
