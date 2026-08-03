@@ -83,6 +83,39 @@ npm run dev        # Starts on http://localhost:8080
   one flow. Same two forms as a dataset row's Expect, through the same
   `parse_check`; when set, `assertion_script` does not run for that node. Verdict
   precedence in `run_once`: row Expect → node Expect → post-test script → 2xx
+- **Polling** — `node.data.config.poll` makes a node ask again until its answer settles.
+  Multi-stage uploads answer 202 with `{"status":"pending",…}` and the real outcome only
+  exists after polling, so without this those tests assert on an answer that says only
+  "I have your file". **Not a loop**: nothing iterates, one request is re-sent, so it is a
+  property of the node — beside `check`, `teardown` and `forEachRow`. An **absent `until`
+  means no polling**, which is every node that predates it (`poll_config`); `intervalMs`
+  and `timeoutMs` default to `POLL_INTERVAL_MS` / `POLL_TIMEOUT_MS`, and a 0 is read as
+  unset, not as a tight loop.
+  - **`until` and `check` have distinct jobs.** `until` says the answer has settled;
+    `check` says whether it was the right answer. Collapsing them lies: an upload whose
+    status becomes `"failed"` would be retried to the budget and reported as "timed out",
+    hiding the real result behind a slow one. `until` is interpolated like every other
+    string, and refused at once — not waited out — if it isn't true-or-false.
+  - **The loop wraps only the send.** The verdict cascade and exports run once, against
+    the final response, or a pending attempt reports as a failure and exports fire per
+    attempt. This is the delicate part of `run_once`.
+  - Stopping rules, each so a wait cannot be mistaken for a result: a **4xx stops at
+    once** (a 404 means the id is wrong and won't improve); **out of budget is `Failed`,
+    never `Error`** — the request worked, the wait ran out — and it **short-circuits the
+    cascade**, because a 202 satisfies the default 2xx check; **abandoned between
+    attempts** via `RunOptions::unwatched()` plus the engine's stop flag, the same rule
+    the node boundary applies, since a poll can hold a run open for minutes. Teardown
+    still runs.
+  - One log line per attempt with the polled values (`0/2 → 1/2 → 2/2`), and
+    `NodeResult.attempts` so the report can say "3 attempts · 4.2s" — a single duration
+    cannot tell one slow request from three quick ones and two waits. Absent when the node
+    didn't poll, so nothing reports "1 attempt".
+  - Warned before a run: `POLL_WITHOUT_UNTIL` (an interval with no condition turns polling
+    off without removing it from the panel) and `POLL_BUDGET_BELOW_INTERVAL` (polling in
+    name only). The frontend derives the attempt count in `lib/poll.ts` and shows the
+    second one live, before saving.
+  - Polling lives on the node, so the editor's own **"Run request" does not poll**.
+    Test-case-level polling is the follow-up if that bites.
 - **Stepping** — `run_flow` takes an optional `mpsc::Receiver<StepCommand>` beside
   `event_tx`: events out one per node, commands back one per node. `Stepper` holds
   it and parks the next node; `Next` buys one node, `RunToEnd` clears `pausing` for
