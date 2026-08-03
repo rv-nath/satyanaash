@@ -5,7 +5,10 @@ import { runsApi } from "@/lib/api";
 import type { FlowRun, SuiteRun, TestCaseExecutionResult } from "@/lib/api/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ResizablePanel, ResizablePanelGroup, ResizableHandle } from "@/components/ui/resizable";
+import { Button } from "@/components/ui/button";
 import { SingleResultView, DatasetResultView } from "@/components/TestCaseEditor";
+import RunChart from "@/components/RunChart";
+import { CHART_VIEWS, rowsNote, type RunChartView } from "@/lib/runCharts";
 import { liveRunToSuiteRun, progressLine, type LiveRun } from "@/lib/liveRun";
 import {
   breadcrumb,
@@ -38,6 +41,52 @@ import {
  * gives the stream the shape the API returns, so the report does not change appearance
  * the moment the last member finishes.
  */
+/**
+ * The chosen presentation, remembered per project.
+ *
+ * You have a question you keep asking, so the view you picked is the view the next run
+ * opens on. Per project rather than globally: a project's suites have their own shape.
+ * Same localStorage habit as the active environment and console visibility.
+ */
+function useChartView(projectId: string): [RunChartView, (v: RunChartView) => void] {
+  const key = `sat.runChart.view.${projectId}`;
+  const [view, setView] = useState<RunChartView>(() => {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+    return CHART_VIEWS.some((v) => v.id === stored) ? (stored as RunChartView) : 'profile';
+  });
+  return [
+    view,
+    (next) => {
+      setView(next);
+      try {
+        localStorage.setItem(key, next);
+      } catch {
+        // A browser refusing storage is not a reason to refuse the click.
+      }
+    },
+  ];
+}
+
+/** Whether the chart panel is showing. Not per project — it is about how much room you
+ *  want, which does not change when you switch project. */
+function useChartOpen(): [boolean, (open: boolean) => void] {
+  const key = 'sat.runChart.open';
+  const [open, setOpen] = useState(
+    () => (typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null) !== 'false',
+  );
+  return [
+    open,
+    (next) => {
+      setOpen(next);
+      try {
+        localStorage.setItem(key, String(next));
+      } catch {
+        // ignored, as above
+      }
+    },
+  ];
+}
+
 const verdictClass: Record<RunVerdict, string> = {
   passed: "text-success",
   failed: "text-destructive",
@@ -95,6 +144,21 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
   const [selected, setSelected] = useState<TreePath | null>(null);
   const [wordWrap, setWordWrap] = useState(true);
   const [rowInNode, setRowInNode] = useState<number | null>(null);
+  const [chartView, setChartView] = useChartView(run.project_id);
+  const [chartOpen, setChartOpen] = useChartOpen();
+
+  // The chart and the tree are one selection, not two. Clicking a mark opens the branch
+  // it lives in, or the tree would highlight something the reader cannot see.
+  const selectFromChart = (path: TreePath) => {
+    setSelected(path);
+    setRowInNode(path.row ?? null);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.add(pathKey({ member: path.member }));
+      if (path.node !== undefined) next.add(pathKey({ member: path.member, node: path.node }));
+      return next;
+    });
+  };
 
   const toggle = (path: TreePath) =>
     setExpanded((prev) => {
@@ -124,7 +188,24 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
       </div>
 
       <div className="min-h-0 flex-1">
-        <ResizablePanelGroup direction="horizontal">
+        <ResizablePanelGroup direction="vertical">
+          {chartOpen && (
+            <>
+              <ResizablePanel defaultSize={38} minSize={18}>
+                <RunChart
+                  run={run}
+                  view={chartView}
+                  onViewChange={setChartView}
+                  selected={selected}
+                  onSelect={selectFromChart}
+                />
+              </ResizablePanel>
+              <ResizableHandle />
+            </>
+          )}
+
+          <ResizablePanel defaultSize={chartOpen ? 62 : 100} minSize={30}>
+            <ResizablePanelGroup direction="horizontal">
           <ResizablePanel defaultSize={38} minSize={22}>
             <ScrollArea className="h-full">
               <div className="p-2 font-mono text-xs">
@@ -190,12 +271,25 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
               </div>
             )}
           </ResizablePanel>
+            </ResizablePanelGroup>
+          </ResizablePanel>
         </ResizablePanelGroup>
       </div>
 
       <div className="flex items-center gap-3 border-t border-border px-4 py-1.5 text-xs">
         <span className={verdictClass[v]}>{countsLine(run)}</span>
+        {/* What the headline leaves out. `countsLine` reports the stored figures, which
+            count nodes, so a run whose rows were mostly skipped says nothing about them. */}
+        {rowsNote(run) && <span className="text-muted-foreground">· {rowsNote(run)}</span>}
         <div className="flex-1" />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 px-1.5 text-[10px] text-muted-foreground"
+          onClick={() => setChartOpen(!chartOpen)}
+        >
+          {chartOpen ? "Hide chart" : "Show chart"}
+        </Button>
         {live && !live.status ? (
           <span className="text-primary">{progressLine(live)}</span>
         ) : (

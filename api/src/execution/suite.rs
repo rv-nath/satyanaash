@@ -180,6 +180,19 @@ impl SuiteRun<'_> {
                 }
             };
 
+            // A member that executed nothing is not a pass.
+            //
+            // `run_flow` reports "completed" for a graph it walked without reaching a
+            // single test case — an empty flow, or one whose only path is start → end. In
+            // the history that reads as a green member, 0 ms, no steps, and it is
+            // indistinguishable from one that worked. Same fold as an all-skipped dataset
+            // yielding `Skipped` rather than `Passed`.
+            let result = if result.results.is_empty() && result.status == "completed" {
+                FlowExecutionResult { status: "skipped".to_string(), ..result }
+            } else {
+                result
+            };
+
             // Carry SAT.env writes forward, so a login in member 1 is a token in
             // member 2. In memory only — see the module note.
             for node in &result.results {
@@ -484,6 +497,49 @@ mod tests {
         }
     }
 
+    /// A flow whose only path is start → end: it walks, reaches no test case, and used to
+    /// report itself completed.
+    fn empty_flow(id: &str, name: &str) -> crate::db::models::Flow {
+        crate::db::models::Flow {
+            id: id.into(),
+            project_id: "p1".into(),
+            name: name.into(),
+            description: None,
+            graph_data: crate::db::models::GraphData {
+                nodes: vec![
+                    crate::db::models::GraphNode {
+                        id: "start".into(),
+                        node_type: "start".into(),
+                        position: crate::db::models::Position { x: 0.0, y: 0.0 },
+                        data: serde_json::json!({}),
+                        width: None,
+                        height: None,
+                    },
+                    crate::db::models::GraphNode {
+                        id: "end".into(),
+                        node_type: "end".into(),
+                        position: crate::db::models::Position { x: 100.0, y: 0.0 },
+                        data: serde_json::json!({}),
+                        width: None,
+                        height: None,
+                    },
+                ],
+                edges: vec![crate::db::models::GraphEdge {
+                    id: "e1".into(),
+                    source: "start".into(),
+                    target: "end".into(),
+                    edge_type: None,
+                    data: serde_json::json!({}),
+                }],
+                canvas_settings: serde_json::json!({}),
+                variables: Default::default(),
+            },
+            version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
     async fn run_repo() -> Arc<dyn RunRepository> {
         use sqlx::any::{install_default_drivers, AnyPoolOptions};
         install_default_drivers();
@@ -616,6 +672,53 @@ mod tests {
             "start:1:Pong", "node", "done:Pong",
             "end",
         ], "{seen:?}");
+    }
+
+    /// A member that walked its graph without reaching a test case is not a pass.
+    ///
+    /// `Flow 1` in a real suite reported `completed` with zero nodes and 0 ms — green, and
+    /// indistinguishable in the history from a member that did the work. Same reasoning as
+    /// an all-skipped dataset folding to `Skipped` rather than `Passed`.
+    #[tokio::test]
+    async fn a_member_that_ran_nothing_is_not_reported_as_completed() {
+        let repos = Repos { flows: vec![empty_flow("f-empty", "Flow 1")], tests: vec![] };
+        let runs = run_repo().await;
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(64);
+
+        let runner = SuiteRun {
+            execution_id: "exec-1".into(),
+            project_id: "p1".into(),
+            suite_id: Some("s1".into()),
+            suite_name: "Regression".into(),
+            environment_name: None,
+            debug_mode: false,
+            base_url: None,
+            flow_repo: &repos,
+            tc_repo: &repos,
+            run_repo: runs,
+        };
+
+        runner
+            .execute(
+                vec![ResolvedMember { kind: MemberKind::Flow, id: "f-empty".into(), name: "Flow 1".into() }],
+                HashMap::new(),
+                HashMap::new(),
+                tx,
+            )
+            .await
+            .unwrap();
+
+        let mut member_status = None;
+        while let Ok(event) = rx.try_recv() {
+            if let ExecutionEvent::MemberCompleted { status, .. } = event {
+                member_status = Some(status);
+            }
+        }
+        assert_eq!(
+            member_status.as_deref(),
+            Some("skipped"),
+            "a member that reached no test case reported itself green"
+        );
     }
 
     #[test]
