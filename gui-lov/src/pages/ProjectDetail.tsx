@@ -640,6 +640,10 @@ const ProjectDetailContent = () => {
     }
   }
 
+  // Computed once so the wrapper below can ask whether there is anything to wrap. Calling
+  // it inline would render an empty overlay over the kept-mounted editors.
+  const surfaceContent = renderSurface();
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
@@ -1147,8 +1151,14 @@ const ProjectDetailContent = () => {
               )}
 
               {/* Exactly one of these, chosen by kind. Everything above this point stays
-                  mounted while hidden; everything here is mounted only while active. */}
-              <div className="absolute inset-0">{renderSurface()}</div>
+                  mounted while hidden; everything here is mounted only while active.
+
+                  Rendered only when there is something to render. An empty
+                  `absolute inset-0` div is a transparent, full-size overlay, and it sits
+                  after the kept-mounted editors in source order — so on a test or settings
+                  tab it covered them and swallowed every click. The editor was visible and
+                  untouchable. */}
+              {surfaceContent && <div className="absolute inset-0">{surfaceContent}</div>}
             </div>
           </div>
         </ResizablePanel>
