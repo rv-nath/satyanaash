@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::AppError;
+use crate::execution::body::BodyType;
 
 /// HTTP request executor
 pub struct HttpExecutor {
@@ -61,6 +62,7 @@ impl HttpExecutor {
         url: &str,
         headers: &HashMap<String, String>,
         body: Option<&str>,
+        body_type: BodyType,
     ) -> Result<HttpResult, AppError> {
         let start = Instant::now();
 
@@ -100,21 +102,58 @@ impl HttpExecutor {
         }
         request_builder = request_builder.headers(header_map);
 
-        // Add body if present
+        // Add body if present. Three shapes, one authored string — `body_type` says how to
+        // read it (see execution/body.rs).
+        let author_set_type =
+            headers.contains_key("Content-Type") || headers.contains_key("content-type");
+        let mut logged_body = body.map(|s| s.to_string());
+
         if let Some(body_str) = body {
-            request_builder = request_builder.body(body_str.to_string());
-            // Set Content-Type if not already set
-            if !headers.contains_key("Content-Type") && !headers.contains_key("content-type") {
-                request_builder = request_builder.header("Content-Type", "application/json");
+            match body_type {
+                BodyType::Json => {
+                    request_builder = request_builder.body(body_str.to_string());
+                }
+                BodyType::Urlencoded => {
+                    let fields = crate::execution::body::parse_fields(body_str);
+                    // reqwest does the percent-encoding, so a value containing `&`, `=` or a
+                    // space survives — which is the whole reason a field editor beats a
+                    // hand-written `a=1&b=2`.
+                    let pairs: Vec<(String, String)> = fields
+                        .iter()
+                        .map(|f| (f.name.clone(), f.value.clone()))
+                        .collect();
+                    request_builder = request_builder.form(&pairs);
+                    logged_body = Some(crate::execution::body::describe(&fields));
+                }
+                BodyType::Multipart => {
+                    let fields = crate::execution::body::parse_fields(body_str);
+                    let mut form = reqwest::multipart::Form::new();
+                    for field in &fields {
+                        form = form.text(field.name.clone(), field.value.clone());
+                    }
+                    request_builder = request_builder.multipart(form);
+                    logged_body = Some(crate::execution::body::describe(&fields));
+                }
+            }
+
+            // The type's own header, unless the author set one — and never for multipart,
+            // whose boundary only the client knows. `.form()` and `.multipart()` set their
+            // own, so this is really about JSON keeping its historical default.
+            if !author_set_type {
+                if let Some(content_type) = body_type.content_type() {
+                    request_builder = request_builder.header("Content-Type", content_type);
+                }
             }
         }
 
-        // Capture request log
+        // Capture request log — what was sent, not what was stored. For a form body that
+        // means the fields, because the stored payload is a JSON array nobody put on the
+        // wire.
         let request_log = RequestLog {
             method: method.clone(),
             url: url.to_string(),
             headers: headers.clone(),
-            body: body.map(|s| s.to_string()),
+            body: logged_body,
         };
 
         // Execute request

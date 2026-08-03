@@ -32,9 +32,9 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         sqlx::query(
             r#"INSERT INTO test_cases (
                 id, project_id, group_id, name, given_condition, when_action, then_expected,
-                method, endpoint, headers, payload, exports, assertion_script,
+                method, endpoint, headers, payload, body_type, exports, assertion_script,
                 pre_test_script, dataset, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#
         )
         .bind(&id)
         .bind(project_id)
@@ -47,6 +47,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         .bind(&input.endpoint)
         .bind(&headers_json)
         .bind(&input.payload)
+        .bind(&input.body_type)
         .bind(&exports_json)
         .bind(&input.assertion_script)
         .bind(&input.pre_test_script)
@@ -68,6 +69,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
             endpoint: input.endpoint,
             headers: input.headers,
             payload: input.payload,
+            body_type: input.body_type,
             exports: input.exports,
             assertion_script: input.assertion_script,
             pre_test_script: input.pre_test_script,
@@ -80,7 +82,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
     async fn get_by_id(&self, id: &str) -> Result<Option<TestCase>, AppError> {
         let row = sqlx::query(
             r#"SELECT id, project_id, group_id, name, given_condition, when_action, then_expected,
-               method, endpoint, headers, payload, exports, assertion_script,
+               method, endpoint, headers, payload, body_type, exports, assertion_script,
                pre_test_script, dataset, created_at, updated_at
                FROM test_cases WHERE id = ?"#
         )
@@ -108,7 +110,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         // Get paginated results
         let rows = sqlx::query(
             r#"SELECT id, project_id, group_id, name, given_condition, when_action, then_expected,
-               method, endpoint, headers, payload, exports, assertion_script,
+               method, endpoint, headers, payload, body_type, exports, assertion_script,
                pre_test_script, dataset, created_at, updated_at
                FROM test_cases WHERE project_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"#
         )
@@ -148,6 +150,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         let endpoint = input.endpoint.unwrap_or(existing.endpoint);
         let headers = input.headers.unwrap_or(existing.headers);
         let payload = input.payload.or(existing.payload);
+        let body_type = input.body_type.or(existing.body_type);
         let exports = input.exports.unwrap_or(existing.exports);
         let assertion_script = input.assertion_script.or(existing.assertion_script);
         let pre_test_script = input.pre_test_script.or(existing.pre_test_script);
@@ -160,7 +163,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         sqlx::query(
             r#"UPDATE test_cases SET
                group_id = ?, name = ?, given_condition = ?, when_action = ?, then_expected = ?,
-               method = ?, endpoint = ?, headers = ?, payload = ?,
+               method = ?, endpoint = ?, headers = ?, payload = ?, body_type = ?,
                exports = ?, assertion_script = ?, pre_test_script = ?, dataset = ?, updated_at = ?
                WHERE id = ?"#
         )
@@ -173,6 +176,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
         .bind(&endpoint)
         .bind(&headers_json)
         .bind(&payload)
+        .bind(&body_type)
         .bind(&exports_json)
         .bind(&assertion_script)
         .bind(&pre_test_script)
@@ -194,6 +198,7 @@ impl TestCaseRepository for SqlxTestCaseRepository {
             endpoint,
             headers,
             payload,
+            body_type,
             exports,
             assertion_script,
             pre_test_script,
@@ -265,6 +270,7 @@ fn row_to_test_case(row: &sqlx::any::AnyRow) -> Result<TestCase, AppError> {
         endpoint: row.try_get("endpoint")?,
         headers: serde_json::from_str(&headers_str)?,
         payload: row.try_get("payload")?,
+        body_type: row.try_get("body_type")?,
         exports: serde_json::from_str(&exports_str)?,
         assertion_script: row.try_get("assertion_script")?,
         pre_test_script: row.try_get("pre_test_script")?,
@@ -299,7 +305,7 @@ mod tests {
                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL, group_id TEXT, name TEXT NOT NULL,
                 given_condition TEXT, when_action TEXT, then_expected TEXT,
                 method TEXT NOT NULL, endpoint TEXT NOT NULL, headers TEXT NOT NULL DEFAULT '{}',
-                payload TEXT, exports TEXT NOT NULL DEFAULT '[]', assertion_script TEXT,
+                payload TEXT, body_type TEXT, exports TEXT NOT NULL DEFAULT '[]', assertion_script TEXT,
                 pre_test_script TEXT, dataset TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
         )

@@ -488,6 +488,7 @@ mod tests {
             endpoint: "http://127.0.0.1:1/ping".into(),
             headers: serde_json::json!({}),
             payload: None,
+            body_type: None,
             exports: vec![],
             assertion_script: None,
             pre_test_script: None,

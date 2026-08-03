@@ -8,6 +8,7 @@
 
 mod variables;
 mod assertions;
+mod body;
 mod http;
 mod engine;
 mod history;
@@ -18,6 +19,7 @@ mod script_log;
 
 pub use variables::{ExecutionContext, VarSource};
 pub use assertions::AssertionEngine;
+pub use body::{BodyType, FormField};
 // `ResponseLog` and `ResolvedMember` are the types of a public field and a public
 // return value, so they belong in this list even though nothing outside names them yet
 // — hiding a type that appears in a signature is worse than an unused-import warning.

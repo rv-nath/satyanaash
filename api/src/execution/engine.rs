@@ -13,6 +13,7 @@ use tracing::info;
 use crate::db::models::{DataRow, ExportVariable, Flow, GraphNode, TestCase};
 use crate::db::repositories::TestCaseRepository;
 use crate::error::AppError;
+use crate::execution::body::BodyType;
 
 use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine, VarSource};
 use super::assertions::AssertionInput;
@@ -1733,7 +1734,15 @@ impl ExecutionEngine {
         // Execute HTTP request
         let http_result = match self
             .http
-            .execute(&test_case.method, &url, &headers, body.as_deref())
+            .execute(
+                &test_case.method,
+                &url,
+                &headers,
+                body.as_deref(),
+                // NULL and anything unrecognised read as verbatim JSON, which is what every
+                // test case written before form bodies existed already does.
+                test_case.body_type.as_deref().map(BodyType::parse).unwrap_or_default(),
+            )
             .await
         {
             Ok(r) => r,
@@ -2540,6 +2549,7 @@ mod tests {
             endpoint: endpoint.to_string(),
             headers: serde_json::json!({}),
             payload: None,
+            body_type: None,
             exports: vec![],
             assertion_script: None,
             pre_test_script: None,
@@ -4553,6 +4563,7 @@ mod tests {
             endpoint: "http://127.0.0.1:1/accounts/1".to_string(),
             headers: serde_json::json!({"Authorization": "Bearer {{my_jwt}}"}),
             payload: None,
+            body_type: None,
             exports: vec![],
             assertion_script: None,
             pre_test_script: None,
@@ -4610,6 +4621,7 @@ mod tests {
             endpoint: "{{baseUrl}}/users/{{userId}}".to_string(),
             headers: serde_json::json!({"Authorization": "Bearer {{token}}"}),
             payload: None,
+            body_type: None,
             exports: vec![],
             assertion_script: Some("response.status == 200".to_string()),
             pre_test_script: None,
@@ -4670,6 +4682,7 @@ mod tests {
             endpoint: "http://test.com".to_string(),
             headers: serde_json::json!({}),
             payload: None,
+            body_type: None,
             exports: vec![
                 ExportVariable { name: "token".to_string(), json_path: "$.data.token".to_string() },
                 ExportVariable { name: "userId".to_string(), json_path: "$.data.user.id".to_string() },
@@ -4718,6 +4731,7 @@ mod tests {
             endpoint: "http://test.com".to_string(),
             headers: serde_json::json!({}),
             payload: None,
+            body_type: None,
             exports: vec![
                 ExportVariable { name: "token".to_string(), json_path: "$.token".to_string() },
             ],
@@ -4751,6 +4765,7 @@ mod tests {
             endpoint: "http://test.com".to_string(),
             headers: serde_json::json!({}),
             payload: None,
+            body_type: None,
             exports: vec![], // No exports
             assertion_script: None,
             pre_test_script: None,

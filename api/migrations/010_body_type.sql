@@ -1,0 +1,12 @@
+-- How a request body is authored: verbatim JSON, or key/value form fields.
+--
+-- NULL and any unrecognised value read as "json", which is the verbatim behaviour every
+-- test case written before this had. So nothing needs backfilling and nothing changes for
+-- a request that was already working.
+--
+-- For a form type the existing `payload` column holds a JSON array of fields rather than a
+-- second column. That is deliberate: DataRow.body already overrides payload wholesale, so a
+-- dataset row can replace a form body with no new concept and no second override path.
+--
+-- Idempotent through the duplicate-column guard in pool.rs.
+ALTER TABLE test_cases ADD COLUMN body_type TEXT;

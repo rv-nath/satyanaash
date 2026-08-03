@@ -555,6 +555,7 @@ mod tests {
             endpoint: "http://x/".to_string(),
             headers: serde_json::json!({}),
             payload: None,
+            body_type: None,
             exports: vec![],
             assertion_script: None,
             pre_test_script: None,

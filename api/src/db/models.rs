@@ -168,6 +168,11 @@ pub struct TestCase {
     pub headers: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<String>,
+    /// How to read `payload`: verbatim (`json`, the default and what every test case
+    /// written before this does) or as key/value form fields (`urlencoded`, `multipart`).
+    /// See `execution/body.rs` for why there is no second column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_type: Option<String>,
     // Variable extraction (declarative, JSONPath-based)
     pub exports: Vec<ExportVariable>,
     // Assertions (JS expression, evaluated in sandboxed runtime)
@@ -369,6 +374,8 @@ pub struct CreateTestCase {
     pub headers: serde_json::Value,
     #[serde(default)]
     pub payload: Option<String>,
+    #[serde(default)]
+    pub body_type: Option<String>,
     // Exports and assertions
     #[serde(default)]
     pub exports: Vec<ExportVariable>,
@@ -403,6 +410,8 @@ pub struct UpdateTestCase {
     pub headers: Option<serde_json::Value>,
     #[serde(default)]
     pub payload: Option<String>,
+    #[serde(default)]
+    pub body_type: Option<String>,
     // Exports and assertions
     #[serde(default)]
     pub exports: Option<Vec<ExportVariable>>,
