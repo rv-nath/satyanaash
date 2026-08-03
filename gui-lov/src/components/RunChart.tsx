@@ -150,12 +150,23 @@ const Summary = ({
             </span>
           </span>
         ))}
-        <span className="text-[10px] text-muted-foreground">
+        {/* The unit, always — and spelled out on hover, because "49 steps" invites exactly
+            the question of whether datasets are in it. They are not: a 19-row dataset is
+            one step, which is the engine's own rule so that `total` means one thing. */}
+        <span
+          className="cursor-help text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2"
+          title={
+            `${total(nodes)} steps: one per request in a flow, and one per standalone test ` +
+            `even when it carries a dataset.` +
+            (total(rows) > 0
+              ? ` The ${total(rows)} data rows inside those steps are counted separately — ` +
+                `${total(nodes) + total(rows)} requests or skips in total.`
+              : '')
+          }
+        >
           of {total(nodes)} steps
-          {/* The unit, always. This is where the headline's "0 skipped" turns out to have
-              meant "0 steps skipped". */}
           {total(rows) > 0 &&
-            ` · ${total(rows)} data rows underneath${rows.skipped > 0 ? `, ${rows.skipped} skipped` : ""}`}
+            ` · ${total(rows)} dataset rows inside them${rows.skipped > 0 ? `, ${rows.skipped} skipped` : ""}`}
         </span>
       </div>
 
@@ -201,6 +212,30 @@ const Summary = ({
     </div>
   );
 };
+
+/**
+ * The label past the end of a bar, addressed by index.
+ *
+ * Recharts' `label.formatter` receives only the value, so looking the row up by it matched
+ * the *first* row with that value — and at member level a dozen rows share the value 1,
+ * which would put the first one's note on all of them. Index is the only identity a row
+ * actually has here.
+ */
+const barLabel =
+  (text: (index: number) => string) =>
+  ({ x, y, width, height, index }: {
+    x?: number; y?: number; width?: number; height?: number; index?: number;
+  }) => (
+    <text
+      x={(x ?? 0) + (width ?? 0) + 6}
+      y={(y ?? 0) + (height ?? 0) / 2}
+      dominantBaseline="central"
+      className="fill-foreground"
+      style={{ fontSize: 10 }}
+    >
+      {text(index ?? 0)}
+    </text>
+  );
 
 const Empty = ({ children }: { children: React.ReactNode }) => (
   <p className="p-4 text-xs text-muted-foreground">{children}</p>
@@ -268,15 +303,11 @@ const LevelBars = ({ level, onOpen }: { level: Level; onOpen: (s: Slice) => void
             radius={[0, 4, 4, 0]}
             // On the bar, not in a footnote underneath. A number listed somewhere else is
             // a number the reader has to pair up by eye, which is the same as hiding it.
-            label={{
-              position: "right",
-              fontSize: 11,
-              fill: "hsl(var(--foreground))",
-              formatter: (value: number) => {
-                const slice = level.slices.find((s) => s.value === value);
-                return slice?.note ? `${value}  ${slice.note}` : String(value);
-              },
-            }}
+            label={barLabel((i) => {
+              const slice = level.slices[i];
+              if (!slice) return "";
+              return slice.note ? `${slice.value}  ${slice.note}` : String(slice.value);
+            })}
           >
             {level.slices.map((slice, i) => (
               <Cell
@@ -414,6 +445,9 @@ const Slowest = ({
   onSelect: (p: TreePath) => void;
 }) => {
   const steps = useMemo(() => slowestSteps(run, 12), [run]);
+  // How many there were to rank, so "slowest 12" says what it is 12 of. A cap that does
+  // not say what it left out reads as "that is all there is".
+  const measured = useMemo(() => slowestSteps(run, Number.MAX_SAFE_INTEGER).length, [run]);
   if (steps.length === 0) return <Empty>No step has taken measurable time yet.</Empty>;
 
   const height = Math.max(steps.length * 22 + 16, 120);
@@ -422,11 +456,15 @@ const Slowest = ({
   return (
     <div className="h-full overflow-y-auto px-2 py-1">
       <p className="px-2 pb-1 text-[10px] text-muted-foreground">
-        slowest {steps.length} of {run.members?.length ?? 0} members ·{" "}
-        {formatDuration(run.duration_ms)} for the whole run
+        {/* Steps and rows, not members — these are individual requests, and several can
+            come from one member. Saying "of 17 members" was simply wrong. */}
+        slowest {steps.length} of {measured} timed requests · {formatDuration(run.duration_ms)} for
+        the whole run
       </p>
       <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={steps} layout="vertical" barSize={12} margin={{ left: 4, right: 64 }}>
+        {/* Wide right gutter: the label past the bar end carries the member name, which is
+            the whole reason four `Reset Password` bars are not interchangeable. */}
+        <BarChart data={steps} layout="vertical" barSize={12} margin={{ left: 4, right: 230 }}>
           <XAxis type="number" hide domain={[0, slowest]} />
           <YAxis
             type="category"
@@ -454,7 +492,17 @@ const Slowest = ({
               );
             }}
           />
-          <Bar dataKey="ms" isAnimationActive={false} radius={[0, 4, 4, 0]}>
+          <Bar
+            dataKey="ms"
+            isAnimationActive={false}
+            radius={[0, 4, 4, 0]}
+            // On the bar, not in a list underneath — the list overlapped the last bars and
+            // made the reader match rows to bars by eye.
+            label={barLabel((i) => {
+              const step = steps[i];
+              return step ? `${formatDuration(step.ms)}   in ${step.member}` : "";
+            })}
+          >
             {steps.map((step, i) => (
               <Cell
                 key={i}
@@ -468,15 +516,6 @@ const Slowest = ({
           </Bar>
         </BarChart>
       </ResponsiveContainer>
-      <ul className="px-2 pb-1 text-[10px] text-muted-foreground">
-        {steps.slice(0, 6).map((step, i) => (
-          <li key={i} className="flex gap-2">
-            <span className="w-12 shrink-0 text-right tabular-nums">{formatDuration(step.ms)}</span>
-            <span className="truncate">{step.label}</span>
-            <span className="truncate opacity-70">in {step.member}</span>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 };

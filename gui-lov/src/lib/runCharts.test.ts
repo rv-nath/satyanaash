@@ -259,6 +259,26 @@ describe("levelAt — one navigation model for every view", () => {
   });
 });
 
+describe("slices must be addressed by position, not by value", () => {
+  it("gives several members the same count and different notes", () => {
+    // The bug this guards is in the label renderer, but it is only reachable because the
+    // data allows it: at member level a dozen slices share the value 1, so looking a slice
+    // up *by value* — as Recharts' label.formatter forces you to — puts the first one's
+    // note on all of them. The renderer uses the index instead; this pins the premise.
+    const many = run([
+      member("A", "failed", [node("a", "failed")]),
+      member("B", "failed", [node("b", "failed")]),
+      member("C", "failed", [node("c", "failed")]),
+    ]);
+    const slices = levelAt(many, { kind: "verdict", verdict: "failed" }).slices;
+
+    expect(slices.map((s) => s.value)).toEqual([1, 1, 1]);
+    expect(slices.map((s) => s.label)).toEqual(["A", "B", "C"]);
+    // Distinct positions, identical values — so position is the only identity available.
+    expect(new Set(slices.map((s) => s.value)).size).toBe(1);
+  });
+});
+
 describe("slowestSteps", () => {
   it("names the member each step came from", () => {
     // Four `Reset Password` bars are meaningless without it.
