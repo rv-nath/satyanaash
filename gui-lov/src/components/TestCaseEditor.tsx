@@ -276,13 +276,6 @@ export const TestCaseEditor = ({
    * urlencoded → multipart keeps the fields untouched: same shape, different encoding, and
    * only multipart can carry a file.
    */
-  // What the sub-tab labels report, so you can see there are ten headers without opening
-  // the tab. Enabled only: an unticked header is not sent, so counting it would overstate.
-  const headerCount = headers.filter((h) => h.enabled && h.key.trim()).length;
-  const hasBodyContent = isForm(bodyType)
-    ? (formFields ?? []).some((f) => f.name.trim())
-    : payload.trim().length > 0;
-
   const switchBodyType = (next: BodyType) => {
     if (next === bodyType) return;
     setBodyType(next);
@@ -363,6 +356,15 @@ export const TestCaseEditor = ({
   };
 
   const hasPayload = ["POST", "PUT", "PATCH"].includes(method);
+
+  // What the sub-tab labels report, so you can see there are ten headers without opening
+  // the tab. Enabled only: an unticked header is not sent, so counting it would overstate.
+  const headerCount = headers.filter((h) => h.enabled && h.key.trim()).length;
+  const hasBodyContent =
+    hasPayload &&
+    (isForm(bodyType)
+      ? (formFields ?? []).some((f) => f.name.trim())
+      : payload.trim().length > 0);
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -882,6 +884,20 @@ export const TestCaseEditor = ({
                 <TabsContent value="body" className="mt-0 min-h-0 flex-1 overflow-hidden">
                   <ScrollArea className="h-full">
                     <div className="max-w-5xl space-y-2 p-6">
+              {/* A method that sends no body used to make this section simply not appear in a
+                  long scroll. As a tab it is a room you can walk into, so it has to say why
+                  it is empty rather than leaving you to guess. */}
+              {!hasPayload && (
+                <div className="rounded-md border border-border bg-muted/30 p-4">
+                  <p className="text-sm">
+                    A <span className="font-mono">{method}</span> request sends no body.
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Change the method to POST, PUT or PATCH above to send one. Anything you
+                    need to vary in a {method} goes in the URL — or in a dataset row&apos;s path.
+                  </p>
+                </div>
+              )}
               {/* Payload */}
               {hasPayload && (
                 <div className="space-y-2">
