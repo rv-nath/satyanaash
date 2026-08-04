@@ -82,7 +82,25 @@ pub fn hint_for(message: &str) -> Option<&'static str> {
         ),
         ("null", "Rhai writes an absent value as () — e.g. response.json.x != ()."),
         ("undefined", "Rhai writes an absent value as () — e.g. response.json.x != ()."),
+        (
+            "length",
+            "Rhai spells this len() — e.g. response.json.data.len() > 0.",
+        ),
+        ("push", "Rhai spells this arr.push(x) — but a check should read, not build."),
     ];
+
+    // A third shape, and the one that wastes the most time: `Unknown property 'x' - a
+    // getter is not registered for type '()'`. The property name is a red herring — `()`
+    // means whatever is to its *left* is absent, so fixing the property leaves the same
+    // error. Almost always this is `response.data` where the parsed body is under
+    // `response.json`.
+    if message.contains("a getter is not registered for type \'()\'") {
+        return Some(
+            "Whatever is to the left of this is nothing — () — so that is what to fix, \
+             not the property. The parsed body lives under response.json, so the shape \
+             is response.json.data, not response.data.",
+        );
+    }
     // Two shapes reach here: an unknown name ("Variable not found: console") and a
     // name Rhai reserves, which fails earlier as a syntax error ("'null' is a
     // reserved keyword"). Both are the same author mistake.
@@ -95,7 +113,13 @@ pub fn hint_for(message: &str) -> Option<&'static str> {
         let start = message.find('\'')? + 1;
         let rest = &message[start..];
         let name = &rest[..rest.find('\'')?];
-        if !message[start + name.len()..].contains("is a reserved keyword") {
+        // Two shapes quote a name: one Rhai reserves ("'null' is a reserved keyword") and
+        // a property it does not know ("Unknown property 'length'"). Both are the same
+        // kind of author mistake, so both get looked up.
+        if !message[start + name.len()..].contains("is a reserved keyword")
+            && !message.starts_with("Unknown property")
+            && !message.contains("Unknown property")
+        {
             return None;
         }
         name
@@ -182,6 +206,30 @@ mod tests {
         assert_eq!(hint_for("Syntax error: 'fn' is a reserved keyword"), None);
         // Not a JS-ism, and not a "variable not found" at all: no advice invented.
         assert_eq!(hint_for("Variable not found: myTypo"), None);
+
+        // The two errors that cost the most time on a real flow, both from the same check:
+        // `response.status == 200 && response.data.length > 0`.
+        //
+        // Rhai reports the *property*, but `()` says the trouble is the thing to its left.
+        // Advising "use len()" here would be true and useless — the fix is response.json.
+        let unit = hint_for(
+            "Unknown property \'length\' - a getter is not registered for type \'()\' \
+             (line 1, position 41)",
+        )
+        .unwrap();
+        assert!(unit.contains("response.json.data"), "{unit}");
+        assert!(unit.contains("not the property"), "{unit}");
+
+        // Once the left side resolves, the property really is the problem.
+        let js = hint_for("Unknown property \'length\' - a getter is not registered for type \'array\'")
+            .unwrap();
+        assert!(js.contains("len()"), "{js}");
+
+        // A property Rhai doesn't know that isn't a JS habit gets no invented advice.
+        assert_eq!(
+            hint_for("Unknown property \'wibble\' - a getter is not registered for type \'array\'"),
+            None
+        );
         assert_eq!(hint_for("Runtime error: division by zero"), None);
     }
 }
