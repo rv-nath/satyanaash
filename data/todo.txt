@@ -14,3 +14,4 @@
 [x] Support dragging of multiple selected nodes
 [x] Show the step-by-step toolbar right aligned instead of some arbitrary center.
 [x] on dbl-click of a node, we could open / switch to the test case tab of that node.
+[ ] improvisation: In the canvas, the scroll button changes the zoom size. Instead can it b used for scrolling only and a Ctrl+scroll can be used for zoom?
