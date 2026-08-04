@@ -54,6 +54,10 @@ import RunHistory from "@/components/RunHistory";
 import RunView from "@/components/RunView";
 import SuiteEditor from "@/components/SuiteEditor";
 import { SuitesList } from "@/components/SuitesList";
+import { ActivityRail } from "@/components/ActivityRail";
+import { RunsRail } from "@/components/RunsRail";
+import { useRailView } from "@/hooks/useRailView";
+import type { RailView } from "@/lib/railViews";
 import { useQuery } from "@tanstack/react-query";
 import { suitesApi } from "@/lib/api";
 import { consoleTabsFor, shownConsole } from "@/lib/consoleTabs";
@@ -365,6 +369,10 @@ const ProjectDetailContent = () => {
   // Environments & globals now live in the context (shared with the editor,
   // which sends the effective env and persists SAT.env writes).
 
+  // Which list the sidebar is showing. Remembered between sessions: the view you want is
+  // a property of how you work, not of the project.
+  const { view: railView, setView: setRailView } = useRailView();
+
   // Settings tab landing section. Open with an optional view so, e.g., the
   // Environments card / "Manage environments" land on the environments area.
   const [settingsInitialView, setSettingsInitialView] = useState<string | undefined>(undefined);
@@ -635,6 +643,102 @@ const ProjectDetailContent = () => {
         // nothing and the pane would be blank. Assigning to `never` is what actually
         // makes adding a kind without a branch a build error.
         const unhandled: never = surface;
+        return unhandled;
+      }
+    }
+  }
+
+  // The sidebar's lists, built once. Both the stacked Workspace view and the dedicated
+  // full-height views render the same element, so a handler cannot drift between them.
+  const testsList = (
+    <TestInventory
+      onAddTestCase={() => openTestCaseEditor()}
+      onEditTestCase={(test) => openTestCaseEditor(test.id)}
+      onDeleteTestCase={async (testCaseId) => {
+        if (!projectId) return;
+        try {
+          await deleteTestCaseMutation.mutateAsync({ id: testCaseId, projectId });
+          deleteTestCase(testCaseId);
+          toast.success("Test case deleted");
+        } catch (err) {
+          toast.error("Failed to delete test case");
+          console.error(err);
+        }
+      }}
+    />
+  );
+
+  const flowsList = (
+    <FlowsList
+      onOpenFlow={handleOpenFlow}
+      onAddGroup={handleCreateFlow}
+      onEditGroup={(group) => {
+        setEditingGroup({ id: group.id, name: group.name, description: group.description });
+        setGroupDialogOpen(true);
+      }}
+      onCloneGroup={handleCloneFlow}
+      onDeleteGroup={async (flowId) => {
+        if (!projectId) return;
+        try {
+          await deleteFlowMutation.mutateAsync({ id: flowId, projectId });
+          deleteTestGroup(flowId);
+          toast.success("Flow deleted");
+        } catch (err) {
+          toast.error("Failed to delete flow");
+          console.error(err);
+        }
+      }}
+    />
+  );
+
+  const suitesList = projectId ? (
+    <SuitesList projectId={projectId} onOpenSuite={openSuiteTab} />
+  ) : null;
+
+  const runsList = projectId ? (
+    <RunsRail projectId={projectId} onOpenRun={openRunTab} onOpenFullHistory={openRunsTab} />
+  ) : null;
+
+  /**
+   * What the sidebar shows, chosen by the rail.
+   *
+   * Workspace keeps the vertical `ResizablePanelGroup`; every other view replaces it
+   * outright. Conditionally rendering one panel *inside* the group would be the bug:
+   * react-resizable-panels registers panels by walking its direct children, so dropping the
+   * middle one silently reorders the handles — the same fault as the Fragment-wrapped panel
+   * that inverted a drag handle in the run tab. Swapping the whole group avoids it.
+   */
+  function renderSidebar(view: RailView): React.ReactNode {
+    switch (view) {
+      case "tests":
+        return testsList;
+      case "flows":
+        return flowsList;
+      case "suites":
+        return suitesList;
+      case "runs":
+        return runsList;
+      case "workspace":
+        return (
+          <ResizablePanelGroup direction="vertical">
+            <ResizablePanel defaultSize={60} minSize={20}>
+              {testsList}
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel defaultSize={30} minSize={15}>
+              {flowsList}
+            </ResizablePanel>
+            <ResizableHandle />
+            <ResizablePanel defaultSize={20} minSize={10}>
+              {suitesList}
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        );
+      default: {
+        // Same guard as `renderSurface`: without it a view added later falls through and
+        // returns undefined, which ReactNode accepts, and the sidebar goes blank with no
+        // compiler complaint.
+        const unhandled: never = view;
         return unhandled;
       }
     }
@@ -1032,137 +1136,103 @@ const ProjectDetailContent = () => {
       </header>
 
       {/* Main Content */}
-      <ResizablePanelGroup direction="horizontal" className="flex-1">
-        {/* Left Panel — stacked rail: Flows over Tests */}
-        <ResizablePanel defaultSize={18} minSize={14} maxSize={26} className="min-w-[200px] max-w-[300px]">
-          <div className="h-full bg-sidebar border-r border-sidebar-border">
-            <ResizablePanelGroup direction="vertical">
-              <ResizablePanel defaultSize={60} minSize={20}>
-                <TestInventory
-                  onAddTestCase={() => openTestCaseEditor()}
-                  onEditTestCase={(test) => openTestCaseEditor(test.id)}
-                  onDeleteTestCase={async (testCaseId) => {
-                    if (!projectId) return;
-                    try {
-                      await deleteTestCaseMutation.mutateAsync({ id: testCaseId, projectId });
-                      deleteTestCase(testCaseId);
-                      toast.success("Test case deleted");
-                    } catch (err) {
-                      toast.error("Failed to delete test case");
-                      console.error(err);
-                    }
-                  }}
-                />
-              </ResizablePanel>
-              <ResizableHandle />
-              <ResizablePanel defaultSize={30} minSize={15}>
-                <FlowsList
-                  onOpenFlow={handleOpenFlow}
-                  onAddGroup={handleCreateFlow}
-                  onEditGroup={(group) => {
-                    setEditingGroup({ id: group.id, name: group.name, description: group.description });
-                    setGroupDialogOpen(true);
-                  }}
-                  onCloneGroup={handleCloneFlow}
-                  onDeleteGroup={async (flowId) => {
-                    if (!projectId) return;
-                    try {
-                      await deleteFlowMutation.mutateAsync({ id: flowId, projectId });
-                      deleteTestGroup(flowId);
-                      toast.success("Flow deleted");
-                    } catch (err) {
-                      toast.error("Failed to delete flow");
-                      console.error(err);
-                    }
-                  }}
-                />
-              </ResizablePanel>
-              <ResizableHandle />
-              <ResizablePanel defaultSize={20} minSize={10}>
-                {projectId && <SuitesList projectId={projectId} onOpenSuite={openSuiteTab} />}
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </div>
-        </ResizablePanel>
+      <div className="flex min-h-0 flex-1">
+        {/* Far-left rail: what the sidebar shows. Below the header and beside the sidebar it
+            controls, so the header keeps the back button, title and run controls. */}
+        <ActivityRail
+          view={railView}
+          onSelect={setRailView}
+          onOpenSettings={() => openSettings()}
+          settingsActive={activeIsSettings}
+        />
 
-        <ResizableHandle />
-
-        {/* Tabbed workspace: pinned canvas + open test-case tabs */}
-        <ResizablePanel defaultSize={78}>
-          <div className="flex h-full flex-col">
-            <WorkspaceTabs
-              tabs={renderTabs}
-              settingsOpen={workspace.settingsOpen}
-              settingsDirty={dirtyTabs['settings']}
-              runsOpen={workspace.runsOpen}
-              active={workspace.active}
-              onActivate={activateTab}
-              onClose={requestCloseTab}
-              onRename={handleRenameTab}
-              onTogglePin={toggleRunPinned}
-            />
-            <div className="relative min-h-0 flex-1">
-              {/* Every open test editor stays mounted (hidden unless active) so an
-                  unsaved draft survives switching tabs. */}
-              {workspace.tabs
-                .filter((t) => t.kind === 'test')
-                .map((t) => {
-                  const key = tabKey('test', t.id);
-                  const isActive = workspace.active === key;
-                  return (
-                    <div
-                      key={key}
-                      className="absolute inset-0"
-                      style={{ display: isActive ? 'block' : 'none' }}
-                      aria-hidden={!isActive}
-                    >
-                      <TestCaseEditor
-                        testCaseId={t.id === '__new__' ? undefined : t.id}
-                        isActive={isActive}
-                        initialSubTab={editorSubTabRef.current[key]}
-                        onSubTabChange={(tab) => persistEditorSubTab(key, tab)}
-                        initialResult={(editorResultRef.current[key] as TestCaseExecutionResult | undefined) ?? null}
-                        onResultChange={(result) => persistEditorResult(key, result)}
-                        onDirtyChange={(dirty) => markTabDirty(key, dirty)}
-                        onClose={() => requestCloseTab(key)}
-                        onCreated={(newId) => {
-                          doCloseTab(key);
-                          openTestTab(newId);
-                        }}
-                      />
-                    </div>
-                  );
-                })}
-
-              {/* Settings stays mounted for the same reason — unsaved edits there
-                  must survive switching tabs. */}
-              {workspace.settingsOpen && project && (
-                <div
-                  className="absolute inset-0"
-                  style={{ display: activeIsSettings ? 'block' : 'none' }}
-                  aria-hidden={!activeIsSettings}
-                >
-                  <SettingsPanel
-                    project={project}
-                    initialView={settingsInitialView}
-                    onDirtyChange={(dirty) => markTabDirty('settings', dirty)}
-                  />
-                </div>
-              )}
-
-              {/* Exactly one of these, chosen by kind. Everything above this point stays
-                  mounted while hidden; everything here is mounted only while active.
-
-                  Rendered only when there is something to render. An empty
-                  `absolute inset-0` div is a transparent, full-size overlay, and it sits
-                  after the kept-mounted editors in source order — so on a test or settings
-                  tab it covered them and swallowed every click. The editor was visible and
-                  untouchable. */}
-              {surfaceContent && <div className="absolute inset-0">{surfaceContent}</div>}
+        <ResizablePanelGroup direction="horizontal" className="min-w-0 flex-1">
+          {/* Left panel: one list, or the stacked Workspace view */}
+          <ResizablePanel defaultSize={18} minSize={14} maxSize={26} className="min-w-[200px] max-w-[300px]">
+            <div className="h-full bg-sidebar border-r border-sidebar-border">
+              {renderSidebar(railView)}
             </div>
-          </div>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+          </ResizablePanel>
+
+          <ResizableHandle />
+
+          {/* Tabbed workspace: pinned canvas + open test-case tabs */}
+          <ResizablePanel defaultSize={78}>
+            <div className="flex h-full flex-col">
+              <WorkspaceTabs
+                tabs={renderTabs}
+                settingsOpen={workspace.settingsOpen}
+                settingsDirty={dirtyTabs['settings']}
+                runsOpen={workspace.runsOpen}
+                active={workspace.active}
+                onActivate={activateTab}
+                onClose={requestCloseTab}
+                onRename={handleRenameTab}
+                onTogglePin={toggleRunPinned}
+              />
+              <div className="relative min-h-0 flex-1">
+                {/* Every open test editor stays mounted (hidden unless active) so an
+                    unsaved draft survives switching tabs. */}
+                {workspace.tabs
+                  .filter((t) => t.kind === 'test')
+                  .map((t) => {
+                    const key = tabKey('test', t.id);
+                    const isActive = workspace.active === key;
+                    return (
+                      <div
+                        key={key}
+                        className="absolute inset-0"
+                        style={{ display: isActive ? 'block' : 'none' }}
+                        aria-hidden={!isActive}
+                      >
+                        <TestCaseEditor
+                          testCaseId={t.id === '__new__' ? undefined : t.id}
+                          isActive={isActive}
+                          initialSubTab={editorSubTabRef.current[key]}
+                          onSubTabChange={(tab) => persistEditorSubTab(key, tab)}
+                          initialResult={(editorResultRef.current[key] as TestCaseExecutionResult | undefined) ?? null}
+                          onResultChange={(result) => persistEditorResult(key, result)}
+                          onDirtyChange={(dirty) => markTabDirty(key, dirty)}
+                          onClose={() => requestCloseTab(key)}
+                          onCreated={(newId) => {
+                            doCloseTab(key);
+                            openTestTab(newId);
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+
+                {/* Settings stays mounted for the same reason — unsaved edits there
+                    must survive switching tabs. */}
+                {workspace.settingsOpen && project && (
+                  <div
+                    className="absolute inset-0"
+                    style={{ display: activeIsSettings ? 'block' : 'none' }}
+                    aria-hidden={!activeIsSettings}
+                  >
+                    <SettingsPanel
+                      project={project}
+                      initialView={settingsInitialView}
+                      onDirtyChange={(dirty) => markTabDirty('settings', dirty)}
+                    />
+                  </div>
+                )}
+
+                {/* Exactly one of these, chosen by kind. Everything above this point stays
+                    mounted while hidden; everything here is mounted only while active.
+
+                    Rendered only when there is something to render. An empty
+                    `absolute inset-0` div is a transparent, full-size overlay, and it sits
+                    after the kept-mounted editors in source order — so on a test or settings
+                    tab it covered them and swallowed every click. The editor was visible and
+                    untouchable. */}
+                {surfaceContent && <div className="absolute inset-0">{surfaceContent}</div>}
+              </div>
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
 
       <TestGroupDialog
         open={groupDialogOpen}
