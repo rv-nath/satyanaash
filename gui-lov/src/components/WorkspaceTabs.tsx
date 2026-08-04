@@ -94,7 +94,9 @@ export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, act
   };
 
   return (
-    <div className="flex items-end gap-0.5 border-b border-border bg-card px-2 pt-1.5 min-h-[38px]">
+    /* Chrome, not content: a tab label is a handle, and a drag that began on the canvas must
+       not be able to paint it. Same reason as the canvas and the rail. */
+    <div className="flex select-none items-end gap-0.5 border-b border-border bg-card px-2 pt-1.5 min-h-[38px]">
       {tabs.map((t) => (
         <TabShell
           key={t.key}

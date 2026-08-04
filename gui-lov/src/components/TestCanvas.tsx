@@ -506,6 +506,13 @@ const TestCanvasContent = () => {
       )}
 
       <ReactFlow
+        /* A marquee drag starts a native text selection at the pane, and the browser extends
+           it across every sibling in the document — so drag-selecting nodes painted the rail
+           labels, the flow names and the tab title grey. Killing it at the origin is the fix.
+
+           Safe for the things that must stay copyable: node popovers render through a Radix
+           portal on <body>, so an exported JWT is still selectable. */
+        className="select-none"
         nodes={styledNodes}
         edges={styledEdges}
         onNodesChange={handleNodesChange}

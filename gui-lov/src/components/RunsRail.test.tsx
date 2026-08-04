@@ -52,12 +52,22 @@ describe("the runs rail", () => {
     expect(onOpenRun).toHaveBeenCalledWith("r1");
   });
 
-  it("puts the name on its own line, with the facts under it", async () => {
-    // One line in a 200px column truncates the name to nothing — and the name is the only
-    // part you scan by.
+  it("keeps only the facts that fit, and spells none of them out", async () => {
+    // The first attempt kept everything `RunHistory` shows and clipped mid-word —
+    // "35/49 passed · 14 fa" — which spends the space without finishing the sentence. So
+    // the row carries bare numbers beside the name and the time beneath it, and the
+    // breakdown lives in the tooltip.
     renderRail();
     expect(await screen.findByText("Nightly regression")).toBeInTheDocument();
-    expect(screen.getByText(/2m 04s · .* · 49\/49 passed/)).toBeInTheDocument();
+    expect(screen.getByText("49/49")).toBeInTheDocument();
+    expect(screen.getByText("2m 04s")).toBeInTheDocument();
+    // "passed" spelled out on the row is what pushed the name off it.
+    expect(screen.queryByText(/49\/49 passed/)).not.toBeInTheDocument();
+    // Still reachable, in full, without leaving the sidebar.
+    expect(screen.getByRole("button", { name: /Nightly regression/ })).toHaveAttribute(
+      "title",
+      expect.stringContaining("49/49 passed"),
+    );
   });
 
   it("says when a run was a flow someone ran by hand", async () => {

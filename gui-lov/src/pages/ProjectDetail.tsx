@@ -749,7 +749,15 @@ const ProjectDetailContent = () => {
   const surfaceContent = renderSurface();
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    /* `h-screen`, not `min-h-screen`: the app is exactly the viewport and every pane scrolls
+       inside itself — they all carry their own ScrollArea already.
+
+       Load-bearing, not tidying. `min-h-screen` leaves the root's height `auto`, so a
+       percentage height inside it has nothing to resolve against. The horizontal
+       ResizablePanelGroup ships with inline `height: 100%`, and one wrapper div between it and
+       an auto-height root was enough to make that resolve as `auto` — the group collapsed to
+       its min-content and the workspace became two headers over a blank page. */
+    <div className="h-screen overflow-hidden bg-background flex flex-col">
       {/* Header */}
       <header className="border-b border-border bg-card px-6 py-3 flex items-center justify-between">
         {/* Left: Back + Contextual Title */}
@@ -1149,7 +1157,9 @@ const ProjectDetailContent = () => {
         <ResizablePanelGroup direction="horizontal" className="min-w-0 flex-1">
           {/* Left panel: one list, or the stacked Workspace view */}
           <ResizablePanel defaultSize={18} minSize={14} maxSize={26} className="min-w-[200px] max-w-[300px]">
-            <div className="h-full bg-sidebar border-r border-sidebar-border">
+            {/* select-none for the whole column: every name in here is something you click,
+                and a drag that starts on the canvas or in the rail should not select them. */}
+            <div className="h-full select-none bg-sidebar border-r border-sidebar-border">
               {renderSidebar(railView)}
             </div>
           </ResizablePanel>

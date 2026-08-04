@@ -32,7 +32,9 @@ interface Props {
 export const ActivityRail = ({ view, onSelect, onOpenSettings, settingsActive }: Props) => (
   <nav
     aria-label="Sidebar views"
-    className="flex w-14 shrink-0 flex-col border-r border-sidebar-border bg-sidebar py-1"
+    // select-none: these labels are navigation, and a drag begun on the canvas used to
+    // select them along with everything else in the frame.
+    className="flex w-16 shrink-0 select-none flex-col border-r border-sidebar-border bg-sidebar py-1"
   >
     {RAIL_VIEWS.map((entry) => (
       <RailButton

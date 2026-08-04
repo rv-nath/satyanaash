@@ -112,30 +112,49 @@ export const RunsRail = ({ projectId, onOpenRun, onOpenFullHistory }: Props) => 
 };
 
 /**
- * Two lines, because one will not fit.
+ * Two lines, and a deliberately small set of facts on them.
  *
- * A suite name and four facts on a single row inside a 200px column truncates the name to
- * nothing — and the name is the only part you scan by.
+ * The full row from `RunHistory` — duration, when, "35/49 passed · 14 failed", an ad-hoc
+ * pill — does not fit in this column at any font size. The first attempt kept them all and
+ * clipped mid-word: `35/49 passed · 14 fa`, which is worse than dropping them, because a
+ * fact you cannot finish reading still spends the space.
+ *
+ * So the row keeps what you pick a run *by*: the verdict, the name, how much passed, and
+ * when. The failure breakdown is in the tooltip and in the full history — one click away,
+ * and this list is for finding a run rather than for reading one.
  */
 const RunRow = ({ run, onOpen }: { run: SuiteRun; onOpen: () => void }) => {
   const v = verdict(run);
+  const ran = run.total - run.skipped;
   return (
     <button
       type="button"
       onClick={onOpen}
-      title={`Open this run — ${countsLine(run)}`}
+      title={`${run.suite_name} — ${countsLine(run)}${run.suite_id ? "" : " (ad-hoc flow run)"}`}
       className="flex w-full items-start gap-1.5 rounded px-1.5 py-1 text-left hover:bg-sidebar-accent"
     >
-      <span className={`mt-[1px] w-3 shrink-0 font-mono text-xs ${verdictClass[v]}`}>
+      <span className={`mt-[2px] w-3 shrink-0 text-center font-mono text-xs ${verdictClass[v]}`}>
         {verdictIcon(v)}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[13px] leading-tight">{run.suite_name}</span>
-        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-          {formatDuration(run.duration_ms)} · {formatWhen(run.started_at)} · {countsLine(run)}
-          {/* A flow you ran by hand, not a suite. Said in words here rather than as a badge:
-              a pill on every second row in a narrow column is what pushes the name out. */}
-          {!run.suite_id && " · ad-hoc"}
+        <span className="flex items-baseline gap-1.5">
+          <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">
+            {run.suite_name}
+          </span>
+          {/* Bare numbers, no words: "passed" spelled out is what pushed the name off the
+              row, and the icon beside it has already said which way it went. */}
+          {ran > 0 && (
+            <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+              {run.passed}/{ran}
+            </span>
+          )}
+        </span>
+        <span className="mt-0.5 flex items-baseline gap-1.5 text-[10px] text-muted-foreground">
+          <span className="truncate">{formatWhen(run.started_at)}</span>
+          <span className="shrink-0 tabular-nums">{formatDuration(run.duration_ms)}</span>
+          {/* A flow someone ran by hand, not a suite. In words rather than a pill: a badge on
+              every second row is what makes a narrow column unreadable. */}
+          {!run.suite_id && <span className="shrink-0">· ad-hoc</span>}
         </span>
       </span>
     </button>
