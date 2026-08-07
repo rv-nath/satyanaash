@@ -2,7 +2,23 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Plus, Trash2, Copy, AlertTriangle, Link2, CircleSlash } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Copy,
+  AlertTriangle,
+  Link2,
+  CircleSlash,
+  Maximize2,
+} from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import type { Dataset } from "@/lib/api/types";
 import {
   addRow,
@@ -73,7 +89,22 @@ interface CellProps {
   editing: boolean;
   onEdit: () => void;
   onDone: () => void;
+  /**
+   * An example, shown **only while editing**.
+   *
+   * It cannot be shown collapsed. These cells are `border-0 bg-transparent` — invisible
+   * until focused — so a sample body sitting in an empty cell reads as a real body, and the
+   * author only discovers otherwise by clicking in and typing. `whenEmpty` is what a
+   * collapsed empty cell says instead.
+   */
   placeholder: string;
+  /**
+   * What is *true* when this cell is blank — not an example of what could go in it.
+   *
+   * Rendered as italic prose, never in the mono face the values use, because the one thing
+   * it must never be mistaken for is a value.
+   */
+  whenEmpty: string;
   label: string;
   /** Colour for the collapsed preview — used to flag a body that isn't JSON. */
   tone?: string;
@@ -85,6 +116,15 @@ interface CellProps {
   dim?: boolean;
   /** Proportional rather than monospace — a case name is prose, not a payload. */
   prose?: boolean;
+  /**
+   * Offer room to write in, in a dialog.
+   *
+   * For the cells that hold code rather than a word: Expect is a `minmax(90px,0.4fr)` column,
+   * and expanding in place leaves a Rhai expression in ninety pixels. Opt-in rather than on
+   * every cell — a three-character path parameter does not need a dialog, and an icon in every
+   * cell of twenty-one rows is the clutter this table was cleaned up to remove.
+   */
+  expandable?: boolean;
   /**
    * Ruled through, because this row is parked.
    *
@@ -121,6 +161,7 @@ function EditableCell({
   onEdit,
   onDone,
   placeholder,
+  whenEmpty,
   label,
   tone,
   hint,
@@ -129,7 +170,31 @@ function EditableCell({
   struck,
   wrap,
   editorHeight,
+  expandable,
 }: CellProps) {
+  // Local, because it is about this moment and not something to remember. Also what tells the
+  // blur handler below to hold its fire.
+  const [expanded, setExpanded] = useState(false);
+  /**
+   * The dialog's own copy, committed on Save.
+   *
+   * Live-editing the cell would have made Escape mean *keep* — and Escape means abandon
+   * everywhere else in this app and every other one. A modal that cannot be backed out of is
+   * not a modal; the price is one snapshot to diff against.
+   */
+  const [draft, setDraft] = useState(value);
+  const dirty = draft !== value;
+
+  const openBig = () => {
+    setDraft(value);
+    setExpanded(true);
+  };
+  const closeBig = (save: boolean) => {
+    if (save) onChange(draft);
+    setExpanded(false);
+    onDone();
+  };
+
   if (!editing) {
     const preview = oneLine(value);
     return (
@@ -144,32 +209,111 @@ function EditableCell({
           title={!wrap && preview ? preview : undefined}
           className={`block w-full px-2 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${
             wrap ? "min-h-9 break-words py-2 leading-snug" : "h-9 truncate"
-          } ${prose ? "text-[13px]" : "font-mono text-xs"} ${struck ? "line-through" : ""} ${
-            preview ? (tone ?? "text-foreground") : "text-muted-foreground/70"
+          } ${struck ? "line-through" : ""} ${
+            preview
+              ? `${prose ? "text-[13px]" : "font-mono text-xs"} ${tone ?? "text-foreground"}`
+              : // Italic, proportional and dimmer: three signals that this is the editor
+                // talking about an empty cell, not the cell's contents. One of them —
+                // dropping the mono face — is the one that actually stops a JSON-shaped
+                // note from reading as JSON.
+                "text-[13px] italic text-muted-foreground/60"
           }`}
         >
-          {preview || placeholder}
+          {preview || whenEmpty}
         </button>
       </div>
     );
   }
+  const monospace = prose ? "text-[13px]" : "font-mono text-xs";
+
   return (
-    <div className={`min-w-0 ${CELL}`}>
+    <div className={`relative min-w-0 ${CELL}`}>
       <Textarea
         // eslint-disable-next-line jsx-a11y/no-autofocus -- the click that opened
         // this cell was aimed at the field it replaces.
         autoFocus
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        onBlur={onDone}
+        // Held while the dialog is open: the dialog taking focus is a blur, and collapsing the
+        // cell would unmount the dialog along with it.
+        onBlur={() => {
+          if (!expanded) onDone();
+        }}
         placeholder={placeholder}
         aria-label={label}
         className={`scrollbar-hairline ${editorHeight} min-h-0 w-full resize-y px-2 py-1.5 ${
           // A body keeps its authored line breaks; a name is prose and wraps.
           wrap ? "whitespace-normal" : "whitespace-pre"
-        } ${prose ? "text-[13px]" : "font-mono text-xs"} ${FIELD}`}
+        } ${expandable ? "pr-7" : ""} ${monospace} ${FIELD}`}
       />
+      {expandable && (
+        <button
+          type="button"
+          // Without this the mousedown blurs the textarea, `onDone` collapses the cell, and the
+          // button is gone before the click lands on it.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={openBig}
+          // Not "Edit {label} in a larger editor": that string contains the cell's own label,
+          // so every existing query for the cell matched the button too. Exactly one cell edits
+          // at a time, so one of these is on screen at once, and the dialog it opens is titled
+          // with the cell's full label.
+          aria-label="Room to write"
+          title="Room to write"
+          className="absolute right-0.5 top-0.5 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <Maximize2 className="h-3 w-3" />
+        </button>
+      )}
       {hint && <div className="px-2 pb-1.5">{hint}</div>}
+
+      <Dialog open={expanded} onOpenChange={(open) => !open && closeBig(false)}>
+        <DialogContent
+          className="max-w-2xl"
+          // Belt to the braces in `TestCaseEditor`: that document-level Escape listener closed
+          // the whole editor when a dialog inside it was dismissed. It now ignores Escape while
+          // a modal is open; stopping it here as well means neither fix alone is load-bearing.
+          onEscapeKeyDown={(e) => e.stopPropagation()}
+        >
+          <DialogHeader>
+            <DialogTitle className="text-sm">{label}</DialogTitle>
+            <DialogDescription className="text-[13px]">
+              {/* Says what the two buttons do, because a modal over a live table has to be
+                  clear about which of the two versions survives. */}
+              Save keeps this; Escape or Cancel leaves the cell as it was.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            // eslint-disable-next-line jsx-a11y/no-autofocus -- the dialog was opened to type in.
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // The shortcut for "done" that does not fight the newline this field is for.
+              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                e.preventDefault();
+                closeBig(true);
+              }
+            }}
+            placeholder={placeholder}
+            aria-label={label}
+            className={`scrollbar-hairline h-[320px] w-full resize-none whitespace-pre ${monospace}`}
+          />
+          {hint}
+          <DialogFooter className="gap-2 sm:justify-between">
+            <span className="self-center text-[11px] text-muted-foreground">
+              {dirty ? "Unsaved changes" : "No changes"}
+            </span>
+            <span className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => closeBig(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={() => closeBig(true)} disabled={!dirty}>
+                Save
+              </Button>
+            </span>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -361,7 +505,8 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
                     editing={isEditing(row.id, "name")}
                     onEdit={edit(row.id, "name")}
                     onDone={done(row.id, "name")}
-                    placeholder={label}
+                    placeholder="what this case is trying"
+                    whenEmpty={label}
                     label={`Case name for row ${i + 1}`}
                     dim={dim}
                     prose
@@ -391,14 +536,17 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
                   <div className={`min-w-0 ${CELL} ${dim ? "opacity-50" : ""}`}>
                     <Input
                       value={row.path ?? ""}
-                      placeholder="?org=acme"
+                      // Italic and proportional, for the same reason the collapsed cells
+                      // are: `?org=acme` in this column's mono face read as a path this row
+                      // actually sends. The example lives in the tooltip now.
+                      placeholder="as authored"
                       onChange={(e) => onChange(setRowPath(dataset, row.id, e.target.value))}
-                      className={`h-9 px-2 font-mono text-[13px] ${FIELD}`}
+                      className={`h-9 px-2 font-mono text-[13px] placeholder:font-sans placeholder:italic placeholder:text-muted-foreground/60 ${FIELD}`}
                       aria-label={`Path or query for ${label}`}
                       title={
                         row.path?.trim()
                           ? `Appended to the request's endpoint: …${joinEndpoint("", row.path)}`
-                          : "Appended to the request's endpoint — leave blank to use it as authored"
+                          : "Appended to the request's endpoint (e.g. ?org=acme) — blank sends it as authored"
                       }
                     />
                   </div>
@@ -409,11 +557,16 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
                     editing={isEditing(row.id, "body")}
                     onEdit={edit(row.id, "body")}
                     onDone={done(row.id, "body")}
-                    placeholder={"{\"email\": \"a@b.com\"}   — blank uses the Request tab’s body"}
+                    placeholder={"{\"email\": \"a@b.com\"}"}
+                    // The fault this replaces: the example above was shown collapsed and
+                    // truncated, so a blank cell read as `{"email": "a@b.com"}` — a body
+                    // this row does not have. What is true is that it sends the request's.
+                    whenEmpty="uses the request’s body"
                     label={`Body for ${label}`}
                     dim={dim}
                     tone={badJson ? "text-warning" : undefined}
                     editorHeight="h-[220px]"
+                    expandable
                     hint={
                       badJson ? (
                         <span className="flex items-center gap-1 text-[11px] text-warning">
@@ -430,9 +583,13 @@ export function DatasetEditor({ dataset, onChange, sharedAssertion, endpoint }: 
                     onEdit={edit(row.id, "check")}
                     onDone={done(row.id, "check")}
                     placeholder="400   — or an expression"
+                    // Not "e.g. 400": blank *is* a rule — `Check::Unstated` requires a 2xx —
+                    // and this is the same words the result reports as what was expected.
+                    whenEmpty="any 2xx"
                     label={`Expected result for ${label}`}
                     dim={dim}
                     editorHeight="h-[88px]"
+                    expandable
                     hint={
                       <p className="text-[11px] text-muted-foreground">
                         {!check.trim()

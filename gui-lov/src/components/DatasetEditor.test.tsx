@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DatasetEditor } from "@/components/DatasetEditor";
 import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName, setRowDisabled, setRowNeedsFlow, setRowVar } from "@/lib/dataset";
@@ -26,6 +26,51 @@ describe("DatasetEditor", () => {
     render(<DatasetEditor dataset={emptyDataset()} onChange={onChange} />);
     await userEvent.click(screen.getByRole("button", { name: /add the first case/i }));
     expect(onChange.mock.calls[0][0].rows).toHaveLength(1);
+  });
+
+  it("an empty cell says what is true, never an example of what could go in it", async () => {
+    // The fault: these cells are `border-0 bg-transparent`, invisible until focused, so the
+    // editing example sat in a blank cell looking like content. Truncated to the column
+    // width it read as `{"email": "a@b.com"}` — a body the row does not have — and the only
+    // way to find out was to click in and start typing.
+    let d = addRow(emptyDataset());
+    d = setRowName(d, d.rows[0].id, "empties");
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    const body = screen.getByLabelText(/^body for empties$/i);
+    expect(body).toHaveTextContent("uses the request’s body");
+    // Nothing JSON-shaped, and not in the mono face the real values wear.
+    expect(body.textContent).not.toContain("{");
+    expect(body.className).toContain("italic");
+    expect(body.className).not.toContain("font-mono");
+
+    // Blank Expect is not an absence of a rule — the engine requires a 2xx — and these are
+    // the words the result reports back as what was expected.
+    expect(screen.getByLabelText(/^expected result for empties$/i)).toHaveTextContent("any 2xx");
+  });
+
+  it("keeps the example, but only once you are typing in the field", async () => {
+    // An example is genuinely useful — the objection was to showing it where it could pass
+    // for a value. In an open editor the field is visibly a field.
+    let d = addRow(emptyDataset());
+    d = setRowName(d, d.rows[0].id, "empties");
+    render(<DatasetEditor dataset={d} onChange={vi.fn()} />);
+
+    await userEvent.click(screen.getByLabelText(/^body for empties$/i));
+    expect(screen.getByLabelText(/^body for empties$/i)).toHaveAttribute(
+      "placeholder",
+      expect.stringContaining('{"email": "a@b.com"}'),
+    );
+  });
+
+  it("a real value still looks like a value", async () => {
+    // The empty-state styling must not leak onto content — a body that is there wears the
+    // mono face and full-strength ink.
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    const body = screen.getByLabelText(/^body for valid$/i);
+    expect(body).toHaveTextContent('{"email":"a@b.com"}');
+    expect(body.className).toContain("font-mono");
+    expect(body.className).not.toContain("italic");
   });
 
   it("reports body and check edits", async () => {
@@ -378,5 +423,109 @@ describe("DatasetEditor parking a row", () => {
       "title",
       expect.stringMatching(/park this row while you draft/i),
     );
+  });
+});
+
+describe("DatasetEditor room to write", () => {
+  it("offers a larger editor for the cells that hold code, and not for the rest", async () => {
+    // Expect is a `minmax(90px,0.4fr)` column, so expanding in place leaves a Rhai expression
+    // in ninety pixels. Case and the path parameters hold a word — an icon in every cell of
+    // twenty-one rows is the clutter this table was cleaned up to remove.
+    const { rerender } = render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    expect(screen.getByRole("button", { name: /room to write/i })).toBeInTheDocument();
+
+    rerender(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /^case name for/i }));
+    expect(screen.queryByRole("button", { name: /room to write/i })).not.toBeInTheDocument();
+  });
+
+  it("commits only on Save, and leaves the cell alone on Cancel", async () => {
+    // Escape means abandon everywhere else in this app; live-editing would have made it mean
+    // keep. A modal that cannot be backed out of is not a modal.
+    const onChange = vi.fn();
+    render(<DatasetEditor dataset={seed()} onChange={onChange} />);
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+
+    const big = within(screen.getByRole("dialog")).getByRole("textbox");
+    await userEvent.clear(big);
+    await userEvent.type(big, "response.status == 202");
+    // Nothing has reached the dataset yet.
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText(/unsaved changes/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(onChange).not.toHaveBeenCalled();
+
+    // Same again, this time saving.
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+    const again = within(screen.getByRole("dialog")).getByRole("textbox");
+    await userEvent.clear(again);
+    await userEvent.type(again, "response.status == 202");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    const rows = onChange.mock.calls.at(-1)![0].rows;
+    expect(rows[0].check).toBe("response.status == 202");
+  });
+
+  it("cannot save what hasn't changed, and says so", async () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+    expect(screen.getByText(/no changes/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+  });
+
+  it("opens on the cell's current value, not the last thing typed in the dialog", async () => {
+    // The snapshot is taken on open. Cancel, edit the cell, reopen — the dialog must not still
+    // be holding the abandoned draft.
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+    await userEvent.type(within(screen.getByRole("dialog")).getByRole("textbox"), "999");
+    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+    expect(within(screen.getByRole("dialog")).getByRole("textbox")).toHaveValue("201");
+  });
+
+  it("marks itself as a modal layer, which is what stops Escape closing the editor", async () => {
+    // The bug this pins: `TestCaseEditor` has a *document-level* Escape listener that closes the
+    // whole editor, so dismissing this dialog landed you on the welcome page. The guard there
+    // keys off exactly this attribute pair, and Radix — not our code — sets them.
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+    expect(document.querySelector('[role="dialog"][data-state="open"]')).not.toBeNull();
+  });
+
+  it("keeps the cell open while the dialog is, and edits its own copy", async () => {
+    // The dialog taking focus is a blur on the cell behind it. Collapsing on that blur would
+    // unmount the dialog in the same tick it opened.
+    const onChange = vi.fn();
+    render(<DatasetEditor dataset={seed()} onChange={onChange} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    const big = within(dialog).getByRole("textbox");
+    expect(big).toHaveValue("201");
+    // Its own copy: nothing reaches the dataset until Save.
+    await userEvent.type(big, "x");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("says which of the two versions survives", async () => {
+    // A modal over a live table has to be clear about that, or Save and Escape are a coin toss.
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
+    await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
+    expect(screen.getByText(/leaves the cell as it was/i)).toBeInTheDocument();
   });
 });
