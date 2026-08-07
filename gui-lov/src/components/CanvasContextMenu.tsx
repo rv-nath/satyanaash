@@ -11,10 +11,10 @@ interface CanvasContextMenuProps {
 }
 
 export const CanvasContextMenu = ({ x, y, onClose, canvasPosition, selectedNode, onConfigureNode }: CanvasContextMenuProps) => {
-  const { testGroups, addNodeToCanvas, activeFlowId } = useTestProject();
+  const { flows, addNodeToCanvas, activeFlowId } = useTestProject();
 
   // Filter out the current flow - can't add a flow into itself (prevents recursion)
-  const availableFlows = testGroups.filter(g => g.id !== activeFlowId);
+  const availableFlows = flows.filter(g => g.id !== activeFlowId);
 
   const handleAddNode = (type: 'start' | 'end', label: string) => {
     addNodeToCanvas(type, { label }, canvasPosition);

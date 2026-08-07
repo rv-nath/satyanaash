@@ -16,7 +16,7 @@ export interface ValidationIssue {
 interface FlowValidatorProps {
   nodes: Node[];
   edges: Edge[];
-  testGroups: any[];
+  flows: any[];
   activeFlowId: string | null;
   onClose: () => void;
   onJumpToNode?: (nodeId: string) => void;

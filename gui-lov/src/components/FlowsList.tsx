@@ -17,7 +17,7 @@ interface FlowsListProps {
 }
 
 export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, onDeleteGroup }: FlowsListProps) => {
-  const { testGroups } = useTestProject();
+  const { flows } = useTestProject();
   // Single click selects (highlights); double click opens — mirrors the tests rail.
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
@@ -25,7 +25,7 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const matches = useMemo(() => filterFlows(testGroups, searchQuery), [testGroups, searchQuery]);
+  const matches = useMemo(() => filterFlows(flows, searchQuery), [flows, searchQuery]);
   const searching = searchQuery.trim().length > 0;
 
   // Ctrl+F reaches for the search only when the focus is already in this rail, so it does
@@ -56,9 +56,9 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
           Flows
         </span>
         <span className="text-[10px] text-muted-foreground/60">
-          {matches.length === testGroups.length
-            ? testGroups.length
-            : `${matches.length}/${testGroups.length}`}
+          {matches.length === flows.length
+            ? flows.length
+            : `${matches.length}/${flows.length}`}
         </span>
         <div className="flex-1" />
         <Button
@@ -109,7 +109,7 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
       {/* Flows List */}
       <ScrollArea className="flex-1">
         <div ref={listRef} className="p-2" tabIndex={0}>
-          {testGroups.length === 0 ? (
+          {flows.length === 0 ? (
             <div className="text-center py-12 px-4">
               <FolderTree className="w-12 h-12 text-muted-foreground/50 mx-auto mb-3" />
               <p className="text-sm text-muted-foreground mb-1">No flows yet</p>

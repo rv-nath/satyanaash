@@ -39,8 +39,8 @@ interface GroupEditorDialogProps {
 }
 
 const GroupEditorContent = ({ groupId, groupName, onOpenChange }: Omit<GroupEditorDialogProps, 'open'>) => {
-  const { testGroups, updateGroupFlow } = useTestProject();
-  const group = testGroups.find(g => g.id === groupId);
+  const { flows, updateGroupFlow } = useTestProject();
+  const group = flows.find(g => g.id === groupId);
   
   const initialNodes: Node[] = group?.internalNodes || [
     {

@@ -49,7 +49,7 @@ export interface EdgeSettings {
   viewport?: Viewport;
 }
 
-export interface TestGroup {
+export interface Flow {
   id: string;
   name: string;
   description?: string;
@@ -73,7 +73,7 @@ export type SidebarTab = 'tests' | 'flows';
 interface TestProjectContextType {
   project: Project | null;
   projectId: string | null;
-  testGroups: TestGroup[];
+  flows: Flow[];
   nodes: Node[];
   edges: Edge[];
   showEdgeLabels: boolean;
@@ -148,9 +148,9 @@ interface TestProjectContextType {
   runMode: RunMode;
   totalNodes: number;
   step: (command: StepCommand) => Promise<void>;
-  addTestGroup: (group: Omit<TestGroup, "id" | "testCases" | "expanded">) => void;
-  updateTestGroup: (id: string, updates: Partial<TestGroup>) => void;
-  deleteTestGroup: (id: string) => void;
+  addFlow: (group: Omit<Flow, "id" | "testCases" | "expanded">) => void;
+  updateFlow: (id: string, updates: Partial<Flow>) => void;
+  deleteFlow: (id: string) => void;
   addTestCase: (testCase: Omit<TestCase, "id">) => void;
   updateTestCase: (id: string, updates: Partial<TestCase>) => void;
   deleteTestCase: (id: string) => void;
@@ -206,8 +206,8 @@ const defaultEdgeSettings: EdgeSettings = {
   showEdgeLabels: true,
 };
 
-// Helper: Convert API Flow to internal TestGroup
-function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
+// Helper: Convert API Flow to internal Flow
+function fromApiFlow(flow: ApiFlow): Flow {
   // Track seen IDs to detect and fix duplicates from old data
   const seenIds = new Set<string>();
   // Track ID remapping for updating edges when duplicates are found
@@ -270,7 +270,7 @@ function apiFlowToTestGroup(flow: ApiFlow): TestGroup {
 }
 
 // Default test groups when no flows from API
-const defaultTestGroups: TestGroup[] = [];
+const defaultFlows: Flow[] = [];
 
 export const TestProjectProvider = ({
   children,
@@ -283,13 +283,13 @@ export const TestProjectProvider = ({
   const [snapToGrid, setSnapToGrid] = useState(false);
 
   // Initialize from API flows or use defaults
-  const initialTestGroups = initialFlows?.map(apiFlowToTestGroup) || defaultTestGroups;
+  const initialFlowState = initialFlows?.map(fromApiFlow) || defaultFlows;
 
   // Get flow ID from URL, fallback to first flow
   const urlFlowId = searchParams.get('flow');
-  const initialFlowId = urlFlowId && initialTestGroups.some(g => g.id === urlFlowId)
+  const initialFlowId = urlFlowId && initialFlowState.some(g => g.id === urlFlowId)
     ? urlFlowId
-    : (initialTestGroups.length > 0 ? initialTestGroups[0].id : null);
+    : (initialFlowState.length > 0 ? initialFlowState[0].id : null);
 
   const [activeFlowId, setActiveFlowIdState] = useState<string | null>(initialFlowId);
 
@@ -420,14 +420,14 @@ export const TestProjectProvider = ({
     }
   }, [searchParams]);
 
-  const history = useHistory<TestGroup[]>(50);
-  const [testGroups, setTestGroups] = useState<TestGroup[]>(initialTestGroups);
+  const history = useHistory<Flow[]>(50);
+  const [flows, setFlows] = useState<Flow[]>(initialFlowState);
 
   // Sync with API flows when they change
   useEffect(() => {
     if (initialFlows) {
-      const newGroups = initialFlows.map(apiFlowToTestGroup);
-      setTestGroups(newGroups);
+      const newGroups = initialFlows.map(fromApiFlow);
+      setFlows(newGroups);
       if (newGroups.length > 0 && !activeFlowId) {
         setActiveFlowId(newGroups[0].id);
       }
@@ -439,14 +439,14 @@ export const TestProjectProvider = ({
     const urlFlowIdCurrent = searchParams.get('flow');
     if (urlFlowIdCurrent && urlFlowIdCurrent !== activeFlowId) {
       // Validate the flow exists before setting
-      if (testGroups.some(g => g.id === urlFlowIdCurrent)) {
+      if (flows.some(g => g.id === urlFlowIdCurrent)) {
         setActiveFlowIdState(urlFlowIdCurrent);
       }
     }
-  }, [searchParams, testGroups, activeFlowId]);
+  }, [searchParams, flows, activeFlowId]);
 
   // Get active flow's nodes, edges, and edge settings
-  const activeFlow = testGroups.find(g => g.id === activeFlowId);
+  const activeFlow = flows.find(g => g.id === activeFlowId);
   const nodes = activeFlow?.internalNodes || [];
   const edges = activeFlow?.internalEdges || [];
   const edgeSettings = activeFlow?.edgeSettings || defaultEdgeSettings;
@@ -456,7 +456,7 @@ export const TestProjectProvider = ({
 
   const setFlowVariables = useCallback((vars: Record<string, unknown>) => {
     if (!activeFlowId) return;
-    setTestGroups(prev => prev.map(g =>
+    setFlows(prev => prev.map(g =>
       g.id === activeFlowId ? { ...g, flowVariables: vars } : g
     ));
   }, [activeFlowId]);
@@ -467,7 +467,7 @@ export const TestProjectProvider = ({
   // Callback to update flow version after save
   const handleVersionUpdate = useCallback((newVersion: number) => {
     if (!activeFlowId) return;
-    setTestGroups(groups => groups.map(g =>
+    setFlows(groups => groups.map(g =>
       g.id === activeFlowId ? { ...g, version: newVersion } : g
     ));
   }, [activeFlowId]);
@@ -544,7 +544,7 @@ export const TestProjectProvider = ({
   const setNodes = useCallback((newNodes: Node[]) => {
     if (!activeFlowId) return;
     // Use functional update to avoid stale closure issues
-    setTestGroups(currentGroups => {
+    setFlows(currentGroups => {
       history.pushState(currentGroups, "Move nodes");
       return currentGroups.map(g =>
         g.id === activeFlowId ? { ...g, internalNodes: newNodes } : g
@@ -555,7 +555,7 @@ export const TestProjectProvider = ({
   const setEdges = useCallback((newEdges: Edge[]) => {
     if (!activeFlowId) return;
     // Use functional update to avoid stale closure issues
-    setTestGroups(currentGroups => {
+    setFlows(currentGroups => {
       history.pushState(currentGroups, "Update connections");
       return currentGroups.map(g =>
         g.id === activeFlowId ? { ...g, internalEdges: newEdges } : g
@@ -566,30 +566,30 @@ export const TestProjectProvider = ({
   // Edge settings setters - update the active flow's edgeSettings
   const setEdgeType = useCallback((type: EdgeSettings['edgeType']) => {
     if (!activeFlowId) return;
-    const updatedGroups = testGroups.map(g =>
+    const updatedGroups = flows.map(g =>
       g.id === activeFlowId
         ? { ...g, edgeSettings: { ...(g.edgeSettings || defaultEdgeSettings), edgeType: type } }
         : g
     );
-    history.pushState(testGroups, "Change edge type");
-    setTestGroups(updatedGroups);
-  }, [activeFlowId, testGroups, history]);
+    history.pushState(flows, "Change edge type");
+    setFlows(updatedGroups);
+  }, [activeFlowId, flows, history]);
 
   const setShowEdgeLabels = useCallback((show: boolean) => {
     if (!activeFlowId) return;
-    const updatedGroups = testGroups.map(g =>
+    const updatedGroups = flows.map(g =>
       g.id === activeFlowId
         ? { ...g, edgeSettings: { ...(g.edgeSettings || defaultEdgeSettings), showEdgeLabels: show } }
         : g
     );
-    history.pushState(testGroups, "Toggle edge labels");
-    setTestGroups(updatedGroups);
-  }, [activeFlowId, testGroups, history]);
+    history.pushState(flows, "Toggle edge labels");
+    setFlows(updatedGroups);
+  }, [activeFlowId, flows, history]);
 
   // Viewport setter - no history push as it's called frequently during pan/zoom
   const setViewport = useCallback((viewport: Viewport) => {
     if (!activeFlowId) return;
-    setTestGroups(groups => groups.map(g =>
+    setFlows(groups => groups.map(g =>
       g.id === activeFlowId
         ? { ...g, edgeSettings: { ...(g.edgeSettings || defaultEdgeSettings), viewport } }
         : g
@@ -598,14 +598,14 @@ export const TestProjectProvider = ({
 
   // Get viewport for current flow
   const getViewport = useCallback((): Viewport | undefined => {
-    const activeFlow = testGroups.find(g => g.id === activeFlowId);
+    const activeFlow = flows.find(g => g.id === activeFlowId);
     return activeFlow?.edgeSettings?.viewport;
-  }, [testGroups, activeFlowId]);
+  }, [flows, activeFlowId]);
 
-  const addTestGroup = useCallback((group: Omit<TestGroup, "id" | "testCases" | "expanded" | "version">) => {
-    history.pushState(testGroups, `Add group: ${group.name}`);
+  const addFlow = useCallback((group: Omit<Flow, "id" | "testCases" | "expanded" | "version">) => {
+    history.pushState(flows, `Add group: ${group.name}`);
     const newGroupId = generateUUID();
-    const newGroup: TestGroup = {
+    const newGroup: Flow = {
       ...group,
       id: newGroupId,
       testCases: [],
@@ -628,44 +628,44 @@ export const TestProjectProvider = ({
       internalEdges: [],
       edgeSettings: defaultEdgeSettings,
     };
-    setTestGroups([...testGroups, newGroup]);
+    setFlows([...flows, newGroup]);
     setActiveFlowId(newGroupId);
-  }, [testGroups, history]);
+  }, [flows, history]);
 
-  const updateTestGroup = useCallback((id: string, updates: Partial<TestGroup>) => {
-    const group = testGroups.find(g => g.id === id);
-    history.pushState(testGroups, `Update group: ${group?.name || id}`);
-    setTestGroups(testGroups.map(g => g.id === id ? { ...g, ...updates } : g));
-  }, [testGroups, history]);
+  const updateFlow = useCallback((id: string, updates: Partial<Flow>) => {
+    const group = flows.find(g => g.id === id);
+    history.pushState(flows, `Update group: ${group?.name || id}`);
+    setFlows(flows.map(g => g.id === id ? { ...g, ...updates } : g));
+  }, [flows, history]);
 
-  const deleteTestGroup = useCallback((id: string) => {
-    const group = testGroups.find(g => g.id === id);
-    history.pushState(testGroups, `Delete group: ${group?.name || id}`);
-    setTestGroups(testGroups.filter(g => g.id !== id));
+  const deleteFlow = useCallback((id: string) => {
+    const group = flows.find(g => g.id === id);
+    history.pushState(flows, `Delete group: ${group?.name || id}`);
+    setFlows(flows.filter(g => g.id !== id));
     if (activeFlowId === id) {
-      const remaining = testGroups.filter(g => g.id !== id);
+      const remaining = flows.filter(g => g.id !== id);
       setActiveFlowId(remaining.length > 0 ? remaining[0].id : null);
     }
-  }, [testGroups, activeFlowId, history]);
+  }, [flows, activeFlowId, history]);
 
   const addTestCase = useCallback((testCase: Omit<TestCase, "id">) => {
-    history.pushState(testGroups, `Add test: ${testCase.name}`);
+    history.pushState(flows, `Add test: ${testCase.name}`);
     const newTestCase: TestCase = {
       ...testCase,
       id: generateUUID(),
     };
 
-    setTestGroups(testGroups.map(g => 
+    setFlows(flows.map(g => 
       g.id === testCase.groupId 
         ? { ...g, testCases: [...g.testCases, newTestCase] }
         : g
     ));
-  }, [testGroups, history]);
+  }, [flows, history]);
 
   const updateTestCase = useCallback((id: string, updates: Partial<TestCase>) => {
-    const testCase = testGroups.flatMap(g => g.testCases).find(tc => tc.id === id);
-    history.pushState(testGroups, `Update test: ${testCase?.name || id}`);
-    setTestGroups(testGroups.map(g => ({
+    const testCase = flows.flatMap(g => g.testCases).find(tc => tc.id === id);
+    history.pushState(flows, `Update test: ${testCase?.name || id}`);
+    setFlows(flows.map(g => ({
       ...g,
       testCases: g.testCases.map(tc => tc.id === id ? { ...tc, ...updates } : tc),
     })));
@@ -688,12 +688,12 @@ export const TestProjectProvider = ({
           }
         : n
     ));
-  }, [testGroups, nodes, setNodes, history]);
+  }, [flows, nodes, setNodes, history]);
 
   const deleteTestCase = useCallback((id: string) => {
-    const testCase = testGroups.flatMap(g => g.testCases).find(tc => tc.id === id);
-    history.pushState(testGroups, `Delete test: ${testCase?.name || id}`);
-    setTestGroups(testGroups.map(g => ({
+    const testCase = flows.flatMap(g => g.testCases).find(tc => tc.id === id);
+    history.pushState(flows, `Delete test: ${testCase?.name || id}`);
+    setFlows(flows.map(g => ({
       ...g,
       testCases: g.testCases.filter(tc => tc.id !== id),
     })));
@@ -701,10 +701,10 @@ export const TestProjectProvider = ({
     // Remove from canvas
     setNodes(nodes.filter(n => n.id !== id));
     setEdges(edges.filter(e => e.source !== id && e.target !== id));
-  }, [testGroups, nodes, edges, setNodes, setEdges, history]);
+  }, [flows, nodes, edges, setNodes, setEdges, history]);
 
   const toggleGroup = (groupId: string) => {
-    setTestGroups(testGroups.map(g => 
+    setFlows(flows.map(g => 
       g.id === groupId ? { ...g, expanded: !g.expanded } : g
     ));
   };
@@ -718,7 +718,7 @@ export const TestProjectProvider = ({
       return;
     }
 
-    history.pushState(testGroups, `Add node: ${data.label || nodeType}`);
+    history.pushState(flows, `Add node: ${data.label || nodeType}`);
     // Always generate a unique node ID (allows same test case multiple times in flow)
     // The testCaseId/groupId is preserved in data for reference
     const newNode: Node = {
@@ -728,10 +728,10 @@ export const TestProjectProvider = ({
       data,
     };
     setNodes([...nodes, newNode]);
-  }, [activeFlowId, nodes, setNodes, testGroups, history]);
+  }, [activeFlowId, nodes, setNodes, flows, history]);
 
   const updateGroupFlow = (groupId: string, internalNodes: Node[], internalEdges: Edge[]) => {
-    setTestGroups(testGroups.map(group => 
+    setFlows(flows.map(group => 
       group.id === groupId 
         ? { ...group, internalNodes, internalEdges }
         : group
@@ -764,19 +764,19 @@ export const TestProjectProvider = ({
     const doomed = new Set(nodeIds);
     const only = nodeIds.length === 1 ? nodes.find(n => n.id === nodeIds[0]) : null;
     history.pushState(
-      testGroups,
+      flows,
       only
         ? `Delete node: ${only.data?.label || nodeIds[0]}`
         : `Delete ${nodeIds.length} nodes`,
     );
     setNodes(nodes.filter(n => !doomed.has(n.id)));
     setEdges(edges.filter(e => !doomed.has(e.source) && !doomed.has(e.target)));
-  }, [activeFlowId, nodes, edges, setNodes, setEdges, testGroups, history]);
+  }, [activeFlowId, nodes, edges, setNodes, setEdges, flows, history]);
 
   const updateNodeConfig = useCallback((nodeId: string, config: any, alias?: string) => {
     if (!activeFlowId) return;
     const node = nodes.find(n => n.id === nodeId);
-    history.pushState(testGroups, `Configure node: ${node?.data?.label || nodeId}`);
+    history.pushState(flows, `Configure node: ${node?.data?.label || nodeId}`);
     // A blank alias clears the name rather than storing "" — the node falls back
     // to the test case name, which is also what the engine does with a blank.
     const trimmed = alias?.trim();
@@ -785,7 +785,7 @@ export const TestProjectProvider = ({
         ? { ...n, data: { ...n.data, config, alias: trimmed || undefined } }
         : n
     ));
-  }, [activeFlowId, nodes, setNodes, testGroups, history]);
+  }, [activeFlowId, nodes, setNodes, flows, history]);
 
   const alignNodes = useCallback((direction: AlignDirection) => {
     const selectedNodes = nodes.filter(n => n.selected);
@@ -799,12 +799,12 @@ export const TestProjectProvider = ({
       return;
     }
 
-    history.pushState(testGroups, `Align nodes: ${direction}`);
+    history.pushState(flows, `Align nodes: ${direction}`);
     // The geometry lives in lib/alignNodes — edges and centres, not origins.
     const moved = alignedPositions(selectedNodes, direction);
     setNodes(nodes.map(n => (moved[n.id] ? { ...n, position: moved[n.id] } : n)));
     toast.success(`Aligned nodes: ${direction}`);
-  }, [nodes, setNodes, testGroups, history]);
+  }, [nodes, setNodes, flows, history]);
 
   // Auto-layout: snapshot for undo here, then let the canvas do the arranging.
   const [layoutRequest, setLayoutRequest] = useState<{ direction: LayoutDirection; spacing: LayoutSpacing; seq: number } | null>(null);
@@ -813,14 +813,14 @@ export const TestProjectProvider = ({
       toast.error('Nothing to arrange');
       return;
     }
-    history.pushState(testGroups, `Auto layout: ${direction === 'TB' ? 'vertical' : 'horizontal'}`);
+    history.pushState(flows, `Auto layout: ${direction === 'TB' ? 'vertical' : 'horizontal'}`);
     setLayoutRequest((prev) => ({ direction, spacing, seq: (prev?.seq ?? 0) + 1 }));
-  }, [nodes.length, testGroups, history]);
+  }, [nodes.length, flows, history]);
 
   const undo = useCallback(() => {
     const previousState = history.undo();
     if (previousState) {
-      setTestGroups(previousState);
+      setFlows(previousState);
       toast.success(`Undone: ${history.lastAction || 'Action'}`);
     }
   }, [history]);
@@ -828,13 +828,13 @@ export const TestProjectProvider = ({
   const redo = useCallback(() => {
     const nextState = history.redo();
     if (nextState) {
-      setTestGroups(nextState);
+      setFlows(nextState);
       toast.success(`Redone: ${history.lastAction || 'Action'}`);
     }
   }, [history]);
 
   const exportFlowJSON = useCallback((groupId: string) => {
-    const group = testGroups.find(g => g.id === groupId);
+    const group = flows.find(g => g.id === groupId);
     if (!group) return null;
 
     return {
@@ -869,7 +869,7 @@ export const TestProjectProvider = ({
         version: '1.0',
       },
     };
-  }, [testGroups]);
+  }, [flows]);
 
   // Helper functions for test case editor
   const openTestCaseEditor = useCallback((testCaseId?: string) => {
@@ -902,7 +902,7 @@ export const TestProjectProvider = ({
         selectEnv,
         effectiveEnvironment,
         applyEnvWrites,
-        testGroups,
+        flows,
         nodes,
         edges,
         showEdgeLabels,
@@ -957,9 +957,9 @@ export const TestProjectProvider = ({
         runMode,
         totalNodes,
         step,
-        addTestGroup,
-        updateTestGroup,
-        deleteTestGroup,
+        addFlow,
+        updateFlow,
+        deleteFlow,
         addTestCase,
         updateTestCase,
         deleteTestCase,

@@ -77,7 +77,7 @@ const ProjectDetailContent = () => {
   const {
     project,
     projectId,
-    testGroups,
+    flows,
     nodes,
     edges,
     activeFlowId,
@@ -97,8 +97,8 @@ const ProjectDetailContent = () => {
     setActiveWorkspaceTab,
     showConsole,
     setShowConsole,
-    updateTestGroup,
-    deleteTestGroup,
+    updateFlow,
+    deleteFlow,
     deleteTestCase,
     exportFlowJSON,
     undo,
@@ -141,7 +141,7 @@ const ProjectDetailContent = () => {
   const [layoutSpacing, setLayoutSpacing] = useState<LayoutSpacing>('comfortable');
 
   // Derive active flow for header
-  const activeFlow = testGroups.find(g => g.id === activeFlowId);
+  const activeFlow = flows.find(g => g.id === activeFlowId);
 
   // Test cases (for workspace tab labels)
   const { data: apiTestCases } = useTestCases(projectId || '');
@@ -230,7 +230,7 @@ const ProjectDetailContent = () => {
 
   const renderTabs: RenderTab[] = workspace.tabs.map((t) => {
     if (t.kind === 'flow') {
-      const flow = testGroups.find((g) => g.id === t.id);
+      const flow = flows.find((g) => g.id === t.id);
       return { key: tabKey('flow', t.id), kind: 'flow', label: flow?.name || 'Flow' };
     }
     if (t.kind === 'run') {
@@ -326,14 +326,14 @@ const ProjectDetailContent = () => {
     try {
       if (tab.kind === 'flow') {
         const flowId = key.slice('flow:'.length);
-        const flow = testGroups.find((g) => g.id === flowId);
+        const flow = flows.find((g) => g.id === flowId);
         await updateFlowMutation.mutateAsync({
           id: flowId,
           data: { name, version: flow?.version ?? 1 },
           projectId: id || '',
         });
         // The rail and the tabs read the local copy, so it has to hear about it too.
-        updateTestGroup(flowId, { name });
+        updateFlow(flowId, { name });
       } else {
         await updateTestCaseMutation.mutateAsync({
           id: key.slice('test:'.length),
@@ -371,14 +371,14 @@ const ProjectDetailContent = () => {
     () =>
       consoleTabsFor({
         logKeys: Object.keys(logsByFlow),
-        flows: testGroups,
+        flows: flows,
         suites: apiSuites ?? [],
         activeFlowId,
         activeSuiteKey: activeSuiteId ? suiteLogKey(activeSuiteId) : null,
         executingId: executingFlowId,
         entryCount: (key) => logsByFlow[key]?.length ?? 0,
       }),
-    [logsByFlow, activeFlowId, activeSuiteId, testGroups, apiSuites, executingFlowId],
+    [logsByFlow, activeFlowId, activeSuiteId, flows, apiSuites, executingFlowId],
   );
 
   const shownConsoleId = shownConsole(consoleTabs, consoleFlowId);
@@ -507,7 +507,7 @@ const ProjectDetailContent = () => {
     }
 
     // Generate next flow number based on existing flows
-    const existingNumbers = testGroups
+    const existingNumbers = flows
       .map(g => {
         const match = g.name.match(/^Flow (\d+)$/);
         return match ? parseInt(match[1], 10) : 0;
@@ -563,7 +563,7 @@ const ProjectDetailContent = () => {
           data: { name: tempName, version: activeFlow.version },
           projectId: id || ''
         });
-        updateTestGroup(activeFlow.id, { name: tempName });
+        updateFlow(activeFlow.id, { name: tempName });
       } catch (err) {
         toast.error("Failed to update flow name");
       }
@@ -583,7 +583,7 @@ const ProjectDetailContent = () => {
           data: { description: tempDescription, version: activeFlow.version },
           projectId: id || ''
         });
-        updateTestGroup(activeFlow.id, { description: tempDescription });
+        updateFlow(activeFlow.id, { description: tempDescription });
       } catch (err) {
         toast.error("Failed to update description");
       }
@@ -743,7 +743,7 @@ const ProjectDetailContent = () => {
         if (!projectId) return;
         try {
           await deleteFlowMutation.mutateAsync({ id: flowId, projectId });
-          deleteTestGroup(flowId);
+          deleteFlow(flowId);
           toast.success("Flow deleted");
         } catch (err) {
           toast.error("Failed to delete flow");
@@ -1320,8 +1320,8 @@ const ProjectDetailContent = () => {
         }}
         onSubmit={async (data) => {
           if (!editingGroup) return;
-          // Get version from testGroups for optimistic locking
-          const flowToEdit = testGroups.find(g => g.id === editingGroup.id);
+          // Get version from flows for optimistic locking
+          const flowToEdit = flows.find(g => g.id === editingGroup.id);
           if (!flowToEdit) return;
           // Update existing flow via API
           try {
@@ -1330,7 +1330,7 @@ const ProjectDetailContent = () => {
               data: { name: data.name, description: data.description, version: flowToEdit.version },
               projectId: projectId || ''
             });
-            updateTestGroup(editingGroup.id, data);
+            updateFlow(editingGroup.id, data);
             toast.success("Flow updated");
           } catch (err) {
             toast.error("Failed to update flow");
@@ -1345,7 +1345,7 @@ const ProjectDetailContent = () => {
         <FlowValidator
           nodes={nodes}
           edges={edges}
-          testGroups={testGroups}
+          flows={flows}
           activeFlowId={activeFlowId}
           onClose={() => setValidatorOpen(false)}
         />

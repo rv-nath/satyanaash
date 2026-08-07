@@ -37,7 +37,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, testGroups, deleteNodes, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId, openTestTab, projectId } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, flows, deleteNodes, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId, openTestTab, projectId } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
   // Cached by the nodes themselves already; used here only to spot a node pointing
   // at a test case that has since been deleted.
@@ -73,7 +73,7 @@ const TestCanvasContent = () => {
   const hasCustomFlow = nodes.some(n => n.type === 'testCase' || n.type === 'group');
   const hasAnyNodes = nodes.length > 0;
   const executionMode = hasCustomFlow ? 'flow' : 'fifo';
-  const totalTests = testGroups.reduce((sum, g) => sum + g.testCases.length, 0);
+  const totalTests = flows.reduce((sum, g) => sum + g.testCases.length, 0);
   const [contextMenu, setContextMenu] = useState<{ 
     x: number; 
     y: number; 
@@ -457,7 +457,7 @@ const TestCanvasContent = () => {
       return 0;
     });
 
-  const activeFlow = testGroups.find(g => g.id === activeFlowId);
+  const activeFlow = flows.find(g => g.id === activeFlowId);
 
   return (
     <div 
