@@ -7,19 +7,37 @@ import { RAIL_VIEWS } from "@/lib/railViews";
 const renderRail = (over: Partial<Parameters<typeof ActivityRail>[0]> = {}) => {
   const onSelect = vi.fn();
   const onOpenSettings = vi.fn();
+  const onOpenFiles = vi.fn();
   render(
-    <ActivityRail view="workspace" onSelect={onSelect} onOpenSettings={onOpenSettings} {...over} />,
+    <ActivityRail
+      view="workspace"
+      onSelect={onSelect}
+      onOpenSettings={onOpenSettings}
+      onOpenFiles={onOpenFiles}
+      {...over}
+    />,
   );
-  return { onSelect, onOpenSettings };
+  return { onSelect, onOpenSettings, onOpenFiles };
 };
 
 describe("the activity rail", () => {
-  it("offers every sidebar view, plus settings", () => {
+  it("offers every sidebar view, plus the two that fill the main area", () => {
     renderRail();
     for (const view of RAIL_VIEWS) {
       expect(screen.getByRole("button", { name: new RegExp(view.label, "i") })).toBeInTheDocument();
     }
     expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /files/i })).toBeInTheDocument();
+  });
+
+  it("opens Files in the main area rather than swapping the sidebar", async () => {
+    // The complaint that moved it below the divider: clicking Files changed the sidebar and left
+    // the main area on the welcome screen, which is not what clicking "Files" means. A file's
+    // reference is also too long to read in a 200px column.
+    const { onSelect, onOpenFiles } = renderRail();
+    await userEvent.click(screen.getByRole("button", { name: /files/i }));
+    expect(onOpenFiles).toHaveBeenCalledOnce();
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("switches the sidebar when a view is picked", async () => {

@@ -10,7 +10,7 @@
  */
 export const MAX_TABS = 8;
 
-export type TabKind = "flow" | "test" | "suite" | "run";
+export type TabKind = "flow" | "test" | "suite" | "run" | "storage";
 
 export interface OpenTab {
   kind: TabKind;
@@ -33,9 +33,9 @@ export interface OpenTab {
  * or suite in it — a history tab per suite would fragment the one view where comparing
  * across them is the point.
  */
-export type SingletonTab = "settings" | "runs";
+export type SingletonTab = "settings" | "runs" | "files";
 
-const SINGLETONS: SingletonTab[] = ["settings", "runs"];
+const SINGLETONS: SingletonTab[] = ["settings", "runs", "files"];
 
 export function isSingleton(key: string): key is SingletonTab {
   return (SINGLETONS as string[]).includes(key);
@@ -47,6 +47,7 @@ export interface WorkspaceState {
   tabs: OpenTab[];
   settingsOpen: boolean;
   runsOpen: boolean;
+  filesOpen: boolean;
   active: string | null;
 }
 
@@ -61,7 +62,7 @@ export function tabKey(kind: TabKind, id: string): string {
 }
 
 export function initialWorkspaceState(): WorkspaceState {
-  return { tabs: [], settingsOpen: false, runsOpen: false, active: null };
+  return { tabs: [], settingsOpen: false, runsOpen: false, filesOpen: false, active: null };
 }
 
 /**
@@ -82,17 +83,20 @@ export type Surface =
   | { kind: "test"; id: string }
   | { kind: "suite"; id: string }
   | { kind: "run"; id: string }
+  | { kind: "storage"; id: string }
   | { kind: "settings" }
   | { kind: "runs" }
+  | { kind: "files" }
   | { kind: "empty" };
 
-const TAB_KINDS: TabKind[] = ["flow", "test", "suite", "run"];
+const TAB_KINDS: TabKind[] = ["flow", "test", "suite", "run", "storage"];
 
 export function activeSurface(state: WorkspaceState): Surface {
   const active = state.active;
   if (active === null) return { kind: "empty" };
   if (active === "settings") return { kind: "settings" };
   if (active === "runs") return { kind: "runs" };
+  if (active === "files") return { kind: "files" };
 
   for (const kind of TAB_KINDS) {
     const prefix = `${kind}:`;
@@ -155,6 +159,20 @@ export function openFlow(
   return { state: { ...state, tabs: [...state.tabs, { kind: "flow", id }], active: key } };
 }
 
+/**
+ * Open a storage's configuration.
+ *
+ * A page rather than a dialog: the form asks half a dozen questions, carries two blocks of
+ * copyable help and then reports a four-step test, which is more than a modal can hold without
+ * scrolling inside itself. `"__new__"` is one being created, the same sentinel a new test uses.
+ */
+export function openStorage(state: WorkspaceState, id: string): OpenResult {
+  const key = tabKey("storage", id);
+  if (has(state, "storage", id)) return { state: setActive(state, key) };
+  if (atCap(state)) return { state, capped: true };
+  return { state: { ...state, tabs: [...state.tabs, { kind: "storage", id }], active: key } };
+}
+
 export function openSuite(state: WorkspaceState, id: string): OpenResult {
   const key = tabKey("suite", id);
   if (has(state, "suite", id)) return { state: setActive(state, key) };
@@ -202,6 +220,17 @@ export function openRuns(state: WorkspaceState): WorkspaceState {
 }
 
 /**
+ * Files, full width.
+ *
+ * The rail's list is for copying a reference without leaving whatever you are editing. This is
+ * where the files themselves are managed — and it exists because the reference, the whole point
+ * of the feature, does not fit in a 200px column at all: it was a tooltip.
+ */
+export function openFiles(state: WorkspaceState): WorkspaceState {
+  return { ...state, filesOpen: true, active: "files" };
+}
+
+/**
  * Where focus lands when the active tab goes away: the last ordinary tab, else whichever
  * singleton is still open, else nothing.
  *
@@ -215,6 +244,7 @@ function fallbackActive(state: WorkspaceState, tabs: OpenTab[]): string | null {
   }
   if (state.settingsOpen) return "settings";
   if (state.runsOpen) return "runs";
+  if (state.filesOpen) return "files";
   return null;
 }
 
@@ -225,6 +255,7 @@ export function closeTab(state: WorkspaceState, key: string): WorkspaceState {
       ...state,
       settingsOpen: key === "settings" ? false : state.settingsOpen,
       runsOpen: key === "runs" ? false : state.runsOpen,
+      filesOpen: key === "files" ? false : state.filesOpen,
     };
     const active = state.active === key ? fallbackActive(closed, closed.tabs) : state.active;
     return { ...closed, active };

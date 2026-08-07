@@ -7,12 +7,14 @@ use crate::db::models::*;
 use crate::error::AppError;
 
 // Re-export implementations
+mod file_stores;
 mod flows;
 mod projects;
 mod runs;
 mod suites;
 mod test_cases;
 mod test_groups;
+pub use file_stores::SqlxFileStoreRepository;
 pub use flows::SqlxFlowRepository;
 pub use projects::SqlxProjectRepository;
 pub use runs::SqlxRunRepository;
@@ -63,6 +65,28 @@ pub trait SuiteRepository: Send + Sync {
     async fn list_by_project(&self, project_id: &str) -> Result<Vec<Suite>, AppError>;
     async fn update(&self, id: &str, input: UpdateSuite) -> Result<Suite, AppError>;
     async fn delete(&self, id: &str) -> Result<(), AppError>;
+}
+
+/// File store definitions — where a test's files are uploaded so the API can fetch them.
+///
+/// `config_for` is the only way back to the real credentials, and it is deliberately not part
+/// of the type the API returns: `FileStore` has no secret field, so a leak would have to be
+/// written on purpose rather than slip in.
+#[async_trait]
+pub trait FileStoreRepository: Send + Sync {
+    async fn list_by_project(&self, project_id: &str) -> Result<Vec<FileStore>, AppError>;
+    async fn get_by_id(&self, id: &str) -> Result<Option<FileStore>, AppError>;
+    async fn create(&self, project_id: &str, input: CreateFileStore) -> Result<FileStore, AppError>;
+    async fn update(&self, id: &str, input: UpdateFileStore) -> Result<FileStore, AppError>;
+    async fn delete(&self, id: &str) -> Result<(), AppError>;
+    /// The credentials, for server-side use only.
+    async fn config_for(&self, id: &str) -> Result<Option<crate::files::StoreConfig>, AppError>;
+    async fn name_taken(
+        &self,
+        project_id: &str,
+        name: &str,
+        except: Option<&str>,
+    ) -> Result<bool, AppError>;
 }
 
 /// Run history repository trait

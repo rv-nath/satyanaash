@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings, openSuite,
+  openFiles,
   openRuns, openRun, togglePinned, closeTab, setActive, tabCount, atCap, isSingleton,
   nothingOpen, activeSurface,
 } from "@/lib/workspaceTabs";
@@ -267,6 +268,45 @@ describe("run tabs", () => {
     s = closeTab(s, tabKey("run", "run-1"));
     expect(s.tabs.map((t) => t.kind)).toEqual(["flow"]);
     expect(s.active).toBe(tabKey("flow", "f1"));
+  });
+});
+
+describe("the files tab", () => {
+  it("is a singleton, like settings and runs", () => {
+    // One set of files for the project, so one surface. Opening it twice is opening it once.
+    expect(isSingleton("files")).toBe(true);
+
+    let s = openFiles(initialWorkspaceState());
+    expect(s.filesOpen).toBe(true);
+    expect(s.active).toBe("files");
+    s = openFiles(s);
+    expect(s.filesOpen).toBe(true);
+    expect(s.tabs).toEqual([]);
+  });
+
+  it("is never offered as its own fallback", () => {
+    // Same guard the runs tab needed: closing the active tab and landing back on it makes the
+    // close button look broken.
+    let s = openFiles(initialWorkspaceState());
+    s = closeTab(s, "files");
+    expect(s.filesOpen).toBe(false);
+    expect(s.active).toBeNull();
+  });
+
+  it("coexists with settings and runs, none of them closing the others", () => {
+    let s = openSettings(initialWorkspaceState());
+    s = openRuns(s);
+    s = openFiles(s);
+    expect([s.settingsOpen, s.runsOpen, s.filesOpen]).toEqual([true, true, true]);
+    s = closeTab(s, "runs");
+    expect([s.settingsOpen, s.runsOpen, s.filesOpen]).toEqual([true, false, true]);
+  });
+
+  it("is a surface of its own, told apart from the rail's view of the same name", () => {
+    // The rail also has a view called "files". They are different things — one is a sidebar
+    // list, one is a workspace surface — and `activeSurface` must not confuse them.
+    const s = openFiles(initialWorkspaceState());
+    expect(activeSurface(s)).toEqual({ kind: "files" });
   });
 });
 

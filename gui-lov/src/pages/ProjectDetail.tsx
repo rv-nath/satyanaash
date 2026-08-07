@@ -56,6 +56,9 @@ import SuiteEditor from "@/components/SuiteEditor";
 import { SuitesList } from "@/components/SuitesList";
 import { ActivityRail } from "@/components/ActivityRail";
 import { RunsRail } from "@/components/RunsRail";
+import { FilesPage } from "@/components/FilesPage";
+import { StoragePage } from "@/components/StoragePage";
+import { fileStoreApi } from "@/lib/api/fileStore";
 import { useRailView } from "@/hooks/useRailView";
 import type { RailView } from "@/lib/railViews";
 import { useQuery } from "@tanstack/react-query";
@@ -86,6 +89,8 @@ const ProjectDetailContent = () => {
     openRunsTab,
     openSuiteTab,
     openRunTab,
+    openStorageTab,
+    openFilesTab,
     toggleRunPinned,
     liveRun,
     closeWorkspaceTab,
@@ -145,6 +150,13 @@ const ProjectDetailContent = () => {
   const { data: apiSuites } = useQuery({
     queryKey: ['suites', projectId],
     queryFn: () => suitesApi.list(projectId!),
+    enabled: !!projectId,
+  });
+
+  // Same query key as the Files rail's, so this shares its cache rather than fetching again.
+  const { data: fileStores } = useQuery({
+    queryKey: ['file-stores', projectId],
+    queryFn: () => fileStoreApi.listStores(projectId!),
     enabled: !!projectId,
   });
 
@@ -209,6 +221,13 @@ const ProjectDetailContent = () => {
     else doCloseTab(key);
   }, [dirtyTabs, doCloseTab]);
 
+  // Storages, for the tab label and the page. Cheap: the Files rail has the same query, so this
+  // shares its cache rather than fetching again.
+  const storesById = useMemo(
+    () => new Map((fileStores ?? []).map((s) => [s.id, s])),
+    [fileStores]
+  );
+
   const renderTabs: RenderTab[] = workspace.tabs.map((t) => {
     if (t.kind === 'flow') {
       const flow = testGroups.find((g) => g.id === t.id);
@@ -222,6 +241,15 @@ const ProjectDetailContent = () => {
         ? `${live.suiteName} · ${new Date(live.startedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`
         : 'Run';
       return { key: tabKey('run', t.id), kind: 'run', label, renameable: false, pinned: t.pinned };
+    }
+    if (t.kind === 'storage') {
+      const store = storesById.get(t.id);
+      return {
+        key: tabKey('storage', t.id),
+        kind: 'storage',
+        label: store ? store.name : 'New storage',
+        renameable: false,
+      };
     }
     if (t.kind === 'suite') {
       // Renamed in the editor, where the field sits beside the Run button — so the tab is
@@ -623,6 +651,40 @@ const ProjectDetailContent = () => {
       case 'run':
         return <RunView runId={surface.id} liveRun={liveRun} />;
 
+      case 'storage': {
+        if (!projectId) return null;
+        // `__new__` is one being created, the same sentinel a new test tab uses.
+        const editing = surface.id === '__new__' ? undefined : storesById.get(surface.id);
+        return (
+          <StoragePage
+            projectId={projectId}
+            store={editing}
+            onClose={() => doCloseTab(tabKey('storage', surface.id))}
+            onSaved={(saved) => {
+              // Land on the storage that now exists, rather than closing to the welcome screen.
+              //
+              // Closing left no acknowledgement and nowhere to look at what had just been
+              // configured, so the next move was to hunt for it — and the button next to Edit is
+              // Add, which opens a blank form titled "Set up a storage". That reads as the save
+              // having failed.
+              //
+              // The draft tab was keyed `__new__`; the saved one has a real id, so this swaps
+              // rather than leaving two ways to reach the same storage.
+              if (surface.id !== saved.id) {
+                doCloseTab(tabKey('storage', surface.id));
+                openStorageTab(saved.id);
+              }
+              openFilesTab();
+            }}
+          />
+        );
+      }
+
+      case 'files':
+        // Full width, because the reference — the whole output of this feature — is a column
+        // here and was only ever a tooltip in the rail.
+        return <FilesPage />;
+
       case 'runs':
         // Refetches on open rather than staying mounted: there is nothing unsaved to
         // lose, and a history that reloads is a history that is up to date.
@@ -698,6 +760,9 @@ const ProjectDetailContent = () => {
   const runsList = projectId ? (
     <RunsRail projectId={projectId} onOpenRun={openRunTab} onOpenFullHistory={openRunsTab} />
   ) : null;
+
+  // Storages are named and project-scoped rather than per-environment: uploading happens while
+  // authoring and yields a literal, so which environment is selected has no bearing on it.
 
   /**
    * What the sidebar shows, chosen by the rail.
@@ -1152,6 +1217,8 @@ const ProjectDetailContent = () => {
           onSelect={setRailView}
           onOpenSettings={() => openSettings()}
           settingsActive={activeIsSettings}
+          onOpenFiles={openFilesTab}
+          filesActive={surface.kind === 'files'}
         />
 
         <ResizablePanelGroup direction="horizontal" className="min-w-0 flex-1">
@@ -1174,6 +1241,7 @@ const ProjectDetailContent = () => {
                 settingsOpen={workspace.settingsOpen}
                 settingsDirty={dirtyTabs['settings']}
                 runsOpen={workspace.runsOpen}
+              filesOpen={workspace.filesOpen}
                 active={workspace.active}
                 onActivate={activateTab}
                 onClose={requestCloseTab}

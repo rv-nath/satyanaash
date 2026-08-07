@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { X, Settings, Workflow, Layers, History, Play, Pin } from "lucide-react";
+import { X, Settings, Workflow, Layers, History, Play, Pin, HardDrive } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
 export interface RenderTab {
-  key: string;            // "flow:<id>" | "test:<id>" | "suite:<id>" | "run:<id>"
-  kind: "flow" | "test" | "suite" | "run";
+  key: string;            // "flow:<id>" | "test:<id>" | "suite:<id>" | "run:<id>" | "storage:<id>"
+  // Mirrors `TabKind` in `lib/workspaceTabs.ts` — kept as a literal union rather than importing
+  // it so this component stays a pure renderer with no dependency on the tab model.
+  kind: "flow" | "test" | "suite" | "run" | "storage";
   label: string;
   method?: string;        // test tabs
   dirty?: boolean;
@@ -21,6 +23,8 @@ interface Props {
   settingsDirty?: boolean;
   /** Run history — one surface for the project, so a singleton like Settings. */
   runsOpen?: boolean;
+  /** Files, full width. One surface for the project, for the same reason. */
+  filesOpen?: boolean;
   active: string | null;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
@@ -68,7 +72,7 @@ function TabShell({
   );
 }
 
-export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, active, onActivate, onClose, onRename, onTogglePin }: Props) {
+export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, filesOpen, active, onActivate, onClose, onRename, onTogglePin }: Props) {
   // Which tab is being renamed, and the name so far. Held here rather than by the page:
   // it is nobody else's business, and the page is long enough.
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
@@ -112,6 +116,8 @@ export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, act
             <Layers className="h-3.5 w-3.5 text-primary" />
           ) : t.kind === "run" ? (
             <Play className="h-3 w-3 text-primary" />
+          ) : t.kind === "storage" ? (
+            <HardDrive className="h-3.5 w-3.5 text-muted-foreground" />
           ) : (
             <span className={`text-[9px] font-bold uppercase ${active === t.key ? "text-primary" : "text-muted-foreground"}`}>
               {t.method}
@@ -177,6 +183,18 @@ export function WorkspaceTabs({ tabs, settingsOpen, settingsDirty, runsOpen, act
           )}
         </TabShell>
       ))}
+
+      {filesOpen && (
+        <TabShell
+          tabKey="files"
+          active={active === "files"}
+          onActivate={() => onActivate("files")}
+          onClose={() => onClose("files")}
+        >
+          <HardDrive className="h-3.5 w-3.5" />
+          <span>Files</span>
+        </TabShell>
+      )}
 
       {runsOpen && (
         <TabShell

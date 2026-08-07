@@ -1,13 +1,15 @@
-import { FileCode, FolderTree, History, Layers, PanelsTopLeft, Settings } from "lucide-react";
+import { FileCode, FolderTree, HardDrive, History, Layers, PanelsTopLeft, Settings } from "lucide-react";
 import { RAIL_VIEWS, type RailView } from "@/lib/railViews";
 
 /**
- * The far-left rail: what the sidebar shows.
+ * The far-left rail.
  *
- * Two groups, and the divider between them is load-bearing. The top group obeys one rule —
- * each entry picks what the sidebar beside it shows. The bottom entry does something else
- * entirely: it opens a workspace tab. Giving them the same look with no separation would
- * make Settings read as a sidebar view that happens to be broken.
+ * Two groups, and the divider between them is load-bearing. Above it, each entry picks what the
+ * **sidebar** shows. Below it, each entry fills the **main area** instead.
+ *
+ * Files started above the line and had to move: swapping the sidebar while the main area stayed
+ * on the welcome screen is not what clicking "Files" means, and a file's reference — the whole
+ * point — cannot be read in a 200px column anyway.
  *
  * Icon *with* a label, not icon-only. Six entries is more than tooltips carry comfortably,
  * and the labels are what make the two groups legible as two groups.
@@ -23,13 +25,16 @@ const ICONS: Record<RailView, typeof FileCode> = {
 interface Props {
   view: RailView;
   onSelect: (view: RailView) => void;
-  /** Settings is a tab, not a sidebar view — a separate prop so it cannot be confused. */
+  /** Settings is a page, not a sidebar view — a separate prop so it cannot be confused. */
   onOpenSettings: () => void;
+  /** Files is a page too: its output is a long reference string that needs the width. */
+  onOpenFiles: () => void;
+  filesActive?: boolean;
   /** Marks the gear when the settings tab is the active surface. */
   settingsActive?: boolean;
 }
 
-export const ActivityRail = ({ view, onSelect, onOpenSettings, settingsActive }: Props) => (
+export const ActivityRail = ({ view, onSelect, onOpenSettings, onOpenFiles, settingsActive, filesActive }: Props) => (
   <nav
     aria-label="Sidebar views"
     // select-none: these labels are navigation, and a drag begun on the canvas used to
@@ -50,6 +55,14 @@ export const ActivityRail = ({ view, onSelect, onOpenSettings, settingsActive }:
     <div className="flex-1" />
     <div className="mx-3 my-1 h-px bg-sidebar-border" />
 
+    {/* Below the divider: entries that fill the main area rather than the sidebar. */}
+    <RailButton
+      icon={HardDrive}
+      label="Files"
+      title="Files the API under test can fetch — opens in the main area"
+      active={filesActive === true}
+      onClick={onOpenFiles}
+    />
     <RailButton
       icon={Settings}
       label="Settings"

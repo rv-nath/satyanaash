@@ -1,6 +1,7 @@
 //! API routes
 
 pub mod executions;
+pub mod file_store;
 pub mod flows;
 pub mod groups;
 pub mod projects;

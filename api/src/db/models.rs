@@ -427,6 +427,97 @@ pub struct UpdateTestCase {
 // Suites and run history
 // =============================================================================
 
+/// A place to put files so the API under test can fetch them.
+///
+/// **Never carries a credential.** `secret_key` and `token` are write-only: accepted on save
+/// and never read back out, so a project fetch cannot leak them to the browser. The flags say
+/// whether one is set, which is all the form needs to decide between "leave it alone" and
+/// "here is a new one".
+///
+/// Named and scoped to a project rather than to an environment. Uploading happens while
+/// authoring and produces a literal, so which environment is selected has no bearing on the
+/// result — and keying by environment would have cost the ability to have two stores at once,
+/// which is exactly what migrating from minio to a file service needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileStore {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    /// `s3` or `http`.
+    pub kind: String,
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_key: Option<String>,
+    /// `key` (bucket/key) or `url`.
+    pub reference: String,
+    pub region: String,
+    /// True when a secret is stored — so the form can show "••••••• (set)" and only overwrite
+    /// it if the author types a new one.
+    pub has_secret: bool,
+    pub has_token: bool,
+    /// `"project"` for a saved store, `"env"` for one defined by environment variables.
+    ///
+    /// An env-defined store is read-only, because the file it came from is the only place it
+    /// can be changed — and pretending otherwise would offer a Save that silently did nothing.
+    pub source: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateFileStore {
+    pub name: String,
+    pub kind: String,
+    pub endpoint: String,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub access_key: Option<String>,
+    #[serde(default)]
+    pub secret_key: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+}
+
+/// Every field optional, and that is load-bearing for the two secrets.
+///
+/// An absent `secret_key` means **keep the stored one**, because the form never received it
+/// and so cannot send it back. Clearing one is an explicit empty string, which is a different
+/// request from not mentioning it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateFileStore {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub access_key: Option<String>,
+    #[serde(default)]
+    pub secret_key: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+}
+
 /// A saved selection of flows and standalone tests, run as one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Suite {

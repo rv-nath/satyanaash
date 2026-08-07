@@ -3,7 +3,8 @@ import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import {
   WorkspaceState, initialWorkspaceState, MAX_TABS,
-  openTest, openFlow, openSettings, openRuns, openSuite, openRun, togglePinned,
+  openTest, openFlow, openSettings, openRuns, openSuite,
+  openStorage, openFiles, openRun, togglePinned,
   closeTab as closeWsTab, setActive as setActiveWsTab,
 } from "@/lib/workspaceTabs";
 import { useHistory } from "@/hooks/useHistory";
@@ -89,6 +90,8 @@ interface TestProjectContextType {
   /** Run history — one surface for the project, so a singleton like Settings. */
   openRunsTab: () => void;
   openSuiteTab: (id: string) => void;
+  openStorageTab: (id: string) => void;
+  openFilesTab: () => void;
   /** Open a run. Reuses the last unpinned run tab — runs are instances, and a debug loop
    *  should not cost a tab each time. */
   openRunTab: (id: string) => void;
@@ -328,6 +331,14 @@ export const TestProjectProvider = ({
   const openSuiteTab = useCallback((id: string) => {
     setWorkspace((s) => {
       const { state, capped } = openSuite(s, id);
+      if (capped) toast.error(`Close a tab first — ${MAX_TABS} is the limit`);
+      return state;
+    });
+  }, []);
+  const openFilesTab = useCallback(() => setWorkspace((s) => openFiles(s)), []);
+  const openStorageTab = useCallback((id: string) => {
+    setWorkspace((s) => {
+      const { state, capped } = openStorage(s, id);
       if (capped) toast.error(`Close a tab first — ${MAX_TABS} is the limit`);
       return state;
     });
@@ -906,6 +917,8 @@ export const TestProjectProvider = ({
         openSettingsTab,
         openRunsTab,
         openSuiteTab,
+        openStorageTab,
+        openFilesTab,
         openRunTab,
         toggleRunPinned,
         closeWorkspaceTab,

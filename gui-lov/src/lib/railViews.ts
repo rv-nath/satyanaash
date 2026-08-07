@@ -1,6 +1,11 @@
 /**
  * What the left sidebar is showing.
  *
+ * **Files is deliberately not here, and neither is Settings.** Both open a page in the main area
+ * instead. A rail entry that only swapped the sidebar and left the main area on the welcome
+ * screen was the complaint that moved Files out: clicking a thing in the rail should show you
+ * that thing, and files need the width anyway — their whole output is a long reference string.
+ *
  * The sidebar grew by stacking: three lists in one vertical group inside a 200–300px
  * column, which left Suites about two rows of height and had no room at all for Runs. The
  * rail stops showing everything at once — it picks one view, and a dedicated view gets the

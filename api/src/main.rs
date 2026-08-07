@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod error;
 mod execution;
+mod files;
 mod shutdown;
 mod validation;
 
@@ -19,11 +20,11 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::api::{executions, flows, groups, projects, runs, suites, test_cases};
+use crate::api::{executions, file_store, flows, groups, projects, runs, suites, test_cases};
 use crate::api::executions::ExecutionState;
 use crate::config::Config;
 use crate::db::pool::init_pool;
-use crate::db::repositories::{SqlxFlowRepository, SqlxProjectRepository, SqlxRunRepository, SqlxSuiteRepository, SqlxTestCaseRepository, SqlxTestGroupRepository};
+use crate::db::repositories::{SqlxFileStoreRepository, SqlxFlowRepository, SqlxProjectRepository, SqlxRunRepository, SqlxSuiteRepository, SqlxTestCaseRepository, SqlxTestGroupRepository};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -49,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let flow_repo = Arc::new(SqlxFlowRepository::new(pool.clone()));
     let run_repo = Arc::new(SqlxRunRepository::new(pool.clone()));
     let suite_repo = Arc::new(SqlxSuiteRepository::new(pool.clone()));
+    let file_store_repo = Arc::new(SqlxFileStoreRepository::new(pool.clone()));
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -125,6 +127,37 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/runs/{id}", delete(runs::delete_run))
         .with_state(execution_state);
 
+    // Storages are named and project-scoped, so unlike the earlier per-environment design
+    // there is a repository behind them. Secrets live in it write-only — `FileStore` has no
+    // field for one, so a credential cannot reach a response without someone adding it.
+    //
+    // `DefaultBodyLimit` is 2 MB in axum, which would have silently truncated every upload
+    // past a small spreadsheet. Raised on the upload route alone, so the one endpoint that has
+    // to accept a file does not lift the ceiling on every JSON body in the API.
+    let file_store_state = file_store::FileStoreState { repo: file_store_repo };
+    let file_store_routes = Router::new()
+        .route("/api/v1/projects/{project_id}/file-stores", get(file_store::list_stores))
+        .route("/api/v1/projects/{project_id}/file-stores", post(file_store::create_store))
+        .route("/api/v1/projects/{project_id}/file-stores/test", post(file_store::test_draft))
+        // Both take a draft, not a saved id: they answer while the form is being filled in, which
+        // is the only moment they are useful.
+        .route("/api/v1/projects/{project_id}/file-stores/buckets", post(file_store::list_buckets))
+        .route(
+            "/api/v1/projects/{project_id}/file-stores/create-bucket",
+            post(file_store::create_bucket),
+        )
+        .route("/api/v1/file-stores/{id}", patch(file_store::update_store))
+        .route("/api/v1/file-stores/{id}", delete(file_store::delete_store))
+        .route("/api/v1/file-stores/{id}/test", post(file_store::test_store))
+        .route("/api/v1/file-stores/{id}/files", get(file_store::list_files))
+        .route(
+            "/api/v1/file-stores/{id}/files",
+            post(file_store::upload)
+                .layer(axum::extract::DefaultBodyLimit::max(crate::files::MAX_UPLOAD_BYTES as usize)),
+        )
+        .route("/api/v1/file-stores/{id}/files", delete(file_store::delete_file))
+        .with_state(file_store_state);
+
     // Build router
     let app = Router::new()
         // Health check
@@ -136,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(group_routes)
         .merge(flow_routes)
         .merge(execution_routes)
+        .merge(file_store_routes)
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 

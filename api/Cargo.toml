@@ -6,7 +6,8 @@ description = "REST API backend for Satyanaash - Graph-based HTTP API Testing Fr
 
 [dependencies]
 # Web Framework - Axum 0.8.4 (latest as of Nov 2025)
-axum = { version = "0.8", features = ["macros"] }
+# `multipart` for the file-store upload endpoint (browser → satyanaash → the store)
+axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = "0.5"
 base64 = "0.22"   # base64Encode() for scripts building a Basic auth header
 tower-http = { version = "0.6", features = ["cors", "trace"] }
@@ -52,3 +53,8 @@ bharat-cafe = "0.2"                                # Indian names, addresses, ph
 
 # Run history storage
 zstd = "0.13"                                      # Packs stored request/response/log bodies
+
+# SigV4 for the minio file store. Two small crates rather than the AWS SDK's ~40:
+# one PUT, one GET and one DELETE do not justify the rest of it.
+sha2 = "0.10"
+hmac = "0.12"
