@@ -13,6 +13,7 @@
 import type { FlowRun, SuiteRun, TestCaseExecutionResult } from '@/lib/api/types';
 import type { TreePath } from '@/lib/runTree';
 import { nodeTitle } from '@/lib/runHistory';
+import { iterationNoun } from '@/lib/consoleDetails';
 
 export type RunChartView = 'breakdown' | 'slowest' | 'hierarchy';
 
@@ -258,7 +259,7 @@ export function levelAt(run: SuiteRun, focus: Focus): Level {
     crumbs,
     counts: tally(rows),
     slices: rows.map((row, index) => ({
-      label: row.row_label ?? `Row ${(row.row_index ?? index) + 1}`,
+      label: row.row_label ?? `${iterationNoun(node).One} ${(row.row_index ?? index) + 1}`,
       value: 1,
       verdict: verdictOf(row.status),
       path: { member: focus.member, node: focus.node, row: index },
@@ -345,7 +346,7 @@ export function slowestSteps(run: SuiteRun, limit = 10): SlowStep[] {
         rows.forEach((row, r) => {
           steps.push({
             path: { member: m, node: n, row: r },
-            label: `${nodeTitle(node)} · ${row.row_label ?? `Row ${(row.row_index ?? r) + 1}`}`,
+            label: `${nodeTitle(node)} · ${row.row_label ?? `${iterationNoun(node).One} ${(row.row_index ?? r) + 1}`}`,
             member: member.name,
             ms: row.duration_ms,
             verdict: verdictOf(row.status),
@@ -449,7 +450,7 @@ export function sunburstArcs(run: SuiteRun): Arc[] {
           rows.forEach((row, r) => {
             arcs.push({
               path: { member: m, node: n, row: r },
-              label: row.row_label ?? `Row ${(row.row_index ?? r) + 1}`,
+              label: row.row_label ?? `${iterationNoun(node).One} ${(row.row_index ?? r) + 1}`,
               ring: 2,
               startAngle: inner + r * rowSpan,
               endAngle: inner + (r + 1) * rowSpan,

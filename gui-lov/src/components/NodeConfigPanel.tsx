@@ -4,9 +4,23 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Trash2, Plus, ArrowDownToLine, ArrowUpFromLine, Rows3 } from "lucide-react";
+import { Trash2, Plus, ArrowDownToLine, ArrowUpFromLine, Rows3, ListOrdered } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { isStatusShorthand, oneLine, rowLabel } from "@/lib/dataset";
+import {
+  collectionSummary,
+  itemVarSuggestion,
+  listName,
+  runModeOf,
+  stripBraces,
+  walkSummary,
+  type InputVariable,
+  type NodeConfig,
+  type OutputVariable,
+  type RunMode,
+} from "@/lib/nodeConfig";
+import { SuggestInput } from "@/components/SuggestInput";
+import { getUpstreamCollections } from "@/lib/variableUtils";
 import {
   POLL_INTERVAL_MS,
   POLL_TIMEOUT_MS,
@@ -17,17 +31,6 @@ import {
 } from "@/lib/poll";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
-
-interface InputVariable {
-  key: string;
-  value: string;
-}
-
-interface OutputVariable {
-  name: string;
-  path: string; // JSONPath rooted at the response body, e.g. "$.data.token"
-  description?: string;
-}
 
 interface NodeConfigPanelProps {
   node: Node | null;
@@ -49,7 +52,7 @@ interface NodeConfigPanelProps {
  * viewport removes that coupling entirely.
  */
 export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
-  const { updateNodeConfig, projectId } = useTestProject();
+  const { updateNodeConfig, projectId, nodes, edges } = useTestProject();
   // Resolve the request's *current* name, as the canvas does. node.data.label is a
   // snapshot from when the node was created, so a renamed test case showed its old
   // name here — misleading precisely when you are checking which request a node runs.
@@ -59,7 +62,16 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const [alias, setAlias] = useState("");
   const [check, setCheck] = useState("");
   const [teardown, setTeardown] = useState(false);
-  const [forEachRow, setForEachRow] = useState(false);
+  /** Once, once per data row, or once per item in a list. One value, not two booleans:
+   *  the three are mutually exclusive, and a control that can say "both" eventually will. */
+  const [runMode, setRunMode] = useState<RunMode>("once");
+  /** Where this step puts what each run produced — one record per run, under this name. */
+  const [collectInto, setCollectInto] = useState("");
+  /** What must be true of a response for it to have produced anything worth collecting. */
+  const [collectWhen, setCollectWhen] = useState("");
+  /** The list this step walks, and what to call each element of it. */
+  const [forEachList, setForEachList] = useState("");
+  const [itemVar, setItemVar] = useState("");
   /** Multi-stage: the first answer only acknowledges, so this node asks again. Off is the
    *  absence of a `poll` block, which is every node that predates the feature. */
   const [polls, setPolls] = useState(false);
@@ -74,20 +86,16 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   useEffect(() => {
     setAlias((node?.data?.alias as string) || "");
     if (node?.data?.config) {
-      const config = node.data.config as {
-        inputVars?: InputVariable[];
-        outputVars?: OutputVariable[];
-        check?: string;
-        teardown?: boolean;
-        forEachRow?: boolean;
-        rowIds?: string[];
-        poll?: { until?: string; intervalMs?: number; timeoutMs?: number };
-      };
+      const config = node.data.config as NodeConfig;
       setInputVars(config.inputVars || []);
       setOutputVars(config.outputVars || []);
       setCheck(config.check || "");
       setTeardown(config.teardown === true);
-      setForEachRow(config.forEachRow === true);
+      setRunMode(runModeOf(config));
+      setCollectInto(config.collect?.into || "");
+      setCollectWhen(config.collect?.when || "");
+      setForEachList(listName(config.forEach));
+      setItemVar(config.forEach?.as || "");
       setRowIds(Array.isArray(config.rowIds) ? config.rowIds : null);
       // An `until` is what makes a node poll, so it is what the toggle reflects — a
       // leftover interval with no condition is not polling, here or in the engine.
@@ -101,7 +109,11 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
       setOutputVars([]);
       setCheck("");
       setTeardown(false);
-      setForEachRow(false);
+      setRunMode("once");
+      setCollectInto("");
+      setCollectWhen("");
+      setForEachList("");
+      setItemVar("");
       setRowIds(null);
       setPolls(false);
       setUntil("");
@@ -123,10 +135,27 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   const handleSave = () => {
     if (!node) return;
     const config: Record<string, unknown> = { inputVars, outputVars, check, teardown };
-    if (forEachRow) {
+    if (runMode === "rows") {
       config.forEachRow = true;
       // Omitted, not `[]`: absence means every row, an empty list means none.
       if (rowIds !== null) config.rowIds = rowIds;
+    }
+    // Written only for the mode it belongs to, so switching back to "once" leaves no
+    // dormant block behind — the same rule `poll` and `rowIds` follow. A node carrying a
+    // `forEach` it no longer uses would read, to the engine and to the next author, as one
+    // that walks a list.
+    if (runMode === "items") {
+      config.forEach = { list: stripBraces(forEachList), as: itemVar.trim() || undefined };
+    }
+    // A collection only means something for a step that runs more than once: one record per
+    // run is the whole shape. A step that runs once exports scalars under their own names.
+    if (runMode !== "once" && collectInto.trim()) {
+      config.collect = {
+        into: stripBraces(collectInto),
+        // Omitted when blank, like every other optional key here: a dormant condition would
+        // read as one in force.
+        ...(collectWhen.trim() ? { when: collectWhen.trim() } : {}),
+      };
     }
     // Omitted when off, for the same reason `rowIds` is: absence is how this config says
     // "unset", and a node carrying a dormant `poll` block would read as one that polls.
@@ -173,6 +202,18 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
   };
   const pollLine = pollSummary(pollMs.intervalMs, pollMs.timeoutMs);
   const pollAttemptsWarn = pollMs.timeoutMs < pollMs.intervalMs;
+
+  // What earlier steps in this flow collect into. Offered as a datalist rather than
+  // enforced: a script or a project variable can hold a list too.
+  //
+  // Guarded rather than assumed: the graph arrives with the flow, so a panel opened before
+  // it lands — or rendered against a context with no canvas at all — would otherwise take
+  // the whole sheet down inside the traversal. An empty list is the honest answer while
+  // there is nothing upstream to know about.
+  const upstreamLists =
+    node && nodes?.length && edges?.length
+      ? getUpstreamCollections(node.id, nodes, edges)
+      : [];
 
   const toggleRow = (id: string) => {
     setRowIds((current) => {
@@ -248,26 +289,34 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
             </Field>
 
             <Field
-              label="Data rows"
+              label="How many times"
               help={
-                !rows || rows.length === 0
-                  ? "This request has no data rows. Add them in the request's Data tab."
-                  : !forEachRow
-                    ? "The request runs once, with its own payload — its data rows are ignored."
-                    : rowIds === null
+                runMode === "items"
+                  ? walkSummary(forEachList, itemVar, upstreamLists)
+                  : runMode === "rows"
+                    ? rowIds === null
                       ? `Every row runs here, in order — ${runnableTotal} requests, each inheriting what earlier steps produced.${
                           parkedCount > 0 ? ` ${parkedCount} disabled row(s) are skipped.` : ""
                         }`
                       : `${selectedCount} of ${runnableTotal} rows run here.${
                           parkedCount > 0 ? ` ${parkedCount} disabled row(s) are skipped.` : ""
                         }`
+                    : !rows || rows.length === 0
+                      // Says why "Once per data row" is disabled. Without it the option is
+                      // simply greyed out, which reads as a limitation rather than as
+                      // something one click in the Data tab fixes.
+                      ? "This request has no data rows. Add them in the request's Data tab."
+                      : "The request runs once, with its own payload — its data rows are ignored."
               }
             >
+              {/* Three exclusive choices in one control, so "both a dataset and a list" is
+                  not expressible here at all. The engine still refuses it, because config is
+                  JSON — but a rule the UI cannot break is better than one it checks. */}
               <ToggleGroup
                 type="single"
-                value={forEachRow ? "each" : "once"}
+                value={runMode}
                 onValueChange={(v) => {
-                  if (v) setForEachRow(v === "each");
+                  if (v) setRunMode(v as RunMode);
                 }}
                 className="justify-start gap-1"
               >
@@ -278,22 +327,70 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                   Once, as authored
                 </ToggleGroupItem>
                 <ToggleGroupItem
-                  value="each"
+                  value="rows"
                   disabled={!rows || rows.length === 0}
                   className="h-9 px-3 text-[13px] data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
                 >
-                  Once per row{runnableTotal > 0 ? ` · ${runnableTotal}` : ""}
+                  Once per data row{runnableTotal > 0 ? ` · ${runnableTotal}` : ""}
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="items"
+                  className="h-9 px-3 text-[13px] data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+                >
+                  Once per item in a list
                 </ToggleGroupItem>
               </ToggleGroup>
               {/* A config that predates the rows being deleted: say so rather than
                   silently flipping the choice under the author. */}
-              {forEachRow && rows && rows.length === 0 && (
+              {runMode === "rows" && rows && rows.length === 0 && (
                 <p className="mt-1.5 text-[11px] text-destructive">
                   This request no longer has any data rows — this step will run once, as
                   authored.
                 </p>
               )}
             </Field>
+
+            {/* Only for the mode it belongs to. A dataset is authored up front and cannot
+                know ids the server just minted, which is the whole reason this exists. */}
+            {runMode === "items" && (
+              <Field
+                label="The list to walk"
+                htmlFor="node-foreach-list"
+                help={
+                  upstreamLists.length > 0
+                    ? `Collected by an earlier step in this flow: ${upstreamLists.join(", ")}.`
+                    : "No earlier step in this flow collects a list yet. Set \"Collect into\" on the step that produces these values."
+                }
+              >
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    id="node-foreach-list"
+                    list="node-foreach-lists"
+                    placeholder="launched"
+                    value={forEachList}
+                    onChange={(e) => setForEachList(e.target.value)}
+                    className="h-9 font-mono text-[13px]"
+                  />
+                  <datalist id="node-foreach-lists">
+                    {upstreamLists.map((name) => (
+                      <option key={name} value={name} />
+                    ))}
+                  </datalist>
+                  {/* Suggested from the list's name, and needed only for a list of plain
+                      values — a record's fields already carry the names they were collected
+                      with, so leaving this blank is the normal case. */}
+                  <SuggestInput
+                    aria-label="Name each item"
+                    suggestion={itemVarSuggestion(forEachList)}
+                    placeholder="Name each item (plain lists only)"
+                    value={itemVar}
+                    onChange={(e) => setItemVar(e.target.value)}
+                    onAccept={setItemVar}
+                    className="h-9 font-mono text-[13px]"
+                  />
+                </div>
+              </Field>
+            )}
 
             <Field
               label="Expect"
@@ -476,7 +573,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
               )}
             </Section>
 
-            {forEachRow && (rows?.length ?? 0) > 0 && (
+            {runMode === "rows" && (rows?.length ?? 0) > 0 && (
               <Section
                 icon={<Rows3 className="h-3.5 w-3.5" />}
                 title="Data rows"
@@ -576,11 +673,78 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
             <Section
               icon={<ArrowUpFromLine className="h-3.5 w-3.5" />}
               title="Output variables"
-              subtitle="Pulled from the response by JSONPath, for the steps after this one"
+              subtitle={
+                runMode === "once"
+                  ? "Pulled from the response by JSONPath, for the steps after this one"
+                  : "Pulled from every response by JSONPath — one record per run, so a run's values stay together"
+              }
               onAdd={addOutputVar}
             >
+              {/* A step that runs more than once needs somewhere to put what each run
+                  produced, and the author names it. Two parallel arrays — campaignIds and
+                  txnIds — would hold the pairing and be unable to express it: {{…}} has no
+                  brackets, so the second run could never ask for *its* txnId. One record per
+                  run keeps them together, and the step that walks the list spreads them back
+                  out as ordinary {{names}}. */}
+              {runMode !== "once" && (
+                <div className="mb-3 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <ListOrdered className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <label
+                      htmlFor="node-collect-into"
+                      className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+                    >
+                      Collect into
+                    </label>
+                    <Input
+                      id="node-collect-into"
+                      placeholder="launched"
+                      value={collectInto}
+                      onChange={(e) => setCollectInto(e.target.value)}
+                      className="h-8 font-mono text-[13px]"
+                    />
+                  </div>
+                  {/* Passing is not the same as producing. A negative case expecting a 400
+                      passes, and no campaign was created — without this, whether it
+                      contributes depends on whether the error body happens to carry a field
+                      with the same name, which is an accident of the API's error shape. */}
+                  <div className="mt-2 flex items-center gap-2.5">
+                    <span className="w-[104px] shrink-0 text-right text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      only when
+                    </span>
+                    <Input
+                      aria-label="Collect only when"
+                      placeholder="response.status == 202 — leave blank for every run that passed"
+                      value={collectWhen}
+                      onChange={(e) => setCollectWhen(e.target.value)}
+                      className="h-8 font-mono text-[13px]"
+                    />
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                    {collectionSummary(collectInto, outputVars, collectWhen)}
+                  </p>
+                </div>
+              )}
               {outputVars.length === 0 ? (
-                <EmptyRow label="None — nothing is carried forward from this response" />
+                /* The action, in the place the eye already is. `+ Add` sits at the top right
+                   of the section, above a data-row list long enough to be scrolled past — so
+                   "add a field" arrived as an instruction with no visible way to follow it. */
+                <button
+                  type="button"
+                  onClick={addOutputVar}
+                  className="w-full rounded-lg border border-dashed border-border px-3 py-4 text-center transition-colors hover:border-primary/50 hover:bg-primary/5"
+                >
+                  <span className="flex items-center justify-center gap-1.5 text-[13px] font-medium text-foreground">
+                    <Plus className="h-3.5 w-3.5" />
+                    {runMode === "once" ? "Take a value from the response" : "Take a value from every response"}
+                  </span>
+                  <span className="mt-1 block text-[11px] text-muted-foreground">
+                    {/* The shape, with a real example — a name and a JSONPath. */}
+                    A name and a JSONPath, like{" "}
+                    <span className="font-mono">campaignId</span> ←{" "}
+                    <span className="font-mono">$.campaignId</span>
+                  </span>
+                </button>
               ) : (
                 <div className="space-y-1.5">
                   <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] gap-2 px-0.5">
@@ -598,7 +762,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                         className="h-9 font-mono text-[13px]"
                       />
                       <Input
-                        placeholder="$.data.token"
+                        placeholder="$.campaignId"
                         value={v.path}
                         onChange={(e) => updateOutputVar(i, "path", e.target.value)}
                         className="h-9 font-mono text-[13px]"

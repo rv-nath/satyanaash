@@ -107,6 +107,49 @@ describe("fanOutDetails", () => {
     expect(rowEntries.map((d) => d.type)).toEqual([undefined, undefined, "error"]);
   });
 
+  it("puts each row's record in that row's own block", () => {
+    // "Which row produced this id" is the question. One block above the table answered it
+    // only via a `_row` field the reader had to cross-reference — the long way round.
+    const step = {
+      ...aggregate([row(0, "10 recipients", "passed", 202), row(1, "100 recipients", "passed", 202)]),
+      exports: {
+        campaign_info: [
+          { campaignId: "c-8871", txnId: "t-41", _row: "10 recipients" },
+          { campaignId: "c-8872", txnId: "t-42", _row: "100 recipients" },
+        ],
+      },
+    };
+    const details = fanOutDetails(step);
+    const rowEntries = details.filter((d) => d.note !== undefined);
+
+    expect(rowEntries[0].label).toContain("10 recipients");
+    expect(rowEntries[0].value).toContain("c-8871");
+    expect(rowEntries[0].value).toContain("t-41");
+    // And emphatically not the other row's id.
+    expect(rowEntries[0].value).not.toContain("c-8872");
+    expect(rowEntries[1].value).toContain("c-8872");
+
+    // No separate block, because every record found its row.
+    expect(details.some((d) => d.label.startsWith("Collected"))).toBe(false);
+  });
+
+  it("still surfaces a record no row claimed", () => {
+    // Should not happen. If it does, an odd-looking extra block beats silently dropping a
+    // value the engine collected.
+    const step = {
+      ...aggregate([row(0, "10 recipients", "passed", 202)]),
+      exports: { campaign_info: [{ campaignId: "c-9", _row: "a row that is not here" }] },
+    };
+    const details = fanOutDetails(step);
+    const block = details.find((d) => d.label === "Collected, unmatched");
+    expect(block?.value).toContain("c-9");
+  });
+
+  it("says nothing about a collection when there isn't one", () => {
+    const details = fanOutDetails(aggregate([row(0, "valid", "passed", 201)]));
+    expect(details.some((d) => d.label.startsWith("Collected"))).toBe(false);
+  });
+
   it("puts a row's verdict on its collapsed line and its request behind it", () => {
     const details = fanOutDetails(
       aggregate([row(2, "no sender", "failed", 400, "Expected HTTP 201, got 400")]),

@@ -59,6 +59,8 @@ async fn run_migrations(pool: &AnyPool) -> Result<(), sqlx::Error> {
         include_str!("../../migrations/008_dataset.sql"),
         include_str!("../../migrations/009_runs.sql"),
         include_str!("../../migrations/010_body_type.sql"),
+        include_str!("../../migrations/011_file_stores.sql"),
+        include_str!("../../migrations/012_iterations_of.sql"),
     ];
 
     for sql in migrations {
@@ -87,4 +89,32 @@ async fn run_migrations(pool: &AnyPool) -> Result<(), sqlx::Error> {
 
     info!("Migrations complete");
     Ok(())
+}
+
+/// The run-history schema, for tests that need it without the rest of the app's tables.
+///
+/// Four test modules used to inline `include_str!("…/009_runs.sql")` and split it
+/// themselves. Adding a column in a later migration then left the running app and every one
+/// of those four disagreeing, and the symptom was "table run_results has no column named …"
+/// from a test that never mentions the column. One list, in the same file as the real one,
+/// so the two are seen together.
+///
+/// Deliberately not `run_migrations`: these tests stand up three stub tables to hang the
+/// foreign keys on, and creating the real `projects`/`flows`/`test_cases` alongside them
+/// would make each test carry schema it has no interest in.
+#[cfg(test)]
+pub(crate) async fn apply_run_schema(pool: &AnyPool) {
+    for sql in [
+        include_str!("../../migrations/009_runs.sql"),
+        include_str!("../../migrations/012_iterations_of.sql"),
+    ] {
+        for statement in sql.split(';') {
+            let stmt = statement.trim();
+            if stmt.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with("--")) {
+                sqlx::query(stmt).execute(pool).await.unwrap_or_else(|e| {
+                    panic!("test schema: {} — {}", &stmt[..stmt.len().min(60)], e)
+                });
+            }
+        }
+    }
 }

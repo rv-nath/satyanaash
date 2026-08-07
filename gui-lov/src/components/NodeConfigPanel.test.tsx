@@ -4,8 +4,20 @@ import userEvent from "@testing-library/user-event";
 import type { Node } from "@xyflow/react";
 
 const updateNodeConfig = vi.fn();
+// A graph with one upstream step that collects into "launched", so the panel has something
+// real to offer when asked which list to walk.
+const graphNodes = [
+  { id: "up", type: "testCase", data: { config: { forEachRow: true, collect: { into: "launched" } } } },
+  { id: "n1", type: "testCase", data: {} },
+];
+const graphEdges = [{ id: "e1", source: "up", target: "n1" }];
 vi.mock("@/contexts/TestProjectContext", () => ({
-  useTestProject: () => ({ updateNodeConfig, projectId: "p1" }),
+  useTestProject: () => ({
+    updateNodeConfig,
+    projectId: "p1",
+    nodes: graphNodes,
+    edges: graphEdges,
+  }),
 }));
 const rows = [
   { id: "r1", name: "happy path", body: '{"a":1}', check: "201" },
@@ -90,7 +102,7 @@ describe("NodeConfigPanel", () => {
     // Absence means "all", so a row added to the dataset later is included without
     // anyone reopening this node.
     render(<NodeConfigPanel node={node()} onClose={vi.fn()} />);
-    await userEvent.click(screen.getByRole("radio", { name: /once per row/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /once per data row/i }));
     await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
 
     const [, config] = updateNodeConfig.mock.calls[0];
@@ -100,7 +112,7 @@ describe("NodeConfigPanel", () => {
 
   it("saves only the rows that are ticked", async () => {
     render(<NodeConfigPanel node={node()} onClose={vi.fn()} />);
-    await userEvent.click(screen.getByRole("radio", { name: /once per row/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /once per data row/i }));
     await userEvent.click(screen.getByRole("checkbox", { name: /run no balance/i }));
     await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
 
@@ -110,7 +122,7 @@ describe("NodeConfigPanel", () => {
 
   it("reads an existing selection back", () => {
     render(<NodeConfigPanel node={node({ forEachRow: true, rowIds: ["r2"] })} onClose={vi.fn()} />);
-    expect(screen.getByRole("radio", { name: /once per row/i })).toHaveAttribute("data-state", "on");
+    expect(screen.getByRole("radio", { name: /once per data row/i })).toHaveAttribute("data-state", "on");
     expect(screen.getByRole("checkbox", { name: /run happy path/i })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: /run no balance/i })).toBeChecked();
     expect(screen.getByText(/1 of 2 rows run here/i)).toBeInTheDocument();
@@ -119,7 +131,7 @@ describe("NodeConfigPanel", () => {
   it("won't offer per-row for a request with no rows", () => {
     datasetRows = undefined;
     render(<NodeConfigPanel node={node()} onClose={vi.fn()} />);
-    expect(screen.getByRole("radio", { name: /once per row/i })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: /once per data row/i })).toBeDisabled();
     expect(screen.getByText(/no data rows/i)).toBeInTheDocument();
   });
 
@@ -143,5 +155,194 @@ describe("NodeConfigPanel", () => {
     render(<NodeConfigPanel node={node()} onClose={onClose} />);
     await userEvent.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("collecting what each run produced", () => {
+  beforeEach(() => {
+    updateNodeConfig.mockReset();
+    datasetRows = rows;
+  });
+
+  it("asks where to put the captures only once a step runs more than once", async () => {
+    // A step that runs once exports scalars under their own names — there is no record and
+    // nothing to name, so the field would be a question with no meaning.
+    render(<NodeConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.queryByLabelText(/collect into/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("radio", { name: /once per data row/i }));
+    expect(screen.getByLabelText(/collect into/i)).toBeInTheDocument();
+  });
+
+  it("saves the collection beside the fields it gathers", async () => {
+    render(
+      <NodeConfigPanel
+        node={node({ forEachRow: true, outputVars: [{ name: "campaignId", path: "$.data.campaignId" }] })}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await userEvent.type(screen.getByLabelText(/collect into/i), "launched");
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+
+    const [, config] = updateNodeConfig.mock.calls[0];
+    expect(config.collect).toEqual({ into: "launched" });
+  });
+
+  it("saves the collect condition, and leaves it out when blank", async () => {
+    const { unmount } = render(
+      <NodeConfigPanel
+        node={node({
+          forEachRow: true,
+          collect: { into: "launched" },
+          outputVars: [{ name: "campaignId", path: "$.campaignId" }],
+        })}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.type(screen.getByLabelText(/collect only when/i), "response.status == 202");
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    expect(updateNodeConfig.mock.calls[0][1].collect).toEqual({
+      into: "launched",
+      when: "response.status == 202",
+    });
+    unmount();
+    updateNodeConfig.mockReset();
+
+    // Blank means absent, not an empty string — a dormant condition would read as one in force.
+    render(
+      <NodeConfigPanel
+        node={node({
+          forEachRow: true,
+          collect: { into: "launched" },
+          outputVars: [{ name: "campaignId", path: "$.campaignId" }],
+        })}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    expect(updateNodeConfig.mock.calls[0][1].collect).toEqual({ into: "launched" });
+  });
+
+  it("says what will be carried forward, naming every field", async () => {
+    render(
+      <NodeConfigPanel
+        node={node({
+          forEachRow: true,
+          collect: { into: "launched" },
+          outputVars: [
+            { name: "campaignId", path: "$.data.campaignId" },
+            { name: "txnId", path: "$.data.txnId" },
+          ],
+        })}
+        onClose={vi.fn()}
+      />,
+    );
+    // Both in one record — the whole reason this is a record and not two parallel arrays.
+    expect(screen.getByText(/one record to "launched".*campaignId, txnId/i)).toBeInTheDocument();
+  });
+
+  it("offers the field-adding action where the eye already is", async () => {
+    // The complaint: "collect into campaign_data" was set, two messages said to add a field,
+    // and neither pointed anywhere. `+ Add` is at the top right of the section, above a
+    // data-row list long enough to have been scrolled past.
+    render(
+      <NodeConfigPanel
+        node={node({ forEachRow: true, collect: { into: "campaign_data" } })}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // One instruction, not two saying the same thing in different words.
+    expect(screen.queryByText(/nothing is carried forward from this response/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Add a field below/i)).toBeInTheDocument();
+
+    // And the action itself, with the shape of what to type.
+    const action = screen.getByRole("button", { name: /take a value from every response/i });
+    expect(action).toBeInTheDocument();
+    await userEvent.click(action);
+    expect(screen.getByPlaceholderText("$.campaignId")).toBeInTheDocument();
+  });
+
+  it("says fields have nowhere to go when the collection is unnamed", async () => {
+    // The failure this replaces: captures that resolve to nothing, whose only symptom was
+    // {{name}} arriving literally at a later step.
+    render(
+      <NodeConfigPanel
+        node={node({ forEachRow: true, outputVars: [{ name: "campaignId", path: "$.x" }] })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/need a list to be collected into/i)).toBeInTheDocument();
+  });
+
+  it("does not leave a collection behind when the step goes back to running once", async () => {
+    // A dormant block reads, to the engine and to the next author, as one that is in use.
+    render(
+      <NodeConfigPanel
+        node={node({ forEachRow: true, collect: { into: "launched" } })}
+        onClose={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("radio", { name: /once, as authored/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+
+    const [, config] = updateNodeConfig.mock.calls[0];
+    expect(config.collect).toBeUndefined();
+    expect(config.forEachRow).toBeUndefined();
+  });
+});
+
+describe("walking a list an earlier step collected", () => {
+  beforeEach(() => {
+    updateNodeConfig.mockReset();
+    datasetRows = rows;
+  });
+
+  it("reveals the list to walk, and saves it", async () => {
+    render(<NodeConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.queryByLabelText(/the list to walk/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("radio", { name: /once per item in a list/i }));
+    await userEvent.type(screen.getByLabelText(/the list to walk/i), "{{{{launched}}");
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+
+    const [, config] = updateNodeConfig.mock.calls[0];
+    // Braces stripped, so the panel and the engine read one config the same way.
+    expect(config.forEach).toEqual({ list: "launched", as: undefined });
+  });
+
+  it("offers the collections earlier steps in this flow produce", async () => {
+    render(<NodeConfigPanel node={node({ forEach: { list: "launched" } })} onClose={vi.fn()} />);
+    expect(screen.getByText(/collected by an earlier step in this flow: launched/i)).toBeInTheDocument();
+  });
+
+  it("doubts a list nothing upstream collects, without refusing it", async () => {
+    // A script or a project variable can hold a list too, so this is a doubt — but a typo is
+    // far likelier, and saying nothing is how it reaches a run.
+    render(<NodeConfigPanel node={node({ forEach: { list: "lanched" } })} onClose={vi.fn()} />);
+    expect(screen.getByText(/no earlier step in this flow collects that name/i)).toBeInTheDocument();
+  });
+
+  it("cannot express both kinds of fan-out at once", async () => {
+    // Three exclusive choices in one control, so the thing the engine refuses is not
+    // sayable here in the first place.
+    render(<NodeConfigPanel node={node({ forEachRow: true })} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item in a list/i }));
+    await userEvent.type(screen.getByLabelText(/the list to walk/i), "launched");
+    await userEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+
+    const [, config] = updateNodeConfig.mock.calls[0];
+    expect(config.forEach).toEqual({ list: "launched", as: undefined });
+    expect(config.forEachRow).toBeUndefined();
+  });
+
+  it("takes the suggested item name with one keystroke", async () => {
+    // "As of now, I have to type that entire thing."
+    render(<NodeConfigPanel node={node({ forEach: { list: "campaignIds" } })} onClose={vi.fn()} />);
+    const field = screen.getByLabelText(/name each item/i);
+    await userEvent.click(field);
+    await userEvent.keyboard("{Tab}");
+    expect(field).toHaveValue("campaignId");
   });
 });

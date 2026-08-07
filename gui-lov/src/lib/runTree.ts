@@ -6,6 +6,7 @@
  * the parts with actual behaviour; the rest is markup.
  */
 import type { FlowRun, SuiteRun, TestCaseExecutionResult } from '@/lib/api/types';
+import { iterationNoun } from '@/lib/consoleDetails';
 
 /** Which thing in the tree is selected. Addressed by position, because a node id repeats
  *  across members and a row index repeats across nodes. */
@@ -44,7 +45,7 @@ export function breadcrumb(run: SuiteRun, path: TreePath): string[] {
 
   if (node && path.row !== undefined) {
     const row = node.iterations?.[path.row];
-    if (row) crumbs.push(row.row_label ?? `Row ${(row.row_index ?? path.row) + 1}`);
+    if (row) crumbs.push(row.row_label ?? `${iterationNoun(node).One} ${(row.row_index ?? path.row) + 1}`);
   }
   return crumbs;
 }
@@ -94,7 +95,8 @@ export function rowSummary(node: TestCaseExecutionResult): string | undefined {
   const ran = rows.length - skipped;
   // Skips are named rather than folded into the denominator: "2/2" beside thirteen
   // untested rows reads as coverage it hasn't got.
-  if (ran === 0) return `${rows.length} rows, none ran`;
-  const base = `${passed}/${ran} rows`;
+  const noun = iterationNoun(node);
+  if (ran === 0) return `${rows.length} ${noun.many}, none ran`;
+  const base = `${passed}/${ran} ${noun.many}`;
   return skipped > 0 ? `${base} · ${skipped} skipped` : base;
 }

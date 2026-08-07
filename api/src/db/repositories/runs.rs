@@ -242,7 +242,7 @@ impl SqlxRunRepository {
         let rows = sqlx::query(
             r#"SELECT id, parent_id, ordinal, node_id, node_label, test_case_id, test_case_name,
                       status, duration_ms, expected, teardown, row_index, row_label,
-                      error_message, request, response, logs, exports
+                      iterations_of, error_message, request, response, logs, exports
                FROM run_results WHERE flow_run_id = ? ORDER BY parent_id IS NULL DESC, ordinal"#,
         )
         .bind(flow_run_id)
@@ -289,8 +289,8 @@ async fn insert_result(
         r#"INSERT INTO run_results
            (id, flow_run_id, parent_id, ordinal, node_id, node_label, test_case_id,
             test_case_name, status, duration_ms, expected, teardown, row_index, row_label,
-            error_message, request, response, logs, exports)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            iterations_of, error_message, request, response, logs, exports)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
     )
     .bind(id)
     .bind(flow_run_id)
@@ -306,6 +306,7 @@ async fn insert_result(
     .bind(i64::from(result.teardown.unwrap_or(false)))
     .bind(result.row_index.map(|i| i as i64))
     .bind(&result.row_label)
+    .bind(&result.iterations_of)
     .bind(&result.error_message)
     .bind(request)
     .bind(blob::pack_json(result.response.as_ref()))
@@ -398,6 +399,7 @@ fn row_to_node_result(row: &sqlx::any::AnyRow) -> Result<NodeResult, AppError> {
         teardown: (teardown != 0).then_some(true),
         row_index: row_index.map(|i| i.max(0) as usize),
         row_label: row.try_get("row_label")?,
+        iterations_of: row.try_get("iterations_of")?,
         attempts: None,
         iterations: None,
     })
@@ -426,12 +428,7 @@ mod tests {
         sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE flows (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE test_cases (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
-        for statement in include_str!("../../../migrations/009_runs.sql").split(';') {
-            let stmt = statement.trim();
-            if stmt.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with("--")) {
-                sqlx::query(stmt).execute(&pool).await.unwrap();
-            }
-        }
+        crate::db::pool::apply_run_schema(&pool).await;
         sqlx::query("INSERT INTO projects (id) VALUES ('p1')").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO flows (id) VALUES ('f1')").execute(&pool).await.unwrap();
         pool
@@ -468,6 +465,7 @@ mod tests {
             row_index: None,
             row_label: None,
             attempts: None,
+            iterations_of: None,
             iterations: None,
         }
     }
@@ -575,6 +573,25 @@ mod tests {
         assert_eq!(rows[1].row_index, Some(2));
         assert_eq!(rows[1].row_label.as_deref(), Some("no sender"));
         assert_eq!(rows[0].status, NodeStatus::Passed);
+    }
+
+    #[tokio::test]
+    async fn what_an_aggregates_children_are_survives_the_round_trip() {
+        // Stored rather than derived from the flow's current config, because a flow can be
+        // edited after a run — and re-labelling a past run by today's configuration would
+        // make history say something that was never true. So it has to come back out.
+        let repo = SqlxRunRepository::new(setup().await);
+        let mut aggregate = node("walk", NodeStatus::Passed);
+        aggregate.iterations_of = Some("item".into());
+        aggregate.iterations = Some(vec![NodeResult {
+            row_index: Some(0),
+            row_label: Some("10 recipients".into()),
+            ..node("walk", NodeStatus::Passed)
+        }]);
+        let id = a_run(&repo, vec![aggregate]).await;
+
+        let run = repo.get(&id).await.unwrap().unwrap();
+        assert_eq!(run.members[0].results[0].iterations_of.as_deref(), Some("item"));
     }
 
     #[tokio::test]

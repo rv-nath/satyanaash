@@ -7,6 +7,7 @@ import { useTestCases } from "@/hooks/useApi";
 import { statusIcon } from "@/lib/consoleDetails";
 import { exportLines } from "@/lib/executionDecor";
 import { attemptsNote, humanDuration, pollTiming } from "@/lib/poll";
+import { listName, walkBadge, type NodeConfig } from "@/lib/nodeConfig";
 
 interface TestCaseNodeData {
   label: string;
@@ -17,13 +18,7 @@ interface TestCaseNodeData {
    *  different roles ("Login as new user" vs "Root login"); the alias is what
    *  distinguishes them. The test case name stays visible underneath. */
   alias?: string;
-  config?: {
-    check?: string;
-    teardown?: boolean;
-    forEachRow?: boolean;
-    rowIds?: string[];
-    poll?: { until?: string; intervalMs?: number; timeoutMs?: number };
-  };
+  config?: NodeConfig;
 }
 
 interface TestCaseNodeProps {
@@ -78,6 +73,9 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
   const check = data.config?.check?.trim();
   const teardown = data.config?.teardown === true;
   const forEachRow = data.config?.forEachRow === true;
+  // A step that walks a list a previous one collected. Named after the list, because
+  // "which list" is the only thing that distinguishes two of these on a canvas.
+  const walksList = walkBadge(data.config);
   const chosenRows = data.config?.rowIds?.length;
   // A node that may ask the same question sixty times behaves differently enough that
   // reading the graph should say so — otherwise a step that can take two minutes looks
@@ -137,6 +135,15 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
               Runs <span className="text-foreground">once per data row</span>
               {chosenRows === undefined ? " — every row" : ` — ${chosenRows} selected`}, each
               inheriting what earlier steps produced.
+            </p>
+          )}
+          {walksList && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              Runs <span className="text-foreground">once per item</span> in{" "}
+              <span className="font-mono text-foreground">
+                {listName(data.config?.forEach)}
+              </span>
+              , which an earlier step collected.
             </p>
           )}
           {until && (
@@ -226,6 +233,14 @@ export const TestCaseNode = memo(({ id, data }: TestCaseNodeProps) => {
           }
         >
           {chosenRows === undefined ? "rows" : `${chosenRows} rows`}
+        </span>
+      )}
+      {walksList && (
+        <span
+          className="shrink-0 rounded border border-primary/40 bg-primary/10 px-1 font-mono text-[9px] font-semibold text-primary"
+          title={`Runs once per item in ${listName(data.config?.forEach)}, which an earlier step collected`}
+        >
+          {walksList}
         </span>
       )}
       {until && (

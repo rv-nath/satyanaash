@@ -240,6 +240,23 @@ impl<'a> GraphValidator<'a> {
             warnings.extend(poll_warnings(node));
         }
 
+        // 6d. Nodes that walk a list. Also no test case needed — which list to walk is a
+        // property of the step, and whether the list exists is only knowable at run time.
+        // Filed by the severity each issue declares, rather than by which list the call
+        // site happens to name. `valid` is derived from `errors`, so an error-severity
+        // issue pushed into `warnings` would read "error" in the panel and still not
+        // block — two answers about one flow. Splitting here means a warning added to
+        // `for_each_issues` later cannot land in the wrong one.
+        for node in graph.nodes.iter().filter(|n| n.node_type == "testCase") {
+            for issue in for_each_issues(node) {
+                if issue.severity == "error" {
+                    errors.push(issue);
+                } else {
+                    warnings.push(issue);
+                }
+            }
+        }
+
         // 7. Check group node flow references
         let referenced_flow_ids: Vec<String> = graph.nodes.iter()
             .filter(|n| n.node_type == "group")
@@ -467,6 +484,50 @@ fn poll_warnings(node: &GraphNode) -> Vec<ValidationIssue> {
 }
 
 /// Problems with a node set to run once per data row — all findable before a run, and
+/// What a step set to "once per item in a list" gets wrong before it is even run.
+///
+/// Deliberately *not* checking that the list exists: it is produced by an earlier step at
+/// run time, so the only honest answer here is silence. The panel checks that against the
+/// upstream collections it can see, live, where the author can fix it.
+fn for_each_issues(node: &GraphNode) -> Vec<ValidationIssue> {
+    let config = node.data.get("config");
+    let Some(spec) = config.and_then(|c| c.get("forEach")) else {
+        return Vec::new();
+    };
+
+    let mut issues = Vec::new();
+    let list = spec
+        .get("list")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().trim_start_matches("{{").trim_end_matches("}}").trim())
+        .filter(|s| !s.is_empty());
+
+    if list.is_none() {
+        issues.push(ValidationIssue::error_with_node(
+            "FOREACH_WITHOUT_LIST",
+            "This step is set to run once per item, but no list is named — it cannot run. Open the node and pick the list to walk".to_string(),
+            &node.id,
+        ));
+    }
+
+    // Unreachable from the panel's three-way toggle, and reachable through the API or a
+    // hand-edited graph. An error rather than a warning: there is no sensible way to guess
+    // which the author meant, and guessing is how a step quietly tests the wrong thing.
+    let per_row = config
+        .and_then(|c| c.get("forEachRow"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if per_row {
+        issues.push(ValidationIssue::error_with_node(
+            "FOREACH_AND_FANOUT",
+            "This step is set to run both once per data row and once per item in a list. Pick one".to_string(),
+            &node.id,
+        ));
+    }
+
+    issues
+}
+
 /// all otherwise discovered from a puzzling result. `test_case` is None when the
 /// reference is broken, which MISSING_TEST_CASE already reports.
 fn fan_out_warnings(node: &GraphNode, test_case: Option<&TestCase>) -> Vec<ValidationIssue> {
@@ -481,8 +542,9 @@ fn fan_out_warnings(node: &GraphNode, test_case: Option<&TestCase>) -> Vec<Valid
 
     let mut issues = Vec::new();
 
-    // Rows are isolated clones, so nothing a row captures leaves the step. Left unsaid,
-    // the only symptom is {{name}} arriving literally at some later node.
+    // A step that runs more than once gathers one record per run, under a name the author
+    // gives it. Without the name there is nowhere to put the records, and the old symptom
+    // returns: {{name}} arriving literally at some later node.
     let declared: Vec<&str> = config
         .and_then(|c| c.get("outputVars"))
         .and_then(|v| v.as_array())
@@ -494,15 +556,31 @@ fn fan_out_warnings(node: &GraphNode, test_case: Option<&TestCase>) -> Vec<Valid
                 .collect()
         })
         .unwrap_or_default();
-    if !declared.is_empty() {
-        issues.push(ValidationIssue::warning_with_node(
-            "FANOUT_DISCARDS_OUTPUT_VARS",
+    let into = config
+        .and_then(|c| c.get("collect"))
+        .and_then(|c| c.get("into"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    match (into, declared.is_empty()) {
+        (None, false) => issues.push(ValidationIssue::warning_with_node(
+            "FANOUT_COLLECTION_UNNAMED",
             format!(
-                "This step runs once per data row, so its output variable(s) {} capture                  nothing — rows are isolated. Capture on a step that runs once",
+                "This step runs once per data row, so its output variable(s) {} need a list to be collected into — set \"Collect into\". As it stands nothing is carried forward",
                 declared.join(", ")
             ),
             &node.id,
-        ));
+        )),
+        (Some(into), true) => issues.push(ValidationIssue::warning_with_node(
+            "FANOUT_COLLECTION_EMPTY",
+            format!(
+                "\"{}\" has no fields to collect — add output variable(s) naming what to take from each response",
+                into
+            ),
+            &node.id,
+        )),
+        _ => {}
     }
 
     let Some(test_case) = test_case else {
@@ -649,16 +727,70 @@ mod tests {
     }
 
     #[test]
-    fn output_variables_on_a_per_row_node_are_flagged() {
+    fn output_variables_with_nowhere_to_be_collected_are_flagged() {
         let tc = test_case_with(vec!["r0"]);
         let node = fan_out_node(serde_json::json!({
             "forEachRow": true,
             "outputVars": [{"name": "token", "path": "$.token"}, {"name": "  ", "path": "$.x"}]
         }));
         let issues = fan_out_warnings(&node, Some(&tc));
-        assert_eq!(codes(issues.clone()), vec!["FANOUT_DISCARDS_OUTPUT_VARS"]);
+        assert_eq!(codes(issues.clone()), vec!["FANOUT_COLLECTION_UNNAMED"]);
         // Names the variable, and ignores the half-filled row.
         assert!(issues[0].message.contains("token"), "{}", issues[0].message);
+        assert!(issues[0].message.contains("Collect into"), "{}", issues[0].message);
+    }
+
+    #[test]
+    fn walking_a_list_with_no_list_named_is_an_error() {
+        // An error, not a warning: the step cannot run at all, so letting the flow read as
+        // valid would mean discovering it only from a failed run.
+        let node = fan_out_node(serde_json::json!({"forEach": {"as": "campaignId"}}));
+        let issues = for_each_issues(&node);
+        assert_eq!(codes(issues.clone()), vec!["FOREACH_WITHOUT_LIST"]);
+        assert_eq!(issues[0].severity, "error");
+    }
+
+    #[test]
+    fn walking_a_list_is_not_flagged_when_a_list_is_named() {
+        // Braces forgiven here too, or the panel would show an error for what the engine
+        // accepts — two answers about one config.
+        for list in ["launched", "{{launched}}", "  launched  "] {
+            let node = fan_out_node(serde_json::json!({"forEach": {"list": list}}));
+            assert!(for_each_issues(&node).is_empty(), "flagged for {list:?}");
+        }
+    }
+
+    #[test]
+    fn a_step_set_to_both_kinds_of_fan_out_is_an_error() {
+        let node = fan_out_node(serde_json::json!({
+            "forEach": {"list": "launched"},
+            "forEachRow": true,
+        }));
+        assert_eq!(codes(for_each_issues(&node)), vec!["FOREACH_AND_FANOUT"]);
+    }
+
+    #[test]
+    fn a_named_collection_with_fields_is_not_flagged() {
+        // The configuration this feature exists to make work must be silent.
+        let tc = test_case_with(vec!["r0"]);
+        let node = fan_out_node(serde_json::json!({
+            "forEachRow": true,
+            "collect": {"into": "launched"},
+            "outputVars": [{"name": "campaignId", "path": "$.data.campaignId"}]
+        }));
+        assert!(codes(fan_out_warnings(&node, Some(&tc))).is_empty());
+    }
+
+    #[test]
+    fn a_collection_named_with_nothing_to_gather_is_flagged() {
+        let tc = test_case_with(vec!["r0"]);
+        let node = fan_out_node(serde_json::json!({
+            "forEachRow": true,
+            "collect": {"into": "launched"},
+        }));
+        let issues = fan_out_warnings(&node, Some(&tc));
+        assert_eq!(codes(issues.clone()), vec!["FANOUT_COLLECTION_EMPTY"]);
+        assert!(issues[0].message.contains("launched"), "{}", issues[0].message);
     }
 
     #[test]

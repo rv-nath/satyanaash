@@ -4,7 +4,7 @@
 //! Uses repository pattern for fetching test case data on-demand.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -17,6 +17,7 @@ use crate::execution::body::BodyType;
 
 use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine, VarSource};
 use super::assertions::AssertionInput;
+use super::variables;
 use super::http::{RequestLog, ResponseLog};
 
 /// The last meaningful line of a script — for an assertion that's the expression
@@ -202,6 +203,20 @@ fn poll_config(node: &GraphNode) -> Option<PollConfig> {
     })
 }
 
+/// An edge this author explicitly labelled `failure`, and nothing else.
+///
+/// Strict on purpose. `pick_edge` falls back — exact type, `default`, untyped, then the first
+/// edge it can find — which is right for a graph drawn without labels but catastrophic for a
+/// failure: it would find the happy path and take it. Every edge in a real flow here is untyped,
+/// so that fallback was not a rare case, it was the only case.
+fn failure_edge(flow: &Flow, current_id: &str) -> Option<String> {
+    flow.graph_data
+        .edges
+        .iter()
+        .find(|e| e.source == current_id && e.edge_type.as_deref() == Some("failure"))
+        .map(|e| e.target.clone())
+}
+
 /// A node's fan-out choice, as the canvas stores it.
 #[derive(Debug, PartialEq)]
 enum FanOut {
@@ -249,8 +264,230 @@ enum RowPlan {
     Once,
     /// One request per row, in dataset order whatever order they were selected in.
     Rows(Vec<(usize, DataRow)>),
+    /// One request per element of a list an earlier step produced.
+    ///
+    /// Synthesised as rows on purpose: the loop, the verdict fold, the `SAT.env` fold, the
+    /// per-iteration records and every screen that renders them are the dataset's, so
+    /// walking a list costs one substitution rather than a second implementation of all of
+    /// it. A dataset is authored up front and cannot know ids the server just minted —
+    /// that gap is the whole reason this exists.
+    Items(Vec<(usize, DataRow)>),
     /// Rows were chosen and none of them are there any more.
     NothingSelected(String),
+}
+
+/// A value named in a message, kept to one readable line — a 4 KB response body quoted in
+/// full is not an explanation.
+fn short(text: &str) -> String {
+    const MAX: usize = 60;
+    let one_line = text.replace('\n', " ");
+    if one_line.chars().count() <= MAX {
+        return one_line;
+    }
+    format!("{}…", one_line.chars().take(MAX).collect::<String>())
+}
+
+/// "Once per item in a list": which list, and what to call each element.
+struct ForEach {
+    /// The variable holding the list.
+    list: String,
+    /// A name for each element, needed only when the list holds plain values rather than
+    /// records — a record's fields already carry the names the author gave them.
+    item_var: Option<String>,
+}
+
+/// Read the `forEach` config, forgiving the `{{…}}` everyone will type.
+fn for_each(node: &GraphNode) -> Option<ForEach> {
+    let cfg = node.data.get("config")?.get("forEach")?;
+    let text = |key: &str| {
+        cfg.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().trim_start_matches("{{").trim_end_matches("}}").trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    Some(ForEach { list: text("list").unwrap_or_default(), item_var: text("as") })
+}
+
+/// Turn a list into rows, one per element, saying what it found when it can't.
+///
+/// Every branch that gives up returns `NothingSelected`, which is `Failed` with a message
+/// — nothing broke, the step was mis-configured, and `Failed` still routes down a failure
+/// edge instead of ending the run.
+fn plan_items(
+    spec: &ForEach,
+    test_case: &TestCase,
+    ctx: &ExecutionContext,
+    logs: &mut Vec<String>,
+) -> RowPlan {
+    if spec.list.is_empty() {
+        return RowPlan::NothingSelected(
+            "This step is set to run once per item, but no list is named. Open the node and pick the list to walk".to_string(),
+        );
+    }
+
+    let Some(value) = ctx.resolve(&spec.list) else {
+        return RowPlan::NothingSelected(format!(
+            "No variable named \"{}\" — the step that collects it must run before this one",
+            spec.list
+        ));
+    };
+
+    let items = match value {
+        Value::Array(items) => items.clone(),
+        other => {
+            return RowPlan::NothingSelected(format!(
+                "\"{}\" is a single value ({}), not a list — collect it on a step that runs more than once",
+                spec.list,
+                short(&variables::value_to_string(other))
+            ));
+        }
+    };
+
+    if items.is_empty() {
+        // Nothing ran is not a pass — the same rule as a dataset whose every row is parked.
+        return RowPlan::NothingSelected(format!(
+            "\"{}\" is empty, so there is nothing to run",
+            spec.list
+        ));
+    }
+
+    // The `{{names}}` this request declares, minus the built-ins, which are generated per use.
+    let mut needed: Vec<String> = Vec::new();
+    let mut templates: Vec<Cow<'_, str>> = vec![Cow::Borrowed(test_case.endpoint.as_str())];
+    if let Some(payload) = &test_case.payload {
+        templates.push(Cow::Borrowed(payload.as_str()));
+    }
+    if let Some(headers) = test_case.headers.as_object() {
+        for value in headers.values() {
+            if let Some(text) = value.as_str() {
+                templates.push(Cow::Borrowed(text));
+            }
+        }
+    }
+    for template in &templates {
+        for name in variables::declared_names(template) {
+            if !name.starts_with('$') && !needed.contains(&name) {
+                needed.push(name);
+            }
+        }
+    }
+
+    let mut rows: Vec<(usize, DataRow)> = Vec::with_capacity(items.len());
+    // Items dropped, named once at the end. One line per item would be the wall of warnings
+    // the collection tally exists to avoid — and on a mixed dataset it is the same rows.
+    let mut skipped: Vec<String> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let vars: BTreeMap<String, String> = match item {
+            // A record: spread its fields, so two captures from one response arrive
+            // together and under the names the author already chose.
+            Value::Object(fields) => fields
+                .iter()
+                .filter(|(name, _)| name.as_str() != RECORD_ROW_KEY)
+                .map(|(name, value)| (name.clone(), variables::value_to_string(value)))
+                .collect(),
+            Value::Array(_) => {
+                return RowPlan::NothingSelected(format!(
+                    "\"{}\" holds lists, which is neither a record nor a value this step can send",
+                    spec.list
+                ));
+            }
+            plain => {
+                let Some(name) = &spec.item_var else {
+                    return RowPlan::NothingSelected(format!(
+                        "\"{}\" holds plain values, so each one needs a name — set \"Name each item\"",
+                        spec.list
+                    ));
+                };
+                BTreeMap::from([(name.clone(), variables::value_to_string(plain))])
+            }
+        };
+
+        // A blank value is filtered out of row vars, which would leave {{name}} resolving
+        // from a *lower* tier and send a confidently wrong request to a real API. Say which
+        // one, and drop it.
+        let blank: Vec<&str> = vars
+            .iter()
+            .filter(|(_, v)| v.trim().is_empty())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        if !blank.is_empty() {
+            logs.push(format!(
+                "⚠ {}[{}] has no value for {} — skipped, rather than sending whatever an earlier step left behind",
+                spec.list,
+                index,
+                blank.join(", ")
+            ));
+            continue;
+        }
+
+        // A name the request needs that this record hasn't got, and nothing else supplies.
+        //
+        // Blank was only half the problem: a field **absent** from a record is not a blank
+        // value, so the guard above never saw it. `{{campaignId}}` then went out as those
+        // fourteen literal characters — to a real API, seven times, in a mixed dataset where
+        // the negative rows had no id to give. The engine warns about a literal placeholder
+        // and sends anyway, which is right for a hand-authored request and wrong here: the
+        // author never wrote this iteration, the list did, and an item that cannot fill the
+        // request is not a test of anything.
+        let missing: Vec<&str> = needed
+            .iter()
+            .filter(|name| !vars.contains_key(*name))
+            .filter(|name| ctx.resolve(name).is_none())
+            .map(|name| name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            skipped.push(format!(
+                "{} (no {})",
+                label_of(item, &spec.list, index),
+                missing.join(", ")
+            ));
+            continue;
+        }
+
+        rows.push((
+            index,
+            DataRow {
+                id: format!("{}[{}]", spec.list, index),
+                // The row that produced this record, so the report reads "100 recipients"
+                // rather than "Row 2".
+                name: item
+                    .get(RECORD_ROW_KEY)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                ..Default::default()
+            },
+        ));
+        // Set after construction: `DataRow`'s `vars` is the field the row loop reads.
+        rows.last_mut().unwrap().1.vars = vars;
+    }
+
+    if !skipped.is_empty() {
+        logs.push(format!(
+            "{} of {} item(s) in \"{}\" could not fill this request and were not sent: {}",
+            skipped.len(),
+            items.len(),
+            spec.list,
+            skipped.join("; ")
+        ));
+    }
+
+    if rows.is_empty() {
+        return RowPlan::NothingSelected(format!(
+            "No item in \"{}\" could fill this request, so nothing ran — {}",
+            spec.list,
+            skipped.join("; ")
+        ));
+    }
+
+    RowPlan::Items(rows)
+}
+
+/// What to call an item in a message — the row that produced it, else its position.
+fn label_of(item: &Value, list: &str, index: usize) -> String {
+    item.get(RECORD_ROW_KEY)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}[{}]", list, index))
 }
 
 /// Work out which rows a node runs, saying out loud anything that narrows the plan.
@@ -506,9 +743,13 @@ impl RunOptions<'_> {
 struct RowRunOptions<'a> {
     /// "direct" for the editor path, the node id for the flow path.
     node_id: &'a str,
-    /// Node-level `outputVars`. Empty for a fan-out node: rows are isolated clones, so
-    /// nothing a row captures would survive to be exported.
+    /// Node-level `outputVars`. Empty for a fan-out node: a row's context is a clone
+    /// about to be dropped, so exporting into it is work with no effect. What a fan-out
+    /// hands forward goes through `collect` instead.
     extra_exports: &'a [ExportVariable],
+    /// What this step gathers across its runs, when the author named it. `None` for the
+    /// editor's "Run dataset", which has no node to configure and nothing downstream.
+    collect: Option<Collection<'a>>,
     /// This node's Expect, applied to any row that hasn't stated one of its own.
     node_check: Option<&'a str>,
     /// Set when this node may have to ask more than once. Wraps only the send — the
@@ -522,6 +763,239 @@ struct RowRunOptions<'a> {
     /// node passes false — the flow is the precondition.
     honour_needs_flow: bool,
 }
+
+/// What a step that runs more than once gathers, for the steps after it.
+///
+/// **One record per run, not one array per name.** Two parallel arrays — `campaignIds`
+/// and `txnIds` — hold the pairing and cannot express it: the interpolation regex has no
+/// dots and no brackets, so the third run could never ask for *its* `txnId`. A record
+/// keeps a run's captures together, and the step that walks the list spreads them back
+/// out as ordinary `{{names}}`.
+#[derive(Copy, Clone)]
+struct Collection<'a> {
+    /// The list's name, as the author typed it — `launched`.
+    into: &'a str,
+    /// The record's fields: the node's `outputVars`, unchanged.
+    fields: &'a [ExportVariable],
+    /// What must be true of a response for it to have produced anything worth collecting.
+    ///
+    /// Passing is not the same as producing. A negative case expecting a 400 **passes** — and
+    /// no campaign was created. Without this, whether it contributes depends on whether the
+    /// error body happens to carry a field with the same name as one being collected, which is
+    /// an accident of the API's error shape rather than anything the author said. Absent means
+    /// "any run that passed", which is every step written before this.
+    when: Option<&'a str>,
+}
+
+/// What collecting noticed across a whole step, so it can be said once.
+///
+/// Per-run warnings were the first attempt, and they were unusable on the dataset this
+/// feature exists for: nineteen rows of which nine are negative cases expecting a 400 and
+/// therefore holding no id at all. Two lines per such row is eighteen warnings about a run
+/// doing exactly what it was told — and a warning that is usually wrong is one nobody reads.
+#[derive(Default)]
+struct CollectTally {
+    /// Runs that produced no field at all, by row label.
+    empty: Vec<String>,
+    /// (row, field) for a record that came out with some fields and not others. Distinct
+    /// from `empty`, and the more interesting case: something *did* come back, incomplete.
+    partial: Vec<(String, String)>,
+    /// Runs whose response wasn't JSON.
+    not_json: Vec<String>,
+    /// Fields whose path matched more than one value.
+    multi: Vec<String>,
+    /// Runs the author's own condition ruled out, by row label. Not a warning: saying "this
+    /// launch was rejected so there is no campaign to verify" is the condition doing its job.
+    unmet: Vec<String>,
+    /// The condition itself is broken. One message for the step, not one per run.
+    broken: Option<String>,
+}
+
+impl CollectTally {
+    /// At most three lines, each naming the rows it is about — enough to act on, and short
+    /// enough to read.
+    fn lines(&self, into: &str, ran: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        let names = |rows: &[String]| {
+            const SHOWN: usize = 5;
+            let shown = rows.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(", ");
+            if rows.len() > SHOWN {
+                format!("{} and {} more", shown, rows.len() - SHOWN)
+            } else {
+                shown
+            }
+        };
+
+        if !self.not_json.is_empty() {
+            out.push(format!(
+                "⚠ {} of {} run(s) answered with something that isn't JSON, so nothing was collected: {}",
+                self.not_json.len(),
+                ran,
+                names(&self.not_json)
+            ));
+        }
+        if let Some(why) = &self.broken {
+            out.push(format!(
+                "⚠ \"Collect when\" could not be judged, so nothing was collected into \"{}\": {}",
+                into, why
+            ));
+        }
+        if !self.unmet.is_empty() {
+            out.push(format!(
+                "{} of {} run(s) did not meet \"{}\"'s collect condition, so they added no record: {}",
+                self.unmet.len(),
+                ran,
+                into,
+                names(&self.unmet)
+            ));
+        }
+        if !self.empty.is_empty() {
+            out.push(format!(
+                "{} of {} run(s) produced none of \"{}\"'s fields and added no record: {}",
+                self.empty.len(),
+                ran,
+                into,
+                names(&self.empty)
+            ));
+        }
+        for (row, field) in &self.partial {
+            out.push(format!(
+                "⚠ \"{}\" is missing from the record for {} — that field's path found nothing there",
+                field, row
+            ));
+        }
+        let mut multi: Vec<&String> = self.multi.iter().collect();
+        multi.sort();
+        multi.dedup();
+        for field in multi {
+            out.push(format!(
+                "⚠ \"{}\" matched more than one value — the first was used. Narrow its path to the one you want",
+                field
+            ));
+        }
+        out
+    }
+}
+
+/// Which of the two things a JSONPath lookup is for. The query is identical; only the
+/// advice when it finds nothing differs, and that advice is the whole value of the log
+/// line.
+#[derive(Copy, Clone, PartialEq)]
+enum CaptureKind {
+    /// A name a later request writes as `{{name}}`.
+    Export,
+    /// One field of the record a step is collecting.
+    Field,
+}
+
+/// Run these JSONPaths against one response body and say what happened to each.
+///
+/// Extracted so exporting and collecting share one implementation of "query and report"
+/// rather than two that drift — the messages are the only difference.
+fn capture(
+    specs: &[&ExportVariable],
+    json: &Value,
+    kind: CaptureKind,
+    debug: bool,
+    logs: &mut Vec<String>,
+    // Field names whose path matched more than once. Reported by the caller, once for the
+    // whole step rather than once per run.
+    multi: &mut Vec<String>,
+) -> HashMap<String, Value> {
+    use jsonpath_rust::JsonPath;
+
+    let noun = match kind {
+        CaptureKind::Export => "Export",
+        CaptureKind::Field => "Field",
+    };
+    let mut got = HashMap::new();
+
+    for spec in specs {
+        match json.query(&spec.json_path) {
+            Ok(results) => {
+                if let Some(value) = results.first() {
+                    got.insert(spec.name.clone(), (*value).clone());
+                    if debug && kind == CaptureKind::Export {
+                        logs.push(format!("Exported {} = {:?}", spec.name, value));
+                    }
+                    if kind == CaptureKind::Field && results.len() > 1 {
+                        multi.push(spec.name.clone());
+                    }
+                } else if kind == CaptureKind::Export {
+                    // A path that matches nothing used to look exactly like a path that
+                    // worked. One typo ("$.accesss_token") then shows up much later as a
+                    // literal {{name}} in another request, so name what the body offered.
+                    logs.push(format!(
+                        "⚠ Export \"{}\": nothing at {}{} — {{{{{}}}}} will not resolve",
+                        spec.name,
+                        spec.json_path,
+                        top_level_keys(json),
+                        spec.name
+                    ));
+                }
+                // A field that found nothing is reported by the caller, once for the whole
+                // step — see `Collected` in `run_rows`.
+            }
+            // An unusable path is a typo in the config, not a property of one response, so
+            // it is worth saying wherever it happens.
+            Err(e) => logs.push(format!(
+                "⚠ {} \"{}\" has an unusable path {}: {}",
+                noun, spec.name, spec.json_path, e
+            )),
+        }
+    }
+
+    got
+}
+
+/// One record for one run — the fields the author picked, plus which row produced it.
+///
+/// `None` when nothing was captured: a record holding only `_row` says a request happened
+/// and nothing came back worth having, which is noise in the list and a lie in the count.
+fn record(
+    fields: &[ExportVariable],
+    json: Option<&Value>,
+    row_label: &str,
+    debug: bool,
+    logs: &mut Vec<String>,
+    tally: &mut CollectTally,
+) -> Option<Value> {
+    let json = match json {
+        Some(j) => j,
+        None => {
+            tally.not_json.push(row_label.to_string());
+            return None;
+        }
+    };
+
+    let specs: Vec<&ExportVariable> = fields.iter().collect();
+    let got = capture(&specs, json, CaptureKind::Field, debug, logs, &mut tally.multi);
+    if got.is_empty() {
+        // Very often correct rather than wrong: in a dataset of negative cases beside
+        // positive ones, a 400 that was expected has no id to give. Counted, named at the
+        // end, and not warned about here.
+        tally.empty.push(row_label.to_string());
+        return None;
+    }
+    for spec in fields {
+        if !got.contains_key(&spec.name) {
+            tally.partial.push((row_label.to_string(), spec.name.clone()));
+        }
+    }
+
+    let mut obj = serde_json::Map::new();
+    for (name, value) in got {
+        obj.insert(name, value);
+    }
+    // Which run this came from, so the step that consumes the list can label its
+    // iterations by the row that produced them. Never spread as a variable: it names the
+    // record's origin, it is not something the author captured.
+    obj.insert(RECORD_ROW_KEY.to_string(), Value::String(row_label.to_string()));
+    Some(Value::Object(obj))
+}
+
+/// The one reserved field name in a collected record.
+const RECORD_ROW_KEY: &str = "_row";
 
 /// Result status for a node execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -592,6 +1066,14 @@ pub struct NodeResult {
     /// request, so nothing changes for a node that does not poll.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempts: Option<usize>,
+    /// What the `iterations` below are, when they are not data rows.
+    ///
+    /// A step walking a collected list reports through the dataset's machinery, so without
+    /// this every screen says "2/2 rows passed" about something with no rows — a small lie,
+    /// in the one place an author looks to find out what ran. Absent for a dataset, so the
+    /// wire format and every existing reader are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iterations_of: Option<String>,
     /// Per-row results. Present only on the aggregate of a "run all rows" run;
     /// every other producer leaves it None so the wire format is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1029,6 +1511,22 @@ impl ExecutionEngine {
             state.results.push(result);
         }
 
+        // The headline has to agree with the tally underneath it.
+        //
+        // `final_status` is whatever the last node's routing returned, which said "completed"
+        // for a flow that had a failure three steps earlier — the run history said "failed"
+        // about the same run, because it looks at the counts. Two answers about one run, and
+        // the more visible one was the flattering one.
+        //
+        // "stopped" survives: the author or a shutdown ended the run, and how far it got is a
+        // different fact from whether what ran was any good.
+        let final_status = match final_status.as_str() {
+            "stopped" => final_status,
+            _ if state.stats.errors > 0 => "error".to_string(),
+            _ if state.stats.failed > 0 => "failed".to_string(),
+            _ => final_status,
+        };
+
         let duration_ms = start.elapsed().as_millis() as u64;
 
         // Emit completed event
@@ -1121,15 +1619,35 @@ impl ExecutionEngine {
 
                 state.results.push(result);
 
-                // Determine next node based on status
-                let edge_type = match status {
-                    NodeStatus::Passed => Some("success"),
-                    NodeStatus::Failed => Some("failure"),
+                // Where a verdict sends the run.
+                //
+                // **A failure stops unless a `failure` edge says otherwise.** It used to route
+                // like any other verdict, which meant falling through `pick_edge`'s chain —
+                // exact type, then `default`, then untyped, then *the first edge* — and every
+                // edge an author actually draws is untyped. So a failed step quietly continued
+                // down the happy path.
+                //
+                // Nothing useful happens after that. The step that failed is usually the step
+                // that was going to export an id, so what follows either fails for a second
+                // reason or asserts against a value that never arrived. One root cause becomes
+                // six red nodes.
+                //
+                // An **explicit** `failure` edge is the exception, and the only one: it is the
+                // author saying they have a recovery path in mind. It is matched strictly, so
+                // the fallback chain cannot conjure one out of an untyped edge.
+                let next_id = match status {
                     NodeStatus::Error => return Ok("error".to_string()),
-                    NodeStatus::Skipped => None,
+                    NodeStatus::Failed => match failure_edge(flow, current_node_id) {
+                        Some(id) => Some(id),
+                        None => return Ok("failed".to_string()),
+                    },
+                    // A pass, or a skip, keeps the lenient routing: untyped edges are how a
+                    // flow is normally drawn, and they have to keep meaning "then this".
+                    NodeStatus::Passed => self.find_next_node(flow, current_node_id, Some("success")),
+                    NodeStatus::Skipped => self.find_next_node(flow, current_node_id, None),
                 };
 
-                if let Some(next_id) = self.find_next_node(flow, current_node_id, edge_type) {
+                if let Some(next_id) = next_id {
                     return Box::pin(self.traverse_and_execute(
                         flow, &next_id, tc_repo, ctx, state
                     )).await;
@@ -1213,6 +1731,7 @@ impl ExecutionEngine {
                     row_index: None,
                     row_label: None,
                     attempts: None,
+                    iterations_of: None,
                     iterations: None,
                 };
             }
@@ -1246,6 +1765,7 @@ impl ExecutionEngine {
                         row_index: None,
                         row_label: None,
                         attempts: None,
+                        iterations_of: None,
                         iterations: None,
                     };
                 }
@@ -1268,6 +1788,7 @@ impl ExecutionEngine {
                         row_index: None,
                         row_label: None,
                         attempts: None,
+                        iterations_of: None,
                         iterations: None,
                     };
                 }
@@ -1318,11 +1839,21 @@ impl ExecutionEngine {
         // node counts as coming from the node.
         // Planned before the teardown guard, so the guard can inspect what a row would
         // actually send, and reused below rather than planned twice.
-        let plan = plan_rows(node, &test_case, &mut logs);
+        // Once, once per data row, or once per item in a list — and never two of those.
+        // The three-way toggle in the panel makes the last case unreachable, but config is
+        // JSON and a hand-edited node must not quietly get one of them.
+        let plan = match (for_each(node), fan_out(node) != FanOut::Off) {
+            (Some(_), true) => RowPlan::NothingSelected(
+                "This step is set to run both once per data row and once per item in a list. Open the node and pick one".to_string(),
+            ),
+            (Some(spec), false) => plan_items(&spec, &test_case, ctx, &mut logs),
+            (None, _) => plan_rows(node, &test_case, &mut logs),
+        };
+        let walking_a_list = matches!(plan, RowPlan::Items(_));
 
         if let Some(produced) = teardown_guard {
             let row_templates: Vec<&str> = match &plan {
-                RowPlan::Rows(rows) => rows
+                RowPlan::Rows(rows) | RowPlan::Items(rows) => rows
                     .iter()
                     .flat_map(|(_, row)| {
                         [row.body_override(), row.path_suffix()].into_iter().flatten()
@@ -1350,6 +1881,7 @@ impl ExecutionEngine {
                     row_index: None,
                     row_label: None,
                     attempts: None,
+                    iterations_of: None,
                     iterations: None,
                 };
             }
@@ -1389,6 +1921,23 @@ impl ExecutionEngine {
                 }
             }
         }
+
+        // The name the author gave this step's collection, when it runs more than once.
+        // Read here beside the fields it gathers, since one is meaningless without the other.
+        let collect_into = node.data
+            .get("config")
+            .and_then(|c| c.get("collect"))
+            .and_then(|c| c.get("into"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let collect_when = node.data
+            .get("config")
+            .and_then(|c| c.get("collect"))
+            .and_then(|c| c.get("when"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         // This node's Expect, when the author gave it one.
         let node_check = node.data
@@ -1432,20 +1981,45 @@ impl ExecutionEngine {
                 .await
             }
 
-            RowPlan::Rows(rows) => {
-                // Rows are isolated clones, so nothing a row captures survives the
-                // step. Left unsaid, the only symptom is {{name}} arriving literally at
-                // a later node — the failure mode this codebase keeps paying for.
-                if !node_output_vars.is_empty() {
-                    logs.push(format!(
-                        "⚠ This step runs once per data row, so nothing is carried forward: output variable(s) {} were not captured. Capture on a step that runs once",
-                        node_output_vars
-                            .iter()
-                            .map(|e| e.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
+            RowPlan::Rows(rows) | RowPlan::Items(rows) => {
+                // A step that runs more than once gathers one record per run, under a name
+                // the author gives it. Without that name there is nowhere to put the
+                // records, and the old symptom returns: {{name}} arriving literally at a
+                // later node, which is the failure mode this codebase keeps paying for.
+                let collect = match (collect_into, node_output_vars.is_empty()) {
+                    (Some(into), false) => Some(Collection {
+                        into,
+                        fields: &node_output_vars,
+                        when: collect_when,
+                    }),
+                    (Some(into), true) => {
+                        logs.push(format!(
+                            "⚠ \"{}\" has no fields to collect — add output variable(s) naming what to take from each response",
+                            into
+                        ));
+                        None
+                    }
+                    (None, false) => {
+                        logs.push(format!(
+                            "⚠ This step runs once per data row, so its output variable(s) {} need a list to be collected into — set \"Collect into\". Nothing was carried forward",
+                            node_output_vars
+                                .iter()
+                                .map(|e| e.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                        None
+                    }
+                    (None, true) => {
+                        if collect_when.is_some() {
+                            logs.push(
+                                "⚠ A collect condition is set but nothing is being collected — set \"Collect into\" and the field(s) to take, or the condition does nothing"
+                                    .to_string(),
+                            );
+                        }
+                        None
+                    }
+                };
                 if !test_case.exports.is_empty() {
                     logs.push(format!(
                         "⚠ \"{}\"'s own exports are captured per row but do not survive this step — rows are isolated",
@@ -1459,6 +2033,7 @@ impl ExecutionEngine {
                     RowRunOptions {
                         node_id: &node.id,
                         extra_exports: &[],
+                        collect,
                         node_check,
                         poll: poll.as_ref(),
                         watcher: event_tx.as_ref(),
@@ -1495,11 +2070,18 @@ impl ExecutionEngine {
                     row_index: None,
                     row_label: None,
                     attempts: None,
+                    iterations_of: None,
                     iterations: None,
                 }
             }
         };
         result.node_label = node_label;
+        // What its child rows are, so nothing downstream says "2/2 rows passed" about a
+        // step with no rows. Set here rather than in `run_rows`, which is shared by both
+        // fan-out kinds and deliberately cannot tell them apart.
+        if walking_a_list {
+            result.iterations_of = Some("item".to_string());
+        }
         result
     }
 
@@ -1512,8 +2094,6 @@ impl ExecutionEngine {
         ctx: &mut ExecutionContext,
         logs: &mut Vec<String>,
     ) -> Option<HashMap<String, Value>> {
-        use jsonpath_rust::JsonPath;
-
         // Combine test case exports and node-level exports (node exports take precedence)
         let all_exports: Vec<&ExportVariable> = {
             let mut combined: Vec<&ExportVariable> = test_case.exports.iter().collect();
@@ -1547,37 +2127,11 @@ impl ExecutionEngine {
             }
         };
 
-        let mut exported = HashMap::new();
-
-        for export in &all_exports {
-            // Use jsonpath_rust trait method to query
-            match json.query(&export.json_path) {
-                Ok(results) => {
-                    if let Some(value) = results.first() {
-                        ctx.set(&export.name, (*value).clone());
-                        exported.insert(export.name.clone(), (*value).clone());
-                        if self.debug_mode {
-                            logs.push(format!("Exported {} = {:?}", export.name, value));
-                        }
-                    } else {
-                        // A path that matches nothing used to look exactly like a
-                        // path that worked. One typo ("$.accesss_token") then shows
-                        // up much later as a literal {{name}} in another request, so
-                        // name what the body actually offered.
-                        logs.push(format!(
-                            "⚠ Export \"{}\": nothing at {}{} — {{{{{}}}}} will not resolve",
-                            export.name,
-                            export.json_path,
-                            top_level_keys(json),
-                            export.name
-                        ));
-                    }
-                }
-                Err(e) => logs.push(format!(
-                    "⚠ Export \"{}\" has an unusable path {}: {}",
-                    export.name, export.json_path, e
-                )),
-            }
+        let mut ignored = Vec::new();
+        let exported =
+            capture(&all_exports, json, CaptureKind::Export, self.debug_mode, logs, &mut ignored);
+        for (name, value) in &exported {
+            ctx.set(name, value.clone());
         }
 
         if exported.is_empty() {
@@ -1690,6 +2244,7 @@ impl ExecutionEngine {
                     row_index: opts.row_index,
                     row_label: opts.row_label.clone(),
                     attempts: None,
+                    iterations_of: None,
                     iterations: None,
                 }
             };
@@ -2217,6 +2772,7 @@ impl ExecutionEngine {
             // Only when it polled. A node that asked once says nothing, so the report reads
             // unchanged for every request that is not multi-staged.
             attempts: opts.poll.map(|_| attempts),
+            iterations_of: None,
             iterations: None,
         }
     }
@@ -2251,6 +2807,9 @@ impl ExecutionEngine {
             RowRunOptions {
                 node_id: "direct",
                 extra_exports: &[],
+                // Nothing downstream to hand a collection to: this is the editor's own
+                // "Run dataset", with no node to configure and no next step.
+                collect: None,
                 node_check: None,
                 honour_needs_flow: true,
                 // The editor's own run has no stream to lose and does not poll: polling
@@ -2292,6 +2851,8 @@ impl ExecutionEngine {
     ) -> NodeResult {
         let mut iterations: Vec<NodeResult> = Vec::with_capacity(rows.len());
         let mut logs = logs;
+        let mut records: Vec<Value> = Vec::new();
+        let mut tally = CollectTally::default();
 
         info!("Running \"{}\" over {} data row(s)", test_case.name, rows.len());
 
@@ -2331,6 +2892,7 @@ impl ExecutionEngine {
                     row_index: Some(*index),
                     row_label: Some(label),
                     attempts: None,
+                    iterations_of: None,
                     iterations: None,
                 });
                 continue;
@@ -2378,6 +2940,81 @@ impl ExecutionEngine {
                 base_ctx.set_environment_var(&k, v.clone());
                 env_writes.insert(k, v);
             }
+
+            // One record per run, gathered here rather than inside `run_once`, because the
+            // row's own context is a clone about to be dropped and the whole point is to
+            // reach a *later* step. Only a run that passed contributes: an id from a
+            // request that failed is not an id anything can be verified against.
+            if let Some(collection) = &opts.collect {
+                // Passing is the floor, not the bar. `when` is the bar when the author set one.
+                let produced = result.status == NodeStatus::Passed
+                    && match (collection.when, &result.response) {
+                        (None, _) => true,
+                        (Some(cond), Some(response)) => {
+                            // Interpolated like `check` and `until`, so a condition can name a
+                            // value the node or the row supplies. An unusable template is the
+                            // condition being broken, same as an unusable expression.
+                            let cond = match row_ctx.interpolate(cond) {
+                                Ok(text) => text,
+                                Err(e) => {
+                                    tally.broken = Some(e.to_string());
+                                    iterations.push(result);
+                                    continue;
+                                }
+                            };
+                            match self.assertions.evaluate(AssertionInput {
+                                script: &cond,
+                                status: response.status,
+                                body: &response.body,
+                                json: &response.json,
+                                headers: &response.headers,
+                                env: &base_ctx.environment_snapshot(),
+                            }) {
+                                Ok(outcome) => match outcome.passed {
+                                    Some(true) => true,
+                                    Some(false) => {
+                                        tally.unmet.push(label.clone());
+                                        false
+                                    }
+                                    // Neither true nor false is a broken condition, not a
+                                    // verdict. Said once (see `CollectTally::lines`) and treated
+                                    // as "did not produce", so the collection ends up absent and
+                                    // the consuming step fails naming it — rather than the tool
+                                    // guessing what the author meant.
+                                    None => {
+                                        tally.broken = Some(format!(
+                                            "must be true or false, and \"{}\" is neither",
+                                            cond
+                                        ));
+                                        false
+                                    }
+                                },
+                                Err(e) => {
+                                    tally.broken = Some(e.to_string());
+                                    false
+                                }
+                            }
+                        }
+                        // No response to judge — nothing was produced either way.
+                        (Some(_), None) => false,
+                    };
+
+                if produced {
+                    let mut notes = Vec::new();
+                    if let Some(rec) = record(
+                        collection.fields,
+                        result.response.as_ref().and_then(|r| r.json.as_ref()),
+                        &label,
+                        self.debug_mode,
+                        &mut notes,
+                        &mut tally,
+                    ) {
+                        records.push(rec);
+                    }
+                    logs.extend(notes.into_iter().map(|n| format!("[{}] {}", label, n)));
+                }
+            }
+
             iterations.push(result);
         }
 
@@ -2403,6 +3040,7 @@ impl ExecutionEngine {
                 row_index: None,
                 row_label: None,
                 attempts: None,
+                iterations_of: None,
                 iterations: Some(Vec::new()),
             };
         }
@@ -2445,6 +3083,34 @@ impl ExecutionEngine {
             start.elapsed().as_millis()
         );
 
+        // Hand the collection to the steps after this one.
+        //
+        // Absent rather than empty when nothing was captured: "no variable named launched"
+        // is something the consuming step can explain and point at, while an empty list
+        // reads as "the API returned nothing" — a different bug with a different fix.
+        let collected = opts.collect.as_ref().and_then(|c| {
+            if records.is_empty() {
+                logs.push(format!(
+                    "⚠ Nothing was collected into \"{}\", so {{{{{}}}}} will not resolve — \
+                     no run produced any of its fields",
+                    c.into, c.into
+                ));
+                logs.extend(tally.lines(c.into, iterations.len()));
+                None
+            } else {
+                logs.push(format!(
+                    "Collected into \"{}\": {} record(s) from {} row(s)",
+                    c.into,
+                    records.len(),
+                    iterations.len()
+                ));
+                logs.extend(tally.lines(c.into, iterations.len()));
+                let value = Value::Array(std::mem::take(&mut records));
+                base_ctx.set(c.into, value.clone());
+                Some(HashMap::from([(c.into.to_string(), value)]))
+            }
+        });
+
         // The caller's own notes first, unprefixed; then each row's, prefixed, so a flat
         // log view still says which row spoke.
         logs.extend(iterations.iter().flat_map(|r| {
@@ -2467,13 +3133,16 @@ impl ExecutionEngine {
             // the UI branches on `iterations` to render the per-row matrix.
             request: None,
             response: None,
-            exports: None,
+            // The collection, when the author named one. A row's *own* exports still die
+            // with the row — see the note at the `RowPlan::Rows` arm.
+            exports: collected,
             env: if env_writes.is_empty() { None } else { Some(env_writes.clone()) },
             error_message,
             logs,
             row_index: None,
             row_label: None,
             attempts: None,
+            iterations_of: None,
             iterations: Some(iterations),
         }
     }
@@ -3486,6 +4155,172 @@ mod tests {
         let poll = poll_config(&zeroed).unwrap();
         assert_eq!(poll.interval_ms, POLL_INTERVAL_MS);
         assert_eq!(poll.timeout_ms, POLL_TIMEOUT_MS);
+    }
+
+    // ------------------------------------------------- what a failure does to the rest
+
+    /// A flow of A → B, drawn the way every real flow here is drawn: untyped edges.
+    fn linear_flow(url: &str, a_check: Option<&str>) -> Flow {
+        let mut a_cfg = serde_json::json!({ "testCaseId": "a" });
+        if let Some(check) = a_check {
+            a_cfg["config"] = serde_json::json!({ "check": check });
+        }
+        let _ = url;
+        make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", a_cfg),
+            make_node("b", "testCase", serde_json::json!({"testCaseId": "b"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "b", None),
+            make_edge("e3", "b", "end", None),
+        ])
+    }
+
+    async fn two_step(a_check: Option<&str>) -> FlowExecutionResult {
+        let url = stub_times(200, r#"{"ok":true}"#, 3).await;
+        let a = make_test_case("a", "A", &format!("{url}/a"), "GET");
+        let b = make_test_case("b", "B", &format!("{url}/b"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(a).with_test_case(b);
+        ExecutionEngine::new(false, None)
+            .execute_flow("e1", &linear_flow(&url, a_check), &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_failure_stops_the_flow_when_no_failure_edge_is_drawn() {
+        // The step that failed is usually the step that was going to export an id, so what
+        // follows either fails for a second reason or asserts against a value that never
+        // arrived. One root cause became six red nodes.
+        //
+        // It used to continue: `pick_edge` fell through exact type, `default`, untyped, then
+        // *the first edge* — and every edge in a real flow here is untyped, so the happy path
+        // was always found.
+        let result = two_step(Some("500")).await;
+
+        let ran: Vec<&str> = result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        assert_eq!(ran, vec!["A"], "B should never have run: {ran:?}");
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.stats.failed, 1);
+    }
+
+    #[tokio::test]
+    async fn a_passing_node_still_follows_an_untyped_edge() {
+        // The guard on the other side of that change: untyped edges are how every flow here is
+        // drawn, and they have to keep meaning "then this".
+        let result = two_step(None).await;
+        let ran: Vec<&str> = result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        assert_eq!(ran, vec!["A", "B"]);
+        assert_eq!(result.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn an_explicit_failure_edge_is_still_honoured() {
+        // The one exception, and the only one: an author who drew a `failure` edge has a
+        // recovery path in mind and is entitled to it.
+        let url = stub_times(200, r#"{"ok":true}"#, 3).await;
+        let a = make_test_case("a", "A", &format!("{url}/a"), "GET");
+        let r = make_test_case("r", "Recover", &format!("{url}/r"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(a).with_test_case(r);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({
+                "testCaseId": "a", "config": {"check": "500"}
+            })),
+            make_node("r", "testCase", serde_json::json!({"testCaseId": "r"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            // Both drawn, so the choice is real rather than a fallback.
+            make_edge("e2", "a", "end", Some("success")),
+            make_edge("e3", "a", "r", Some("failure")),
+        ]);
+
+        let result = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        let ran: Vec<&str> = result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        assert_eq!(ran, vec!["A", "Recover"]);
+        // …and the run still failed. Recovering from a failure does not unfail it.
+        assert_eq!(result.status, "failed");
+    }
+
+    #[tokio::test]
+    async fn the_headline_agrees_with_the_tally_underneath_it() {
+        // `final_status` was whatever the last node's routing returned, so a flow with a failure
+        // three steps back reported "completed" while the run history — which counts — called the
+        // same run "failed". Two answers about one run, and the more visible one flattered it.
+        let url = stub_times(200, r#"{"ok":true}"#, 3).await;
+        let a = make_test_case("a", "A", &format!("{url}/a"), "GET");
+        let b = make_test_case("b", "B", &format!("{url}/b"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(a).with_test_case(b);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({
+                "testCaseId": "a", "config": {"check": "500"}
+            })),
+            make_node("b", "testCase", serde_json::json!({"testCaseId": "b"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            // A failure edge, so B runs and passes — the last node's verdict is a pass.
+            make_edge("e2", "a", "b", Some("failure")),
+            make_edge("e3", "b", "end", None),
+        ]);
+
+        let result = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.stats.passed, 1);
+        assert_eq!(result.stats.failed, 1);
+        // The last node passed. The run did not.
+        assert_eq!(result.status, "failed");
+    }
+
+    #[tokio::test]
+    async fn teardown_still_runs_when_a_failure_stops_the_flow() {
+        // The whole reason teardown is unconditional: an account created by a run that then
+        // went wrong still has to be cleaned up. Stopping earlier must not change that.
+        let url = stub_times(200, r#"{"ok":true}"#, 3).await;
+        let a = make_test_case("a", "A", &format!("{url}/a"), "GET");
+        let b = make_test_case("b", "B", &format!("{url}/b"), "GET");
+        let t = make_test_case("t", "Cleanup", &format!("{url}/t"), "DELETE");
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(a).with_test_case(b).with_test_case(t);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({
+                "testCaseId": "a", "config": {"check": "500"}
+            })),
+            make_node("b", "testCase", serde_json::json!({"testCaseId": "b"})),
+            make_node("t", "testCase", serde_json::json!({
+                "testCaseId": "t", "config": {"teardown": true}
+            })),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "b", None),
+            make_edge("e3", "b", "end", None),
+        ]);
+
+        let result = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        let ran: Vec<&str> = result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        // B skipped because A failed; Cleanup ran anyway.
+        assert_eq!(ran, vec!["A", "Cleanup"], "{ran:?}");
     }
 
     /// Ctrl+C stops a run at its next step — and still cleans up after it.
@@ -4525,19 +5360,701 @@ mod tests {
         assert_eq!(verdict("12").await, NodeStatus::Failed);
     }
 
-    #[tokio::test]
-    async fn output_variables_on_a_fanned_out_node_say_they_captured_nothing() {
-        let engine = ExecutionEngine::new(false, None);
-        let mut tc = make_test_case("tc", "Login", &stub_once(200, r#"{"token":"T"}"#).await, "POST");
-        tc.dataset = Some(dataset_of(vec![("one", Some("{}"), None)]));
+    // ------------------------------------------- what a step that runs twice hands forward
+
+    /// Run a one-node fan-out and return its aggregate plus the flow context, which is
+    /// what a *later* step would actually read.
+    async fn collected(
+        responses: Vec<(u16, &'static str)>,
+        rows: Vec<(&str, Option<&str>, Option<&str>)>,
+        config: serde_json::Value,
+    ) -> (NodeResult, HashMap<String, Value>) {
+        let url = stub_sequence(responses).await;
+        let mut tc = make_test_case("tc", "Launch", &url, "POST");
+        tc.dataset = Some(dataset_of(rows));
         let repo = MockTestCaseRepository::new().with_test_case(tc);
 
-        let flow = one_node_flow("tc", serde_json::json!({
+        let run = ExecutionEngine::new(false, None)
+            .execute_flow("exec1", &one_node_flow("tc", config), &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+        let context = run.context.clone();
+        let node = run.results.into_iter().find(|r| r.node_id == "b").unwrap();
+        (node, context)
+    }
+
+    fn records_of(node: &NodeResult, name: &str) -> Vec<Value> {
+        node.exports
+            .as_ref()
+            .and_then(|e| e.get(name))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_else(|| panic!("no collection named {name}: {:?}", node.exports))
+    }
+
+    fn field(record: &Value, key: &str) -> String {
+        record.get(key).and_then(|v| v.as_str()).unwrap_or("<absent>").to_string()
+    }
+
+    fn launch_config(fields: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
             "forEachRow": true,
-            "outputVars": [{"name": "token", "path": "$.token"}]
-        }));
-        let node = engine
+            "collect": { "into": "launched" },
+            "outputVars": fields,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_fan_out_collects_one_record_per_row() {
+        // The whole complaint: two campaigns launched, and no way to get their ids out.
+        // Every row's captures used to be written into a context clone that was dropped
+        // at the end of the iteration.
+        let (node, context) = collected(
+            vec![(202, r#"{"data":{"campaignId":"c-8871"}}"#), (202, r#"{"data":{"campaignId":"c-8872"}}"#)],
+            vec![("10 recipients", Some("{}"), None), ("100 recipients", Some("{}"), None)],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.data.campaignId"}])),
+        )
+        .await;
+
+        let records = records_of(&node, "launched");
+        assert_eq!(records.len(), 2);
+        // In run order, so the list lines up with the report above it.
+        assert_eq!(field(&records[0], "campaignId"), "c-8871");
+        assert_eq!(field(&records[1], "campaignId"), "c-8872");
+
+        // And it reached the flow context, which is the only reason any of this matters:
+        // a later step resolves from there, not from the aggregate.
+        assert!(context.contains_key("launched"), "not in the flow context: {context:?}");
+    }
+
+    #[tokio::test]
+    async fn a_record_keeps_two_captures_from_the_same_row_together() {
+        // The author's devil's advocate, and the reason this is a record and not two
+        // arrays. Parallel `campaignIds` / `txnIds` would hold the pairing and be unable
+        // to express it: the interpolation regex has no brackets, so the second run could
+        // never ask for *its* txnId.
+        let (node, _) = collected(
+            vec![
+                (202, r#"{"data":{"campaignId":"c-8871","txnId":"t-41"}}"#),
+                (202, r#"{"data":{"campaignId":"c-8872","txnId":"t-42"}}"#),
+            ],
+            vec![("first", Some("{}"), None), ("second", Some("{}"), None)],
+            launch_config(serde_json::json!([
+                {"name": "campaignId", "path": "$.data.campaignId"},
+                {"name": "txnId", "path": "$.data.txnId"},
+            ])),
+        )
+        .await;
+
+        let records = records_of(&node, "launched");
+        // Not "both ids are somewhere in the data" — c-8872 is paired with t-42 and with
+        // nothing else.
+        assert_eq!(field(&records[1], "campaignId"), "c-8872");
+        assert_eq!(field(&records[1], "txnId"), "t-42");
+        assert_eq!(field(&records[0], "txnId"), "t-41");
+    }
+
+    #[tokio::test]
+    async fn a_record_carries_every_field_the_author_picked_out_of_one_response() {
+        // "one campaign response returns multiple fields as a json, few of which are
+        // useful for a next node, rather than one single like a campaignid."
+        let (node, _) = collected(
+            vec![(202, r#"{"data":{"campaignId":"c-1","txnId":"t-1","status":"QUEUED","channel":"SMS"}}"#)],
+            vec![("one", Some("{}"), None)],
+            launch_config(serde_json::json!([
+                {"name": "campaignId", "path": "$.data.campaignId"},
+                {"name": "txnId", "path": "$.data.txnId"},
+                {"name": "status", "path": "$.data.status"},
+                {"name": "channel", "path": "$.data.channel"},
+            ])),
+        )
+        .await;
+
+        let records = records_of(&node, "launched");
+        assert_eq!(field(&records[0], "campaignId"), "c-1");
+        assert_eq!(field(&records[0], "txnId"), "t-1");
+        assert_eq!(field(&records[0], "status"), "QUEUED");
+        assert_eq!(field(&records[0], "channel"), "SMS");
+    }
+
+    #[tokio::test]
+    async fn a_collection_is_a_list_even_with_one_row_and_one_field() {
+        // A one-row fan-out yielding a bare scalar would silently change shape the day a
+        // second row is added — and every step reading it would break at once.
+        let (node, _) = collected(
+            vec![(202, r#"{"data":{"campaignId":"c-1"}}"#)],
+            vec![("only", Some("{}"), None)],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.data.campaignId"}])),
+        )
+        .await;
+
+        let value = node.exports.as_ref().unwrap().get("launched").unwrap();
+        assert!(value.is_array(), "should be a list of one, not a scalar: {value}");
+        assert_eq!(value.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn each_record_names_the_row_that_produced_it() {
+        // So a failure three steps later reads "the 100-recipients campaign's status check
+        // failed" rather than "iteration 2 failed".
+        let (node, _) = collected(
+            vec![(202, r#"{"data":{"campaignId":"c-1"}}"#), (202, r#"{"data":{"campaignId":"c-2"}}"#)],
+            vec![("10 recipients", Some("{}"), None), ("100 recipients", Some("{}"), None)],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.data.campaignId"}])),
+        )
+        .await;
+
+        let records = records_of(&node, "launched");
+        assert_eq!(field(&records[0], "_row"), "10 recipients");
+        assert_eq!(field(&records[1], "_row"), "100 recipients");
+    }
+
+    #[tokio::test]
+    async fn a_row_that_failed_contributes_no_record_and_the_tally_says_so() {
+        // An id from a request that failed is not an id anything can be verified against.
+        // The tally is what stops a short list from being mistaken for a complete one.
+        let (node, _) = collected(
+            vec![(202, r#"{"data":{"campaignId":"c-1"}}"#), (500, r#"{"data":{"campaignId":"c-2"}}"#)],
+            vec![("good", Some("{}"), None), ("bad", Some("{}"), None)],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.data.campaignId"}])),
+        )
+        .await;
+
+        let records = records_of(&node, "launched");
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(field(&records[0], "campaignId"), "c-1");
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("1 record(s) from 2 row(s)"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn a_path_that_matched_nothing_leaves_its_field_out_rather_than_null() {
+        // A null would interpolate downstream as the four characters "null" and be sent to
+        // a real API. Absent means the consumer's {{txnId}} stays unresolved and is
+        // reported as such.
+        let (node, _) = collected(
+            vec![(202, r#"{"data":{"campaignId":"c-1"}}"#)],
+            vec![("one", Some("{}"), None)],
+            launch_config(serde_json::json!([
+                {"name": "campaignId", "path": "$.data.campaignId"},
+                {"name": "txnId", "path": "$.data.txn_id"},
+            ])),
+        )
+        .await;
+
+        let records = records_of(&node, "launched");
+        assert_eq!(field(&records[0], "campaignId"), "c-1");
+        assert!(records[0].get("txnId").is_none(), "should be absent, not null: {:?}", records[0]);
+        let logs = node.logs.join("\n");
+        // Named once for the step, not once per run — see the mixed-dataset test below.
+        assert!(logs.contains("\"txnId\" is missing from the record for one"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn a_path_that_matched_several_takes_the_first_and_says_so() {
+        // Making this one field a list while its siblings stay scalars is the
+        // shape-varying trap. Take the first and name what happened.
+        let (node, _) = collected(
+            vec![(202, r#"{"data":{"campaigns":[{"id":"c-1"},{"id":"c-2"},{"id":"c-3"}]}}"#)],
+            vec![("one", Some("{}"), None)],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.data.campaigns[*].id"}])),
+        )
+        .await;
+
+        let records = records_of(&node, "launched");
+        assert_eq!(records.len(), 1);
+        assert_eq!(field(&records[0], "campaignId"), "c-1");
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("matched more than one value"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn runs_that_produced_no_record_are_named_once_not_warned_about_each() {
+        // The dataset this feature exists for: negative cases expecting a 400 sitting beside
+        // positive ones that launch something. A 400 that was expected *passes* and has no id
+        // to give, which is correct — so one warning per such row is a wall of noise about a
+        // run doing exactly what it was told, and a warning that is usually wrong is one
+        // nobody reads.
+        let (node, _) = collected(
+            vec![
+                (202, r#"{"campaignId":"c-1"}"#),
+                (400, r#"{"message":"name is required"}"#),
+                (400, r#"{"message":"msg is required"}"#),
+                (202, r#"{"campaignId":"c-2"}"#),
+            ],
+            vec![
+                ("good one", Some("{}"), None),
+                ("missing name", Some("{}"), Some("400")),
+                ("missing msg", Some("{}"), Some("400")),
+                ("good two", Some("{}"), None),
+            ],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.campaignId"}])),
+        )
+        .await;
+
+        // All four passed; only the two that had an id contributed.
+        assert_eq!(node.status, NodeStatus::Passed);
+        assert_eq!(records_of(&node, "launched").len(), 2);
+
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("2 record(s) from 4 row(s)"), "{logs}");
+        // One line, naming both rows.
+        assert!(
+            logs.contains("2 of 4 run(s) produced none of \"launched\"'s fields"),
+            "{logs}"
+        );
+        assert!(logs.contains("missing name, missing msg"), "{logs}");
+        // And emphatically not one per row. Row-scoped lines carry a "[label] " prefix, so
+        // *any* collection complaint wearing one means the noise is back — whatever its
+        // wording. Pinned this way rather than by counting one phrase, which a differently
+        // worded regression would walk straight past.
+        let per_row: Vec<&String> = node
+            .logs
+            .iter()
+            .filter(|l| l.starts_with('['))
+            .filter(|l| {
+                let l = l.to_lowercase();
+                l.contains("collect") || l.contains("launched") || l.contains("campaignid")
+            })
+            .collect();
+        assert!(per_row.is_empty(), "said per row after all: {per_row:?}");
+    }
+
+    #[tokio::test]
+    async fn a_collect_condition_keeps_out_runs_that_passed_without_producing_anything() {
+        // The author's point, exactly: "a 400 on a campaign launch means no campaign was
+        // created, but the test case assertion passed." Passing is the floor, not the bar.
+        //
+        // Without a condition this works only by accident — a 400 body happens not to carry a
+        // `campaignId`. Here it does carry one, which is the case that breaks the accident: an
+        // API echoing the id back in its error body would send every rejected launch to the
+        // verify step.
+        let (node, _) = collected(
+            vec![
+                (202, r#"{"campaignId":"real-1"}"#),
+                (400, r#"{"campaignId":"echoed-back","message":"name is required"}"#),
+                (202, r#"{"campaignId":"real-2"}"#),
+            ],
+            vec![
+                ("good", Some("{}"), None),
+                ("missing name", Some("{}"), Some("400")),
+                ("also good", Some("{}"), None),
+            ],
+            serde_json::json!({
+                "forEachRow": true,
+                "collect": { "into": "launched", "when": "response.status == 202" },
+                "outputVars": [{"name": "campaignId", "path": "$.campaignId"}],
+            }),
+        )
+        .await;
+
+        // All three rows passed — the 400 was expected.
+        assert_eq!(node.status, NodeStatus::Passed);
+        let records = records_of(&node, "launched");
+        assert_eq!(records.len(), 2, "the rejected launch must not be in here: {records:?}");
+        assert_eq!(field(&records[0], "campaignId"), "real-1");
+        assert_eq!(field(&records[1], "campaignId"), "real-2");
+        assert!(
+            !records.iter().any(|r| field(r, "campaignId") == "echoed-back"),
+            "{records:?}"
+        );
+
+        // Said once, and not as a warning — the condition doing its job is not a problem.
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("1 of 3 run(s) did not meet"), "{logs}");
+        assert!(logs.contains("missing name"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn no_collect_condition_means_any_run_that_passed() {
+        // The guard on the other side: every step written before the condition existed has no
+        // condition, and must behave exactly as it did.
+        let (node, _) = collected(
+            vec![(400, r#"{"campaignId":"echoed-back"}"#)],
+            vec![("negative", Some("{}"), Some("400"))],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.campaignId"}])),
+        )
+        .await;
+        assert_eq!(records_of(&node, "launched").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_broken_collect_condition_collects_nothing_and_says_why_once() {
+        // Neither true nor false is a broken condition, not a verdict. The tool does not guess:
+        // the collection ends up absent and the consuming step fails naming it.
+        let (node, context) = collected(
+            vec![(202, r#"{"campaignId":"c-1"}"#), (202, r#"{"campaignId":"c-2"}"#)],
+            vec![("one", Some("{}"), None), ("two", Some("{}"), None)],
+            serde_json::json!({
+                "forEachRow": true,
+                "collect": { "into": "launched", "when": "response.status" },
+                "outputVars": [{"name": "campaignId", "path": "$.campaignId"}],
+            }),
+        )
+        .await;
+
+        assert!(node.exports.is_none(), "{:?}", node.exports);
+        assert!(!context.contains_key("launched"));
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("could not be judged"), "{logs}");
+        // Once for the step, not once per run.
+        assert_eq!(logs.matches("could not be judged").count(), 1, "{logs}");
+        // The requests themselves were fine, so the step is not failed by a bad condition.
+        assert_eq!(node.status, NodeStatus::Passed);
+    }
+
+    #[tokio::test]
+    async fn a_collect_condition_is_interpolated_like_every_other_expression() {
+        let (node, _) = collected(
+            vec![(202, r#"{"campaignId":"c-1"}"#), (400, r#"{"campaignId":"nope"}"#)],
+            vec![("good", Some("{}"), None), ("bad", Some("{}"), Some("400"))],
+            serde_json::json!({
+                "forEachRow": true,
+                "inputVars": [{"key": "created", "value": "202"}],
+                "collect": { "into": "launched", "when": "response.status == {{created}}" },
+                "outputVars": [{"name": "campaignId", "path": "$.campaignId"}],
+            }),
+        )
+        .await;
+        let records = records_of(&node, "launched");
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(field(&records[0], "campaignId"), "c-1");
+    }
+
+    #[tokio::test]
+    async fn a_condition_with_nothing_to_collect_says_it_does_nothing() {
+        let (node, _) = collected(
+            vec![(202, r#"{"campaignId":"c-1"}"#)],
+            vec![("one", Some("{}"), None)],
+            serde_json::json!({
+                "forEachRow": true,
+                "collect": { "when": "response.status == 202" },
+            }),
+        )
+        .await;
+        assert!(node.logs.join("\n").contains("condition is set but nothing is being collected"));
+    }
+
+    #[tokio::test]
+    async fn nothing_collected_leaves_the_variable_absent_rather_than_empty() {
+        // An empty list reads as "the API returned nothing" — a different bug with a
+        // different fix. Absent is what the consuming step can name and point at.
+        let (node, context) = collected(
+            vec![(202, r#"{"data":{}}"#)],
+            vec![("one", Some("{}"), None)],
+            launch_config(serde_json::json!([{"name": "campaignId", "path": "$.data.campaignId"}])),
+        )
+        .await;
+
+        assert!(node.exports.is_none(), "{:?}", node.exports);
+        assert!(!context.contains_key("launched"), "{context:?}");
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("Nothing was collected into \"launched\""), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn output_variables_with_no_collection_name_say_where_to_put_them() {
+        // Was `output_variables_on_a_fanned_out_node_say_they_captured_nothing`, and the
+        // same failure mode: fields with nowhere to go, whose only symptom is {{name}}
+        // arriving literally at a later node. The advice now names a control that exists.
+        let (node, _) = collected(
+            vec![(200, r#"{"token":"T"}"#)],
+            vec![("one", Some("{}"), None)],
+            serde_json::json!({
+                "forEachRow": true,
+                "outputVars": [{"name": "token", "path": "$.token"}],
+            }),
+        )
+        .await;
+
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("token"), "{logs}");
+        assert!(logs.contains("Collect into"), "{logs}");
+        assert!(node.exports.is_none(), "nowhere to put it, so nothing is carried forward");
+    }
+
+    #[tokio::test]
+    async fn a_collection_with_no_fields_says_it_has_nothing_to_gather() {
+        // The other half-configured shape: a name and no paths.
+        let (node, _) = collected(
+            vec![(200, r#"{"token":"T"}"#)],
+            vec![("one", Some("{}"), None)],
+            serde_json::json!({
+                "forEachRow": true,
+                "collect": { "into": "launched" },
+            }),
+        )
+        .await;
+
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("\"launched\" has no fields to collect"), "{logs}");
+        assert!(node.exports.is_none());
+    }
+
+    // -------------------------------------------------- walking what the last step collected
+
+    /// Node A fans out over `rows` and collects; node B walks the collection. Returns
+    /// both aggregates and every endpoint B actually asked for.
+    async fn collect_then_walk(
+        launch_responses: Vec<(u16, &'static str)>,
+        rows: Vec<(&str, Option<&str>, Option<&str>)>,
+        launch_fields: serde_json::Value,
+        verify_endpoint: &str,
+        verify_config: serde_json::Value,
+    ) -> (NodeResult, NodeResult) {
+        let launch_url = stub_sequence(launch_responses).await;
+        let verify_url = stub_times(200, r#"{"status":"RUNNING"}"#, 8).await;
+
+        let mut a = make_test_case("a", "Launch", &launch_url, "POST");
+        a.dataset = Some(dataset_of(rows));
+        let b = make_test_case(
+            "b",
+            "Status",
+            &format!("{}{}", verify_url, verify_endpoint),
+            "GET",
+        );
+        let repo = MockTestCaseRepository::new().with_test_case(a).with_test_case(b);
+
+        let flow = fan_out_flow(
+            "a",
+            "b",
+            launch_config_with("launched", launch_fields),
+            verify_config,
+        );
+        let run = ExecutionEngine::new(false, None)
             .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        let find = |id: &str| run.results.iter().find(|r| r.node_id == id).cloned();
+        let launch = find("a").expect("launch node did not run");
+        let verify = find("b").unwrap_or_else(|| {
+            panic!("verify node did not run; launch said {:?}", launch.logs)
+        });
+        (launch, verify)
+    }
+
+    fn launch_config_with(into: &str, fields: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "forEachRow": true,
+            "collect": { "into": into },
+            "outputVars": fields,
+        })
+    }
+
+    fn walked(verify: &NodeResult) -> Vec<NodeResult> {
+        verify.iterations.clone().unwrap_or_else(|| {
+            panic!("the verify step did not iterate: {:?}", verify.error_message)
+        })
+    }
+
+    #[tokio::test]
+    async fn a_step_runs_once_per_collected_record() {
+        // The author's scenario, end to end: two campaigns launched, then a status call for
+        // each. Before this, the ids existed only inside two dropped context clones.
+        let (launch, verify) = collect_then_walk(
+            vec![(202, r#"{"data":{"campaignId":"c-8871"}}"#), (202, r#"{"data":{"campaignId":"c-8872"}}"#)],
+            vec![("10 recipients", Some("{}"), None), ("100 recipients", Some("{}"), None)],
+            serde_json::json!([{"name": "campaignId", "path": "$.data.campaignId"}]),
+            "/campaigns/{{campaignId}}/status",
+            serde_json::json!({ "forEach": { "list": "launched" } }),
+        )
+        .await;
+
+        assert_eq!(launch.status, NodeStatus::Passed);
+        let iterations = walked(&verify);
+        assert_eq!(iterations.len(), 2, "one per launched campaign");
+        assert_eq!(verify.status, NodeStatus::Passed);
+
+        // Each iteration asked about its own campaign, in order.
+        let asked: Vec<String> = iterations
+            .iter()
+            .map(|i| i.request.as_ref().unwrap().url.clone())
+            .collect();
+        assert!(asked[0].ends_with("/campaigns/c-8871/status"), "{asked:?}");
+        assert!(asked[1].ends_with("/campaigns/c-8872/status"), "{asked:?}");
+    }
+
+    #[tokio::test]
+    async fn an_iteration_sees_every_field_of_its_own_record() {
+        // Two captures per response, and the second iteration must get the second row's
+        // *pair* — the failure two parallel arrays could not avoid.
+        let (_, verify) = collect_then_walk(
+            vec![
+                (202, r#"{"data":{"campaignId":"c-1","txnId":"t-1"}}"#),
+                (202, r#"{"data":{"campaignId":"c-2","txnId":"t-2"}}"#),
+            ],
+            vec![("first", Some("{}"), None), ("second", Some("{}"), None)],
+            serde_json::json!([
+                {"name": "campaignId", "path": "$.data.campaignId"},
+                {"name": "txnId", "path": "$.data.txnId"},
+            ]),
+            "/campaigns/{{campaignId}}/txn/{{txnId}}",
+            serde_json::json!({ "forEach": { "list": "launched" } }),
+        )
+        .await;
+
+        let asked: Vec<String> = walked(&verify)
+            .iter()
+            .map(|i| i.request.as_ref().unwrap().url.clone())
+            .collect();
+        assert!(asked[0].ends_with("/campaigns/c-1/txn/t-1"), "{asked:?}");
+        // Not c-2/t-1, which is what zipping two arrays by index invites.
+        assert!(asked[1].ends_with("/campaigns/c-2/txn/t-2"), "{asked:?}");
+    }
+
+    #[tokio::test]
+    async fn an_iteration_is_labelled_by_the_row_that_produced_it() {
+        // So a failing status check reads "100 recipients", not "Row 2".
+        let (_, verify) = collect_then_walk(
+            vec![(202, r#"{"data":{"campaignId":"c-1"}}"#), (202, r#"{"data":{"campaignId":"c-2"}}"#)],
+            vec![("10 recipients", Some("{}"), None), ("100 recipients", Some("{}"), None)],
+            serde_json::json!([{"name": "campaignId", "path": "$.data.campaignId"}]),
+            "/campaigns/{{campaignId}}/status",
+            serde_json::json!({ "forEach": { "list": "launched" } }),
+        )
+        .await;
+
+        let labels: Vec<Option<String>> =
+            walked(&verify).iter().map(|i| i.row_label.clone()).collect();
+        assert_eq!(
+            labels,
+            vec![Some("10 recipients".to_string()), Some("100 recipients".to_string())]
+        );
+    }
+
+    /// A one-node flow whose only step walks a list handed in as an execution variable.
+    async fn walk_a_list(list: Value, config: serde_json::Value) -> NodeResult {
+        let url = stub_times(200, r#"{"ok":true}"#, 8).await;
+        let tc = make_test_case("tc", "Status", &format!("{url}/items/{{{{id}}}}"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", config);
+
+        ExecutionEngine::new(false, None)
+            .execute_flow(
+                "exec1",
+                &flow,
+                &repo,
+                HashMap::new(),
+                HashMap::from([("things".to_string(), list)]),
+                None,
+            )
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_list_of_plain_values_needs_a_name_for_each_one() {
+        // A list from somewhere other than a collection — a project variable, a script.
+        // Without a name there is no {{…}} for the endpoint to use.
+        let list = serde_json::json!(["one", "two"]);
+        let unnamed = walk_a_list(list.clone(), serde_json::json!({"forEach": {"list": "things"}})).await;
+        assert_eq!(unnamed.status, NodeStatus::Failed);
+        assert!(
+            unnamed.error_message.as_deref().unwrap_or("").contains("needs a name"),
+            "{:?}",
+            unnamed.error_message
+        );
+
+        // Named, and it walks.
+        let named = walk_a_list(list, serde_json::json!({"forEach": {"list": "things", "as": "id"}})).await;
+        assert_eq!(named.iterations.as_ref().map(|i| i.len()), Some(2));
+    }
+
+    #[tokio::test]
+    async fn the_list_name_is_forgiven_its_braces() {
+        // Everyone types {{things}}, because that is how a variable is written everywhere
+        // else in this app.
+        let node = walk_a_list(
+            serde_json::json!(["one"]),
+            serde_json::json!({"forEach": {"list": "{{things}}", "as": "id"}}),
+        )
+        .await;
+        assert_eq!(node.iterations.as_ref().map(|i| i.len()), Some(1), "{:?}", node.error_message);
+    }
+
+    #[tokio::test]
+    async fn walking_a_missing_variable_fails_and_names_it() {
+        // Not a silent zero-iteration pass: nothing ran, and the reason names the step that
+        // should have run first.
+        let node = walk_a_list(
+            serde_json::json!(["one"]),
+            serde_json::json!({"forEach": {"list": "launched", "as": "id"}}),
+        )
+        .await;
+        assert_eq!(node.status, NodeStatus::Failed);
+        let msg = node.error_message.unwrap_or_default();
+        assert!(msg.contains("launched"), "{msg}");
+        assert!(msg.contains("must run before this one"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn walking_an_empty_list_fails_rather_than_passing_nothing() {
+        // Nothing ran is not a pass — the same rule as a dataset whose every row is parked.
+        let node = walk_a_list(
+            serde_json::json!([]),
+            serde_json::json!({"forEach": {"list": "things", "as": "id"}}),
+        )
+        .await;
+        assert_eq!(node.status, NodeStatus::Failed);
+        assert!(node.error_message.unwrap_or_default().contains("is empty"));
+    }
+
+    #[tokio::test]
+    async fn walking_a_single_value_says_what_it_found() {
+        let node = walk_a_list(
+            serde_json::json!("c-8871"),
+            serde_json::json!({"forEach": {"list": "things", "as": "id"}}),
+        )
+        .await;
+        assert_eq!(node.status, NodeStatus::Failed);
+        let msg = node.error_message.unwrap_or_default();
+        assert!(msg.contains("single value (c-8871)"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn a_blank_field_is_skipped_by_name_not_resolved_from_a_lower_tier() {
+        // The dangerous one. Row vars filter blanks, so a blank element would leave {{id}}
+        // resolving from the environment and send a confidently wrong request to a real API.
+        let node = walk_a_list(
+            serde_json::json!([{"id": "real"}, {"id": ""}]),
+            serde_json::json!({"forEach": {"list": "things"}}),
+        )
+        .await;
+
+        let iterations = node.iterations.clone().unwrap_or_default();
+        assert_eq!(iterations.len(), 1, "the blank one must not have been sent");
+        let logs = node.logs.join("\n");
+        assert!(logs.contains("things[1] has no value for id"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn the_row_a_record_came_from_labels_it_but_is_not_a_variable() {
+        // `_row` is the record's origin, not something the author captured. Spreading it
+        // would put a name nobody declared into the highest-priority tier, where it could
+        // shadow a real value — and reserved names that behave like ordinary ones are how
+        // that becomes a mystery rather than a bug.
+        let url = stub_times(200, r#"{"ok":true}"#, 4).await;
+        let tc = make_test_case("tc", "Status", &format!("{url}/items/{{{{_row}}}}"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({"forEach": {"list": "things"}}));
+
+        let node = ExecutionEngine::new(true, None)
+            .execute_flow(
+                "exec1",
+                &flow,
+                &repo,
+                HashMap::new(),
+                HashMap::from([(
+                    "things".to_string(),
+                    serde_json::json!([{"id": "real", "_row": "10 recipients"}]),
+                )]),
+                None,
+            )
             .await
             .unwrap()
             .results
@@ -4545,10 +6062,228 @@ mod tests {
             .find(|r| r.node_id == "b")
             .unwrap();
 
+        // Not spread, so `{{_row}}` cannot be filled — and rather than sending those
+        // fourteen literal characters to a real API, the item is not sent at all.
+        assert!(node.iterations.clone().unwrap_or_default().is_empty(), "{:?}", node.iterations);
+        assert_eq!(node.status, NodeStatus::Failed);
+        let said = format!("{} {}", node.error_message.clone().unwrap_or_default(), node.logs.join("\n"));
+        assert!(said.contains("_row"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn a_step_says_whether_its_iterations_are_rows_or_items() {
+        // Every screen that renders `iterations` is the dataset's, and hard-codes the noun.
+        // Without this a step walking a list reports "2/2 rows passed" about something with
+        // no rows — in the one place an author looks to find out what ran.
+        let items = walk_a_list(
+            serde_json::json!(["a", "b"]),
+            serde_json::json!({"forEach": {"list": "things", "as": "id"}}),
+        )
+        .await;
+        assert_eq!(items.iterations_of.as_deref(), Some("item"));
+
+        // And a real dataset fan-out leaves it absent, so nothing that reads history today
+        // sees a new value.
+        let (rows, _) = collected(
+            vec![(200, r#"{"ok":true}"#)],
+            vec![("one", Some("{}"), None)],
+            serde_json::json!({"forEachRow": true}),
+        )
+        .await;
+        assert!(rows.iterations_of.is_none(), "{:?}", rows.iterations_of);
+    }
+
+    #[tokio::test]
+    async fn an_item_that_cannot_fill_the_request_is_not_sent() {
+        // The real run this comes from: a mixed dataset collected with a whole-response field
+        // (`$`), so every row produced a record — including the negative ones expecting a 400,
+        // which have no campaignId. Seven iterations then sent
+        // `/campaigns/{{campaignId}}/status` **literally** to a live API.
+        //
+        // Blank was only half the guard: a field absent from a record is not a blank value, so
+        // the blank check never saw it. The engine warns about a literal placeholder and sends
+        // anyway — right for a request an author wrote, wrong here, where the list wrote the
+        // iteration and an item that cannot fill the request tests nothing.
+        let node = walk_a_list(
+            serde_json::json!([
+                {"id": "real-1", "_row": "launched one"},
+                {"other": "x", "_row": "a 400 with no id"},
+                {"id": "real-2", "_row": "launched two"},
+            ]),
+            serde_json::json!({"forEach": {"list": "things"}}),
+        )
+        .await;
+
+        let iterations = node.iterations.clone().unwrap_or_default();
+        assert_eq!(iterations.len(), 2, "only the items that had an id: {iterations:?}");
+        assert_eq!(iterations[0].row_label.as_deref(), Some("launched one"));
+        assert_eq!(iterations[1].row_label.as_deref(), Some("launched two"));
+
+        // Nothing went out with a literal placeholder in it.
+        for row in &iterations {
+            let url = row.request.as_ref().unwrap().url.clone();
+            assert!(!url.contains("%7B%7B") && !url.contains("{{"), "{url}");
+        }
+
+        // And the one that was dropped is named, by the row that produced it, once.
         let logs = node.logs.join("\n");
-        assert!(logs.contains("token"), "{}", logs);
-        assert!(logs.contains("nothing is carried forward"), "{}", logs);
-        assert!(node.exports.is_none(), "a fan-out node exports nothing");
+        assert!(logs.contains("1 of 3 item(s)"), "{logs}");
+        assert!(logs.contains("a 400 with no id (no id)"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn a_name_the_flow_already_has_is_not_counted_as_missing() {
+        // The other side of that guard: a record need not carry every name the request uses.
+        // `{{id}}` comes from the item; anything else the flow already resolved is still
+        // resolved, and refusing to send on that basis would break every ordinary case.
+        let url = stub_times(200, r#"{"ok":true}"#, 4).await;
+        let tc = make_test_case("tc", "Status", &format!("{url}/{{{{tenant}}}}/items/{{{{id}}}}"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({"forEach": {"list": "things", "as": "id"}}));
+
+        let node = ExecutionEngine::new(false, None)
+            .execute_flow(
+                "exec1",
+                &flow,
+                &repo,
+                HashMap::new(),
+                HashMap::from([
+                    ("things".to_string(), serde_json::json!(["a"])),
+                    ("tenant".to_string(), serde_json::json!("acme")),
+                ]),
+                None,
+            )
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        let iterations = node.iterations.clone().unwrap_or_default();
+        assert_eq!(iterations.len(), 1, "{:?}", node.error_message);
+        assert!(iterations[0].request.as_ref().unwrap().url.contains("/acme/items/a"));
+    }
+
+    #[tokio::test]
+    async fn a_builtin_in_the_request_does_not_make_every_item_unfillable() {
+        // Built-ins are generated per use, so no record and no tier "has" them. Counted among
+        // the names a record must supply, `{{$UUID}}` alone would make every item look
+        // unfillable and the whole step would refuse to send — a plausible endpoint
+        // (`?nonce={{$UUID}}`) silently disabling the feature.
+        let url = stub_times(200, r#"{"ok":true}"#, 4).await;
+        let tc = make_test_case(
+            "tc",
+            "Status",
+            &format!("{url}/items/{{{{id}}}}?nonce={{{{$UUID}}}}"),
+            "GET",
+        );
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({"forEach": {"list": "things", "as": "id"}}));
+
+        let node = ExecutionEngine::new(false, None)
+            .execute_flow(
+                "exec1",
+                &flow,
+                &repo,
+                HashMap::new(),
+                HashMap::from([("things".to_string(), serde_json::json!(["a", "b"]))]),
+                None,
+            )
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        let iterations = node.iterations.clone().unwrap_or_default();
+        assert_eq!(iterations.len(), 2, "{:?}", node.error_message);
+        let asked = iterations[0].request.as_ref().unwrap().url.clone();
+        assert!(asked.contains("/items/a?nonce="), "{asked}");
+        assert!(!asked.contains("UUID"), "the built-in still resolved: {asked}");
+    }
+
+    #[tokio::test]
+    async fn a_list_of_lists_is_refused() {
+        let node = walk_a_list(
+            serde_json::json!([["a", "b"]]),
+            serde_json::json!({"forEach": {"list": "things", "as": "id"}}),
+        )
+        .await;
+        assert_eq!(node.status, NodeStatus::Failed);
+        assert!(node.error_message.unwrap_or_default().contains("holds lists"));
+    }
+
+    #[tokio::test]
+    async fn both_fan_out_kinds_on_one_node_is_refused() {
+        // Unreachable from the panel's three-way toggle, but config is JSON and a
+        // hand-edited node must not quietly get one of them.
+        let node = walk_a_list(
+            serde_json::json!(["one"]),
+            serde_json::json!({"forEach": {"list": "things", "as": "id"}, "forEachRow": true}),
+        )
+        .await;
+        assert_eq!(node.status, NodeStatus::Failed);
+        assert!(node.error_message.unwrap_or_default().contains("pick one"));
+    }
+
+    #[tokio::test]
+    async fn a_step_that_walks_a_list_can_itself_collect() {
+        // An item fan-out is a fan-out, so a chain of them needs no extra machinery.
+        let url = stub_sequence(vec![
+            (200, r#"{"detail":{"ref":"r-1"}}"#),
+            (200, r#"{"detail":{"ref":"r-2"}}"#),
+        ])
+        .await;
+        let tc = make_test_case("tc", "Status", &format!("{url}/items/{{{{id}}}}"), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "forEach": {"list": "things", "as": "id"},
+            "collect": {"into": "refs"},
+            "outputVars": [{"name": "ref", "path": "$.detail.ref"}],
+        }));
+
+        let node = ExecutionEngine::new(false, None)
+            .execute_flow(
+                "exec1",
+                &flow,
+                &repo,
+                HashMap::new(),
+                HashMap::from([("things".to_string(), serde_json::json!(["a", "b"]))]),
+                None,
+            )
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap();
+
+        let records = records_of(&node, "refs");
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!(field(&records[0], "ref"), "r-1");
+        assert_eq!(field(&records[1], "ref"), "r-2");
+    }
+
+    #[tokio::test]
+    async fn a_step_that_runs_once_still_exports_a_scalar() {
+        // The guard on the other side: collecting is what a step that runs *more than
+        // once* does. A plain step's output variable is still one value under its own
+        // name, which is what every existing flow depends on.
+        let url = stub_once(200, r#"{"token":"T"}"#).await;
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(make_test_case("tc", "Login", &url, "POST"));
+        let flow = one_node_flow("tc", serde_json::json!({
+            "outputVars": [{"name": "token", "path": "$.token"}],
+        }));
+
+        let run = ExecutionEngine::new(false, None)
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(run.context.get("token"), Some(&Value::String("T".into())));
     }
 
     #[tokio::test]

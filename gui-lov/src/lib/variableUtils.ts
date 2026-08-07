@@ -81,6 +81,29 @@ export function getUpstreamVariables(
 }
 
 /**
+ * The lists upstream steps collect into, for a step that wants to walk one.
+ *
+ * Not `getUpstreamVariables`: that returns a step's `outputVars` *names*, which are a
+ * record's fields — the list itself is named by `collect.into`. Asking the wrong one returns
+ * `campaignId` where the answer is `launched`, which is a plausible-looking wrong suggestion.
+ *
+ * Here rather than in the panel because this module owns the upstream traversal.
+ */
+export function getUpstreamCollections(
+  currentNodeId: string,
+  nodes: Node[],
+  edges: Edge[]
+): string[] {
+  const upstreamNodeIds = findUpstreamNodes(currentNodeId, edges);
+  const names = upstreamNodeIds
+    .map(id => nodes.find(n => n.id === id))
+    .map(node => (node?.data?.config as { collect?: { into?: string } } | undefined)?.collect?.into)
+    .map(name => (name ?? "").trim().replace(/^\{\{/, "").replace(/\}\}$/, "").trim())
+    .filter((name): name is string => name.length > 0);
+  return Array.from(new Set(names));
+}
+
+/**
  * Finds all nodes that are upstream from the given node (can reach this node)
  */
 function findUpstreamNodes(nodeId: string, edges: Edge[]): string[] {

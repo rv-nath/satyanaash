@@ -328,6 +328,98 @@ a JWT.
 - A flow runs the **saved** dataset; the editor's unsaved-row override is editor-only.
 - Flow **clone** keeps node config and shares test cases, so `rowIds` stay valid.
 
+## Collecting what each run produced, and walking it
+
+A step that runs more than once **collects one record per run** into a list the author names
+(`config.collect.into`), whose fields are that node's `outputVars`. A later step set to
+`config.forEach = {list, as}` **runs once per element**, spreading a record's fields back out
+as ordinary `{{names}}`.
+
+Exists because a fan-out step used to hand forward **nothing**: `extra_exports: &[]`, an
+aggregate hardcoding `exports: None`, and a warning saying so. Two campaigns launched from
+two data rows left no way to call a status API for either one — the ids lived in per-row
+context clones that were dropped at the end of each iteration.
+
+- **Records, not parallel arrays.** `campaignIds` and `txnIds` as two lists hold the pairing
+  and *cannot express it*: the interpolation regex has no dots and no brackets, so the second
+  run could never ask for **its** `txnId`. One record per run is what keeps a response's
+  several useful fields together — which is the actual case, not one id per run.
+- **Always a list of records**, even one row with one field. A shape that changed the day a
+  second capture was added would break every step reading it at once.
+- A field path takes the **first** match and says so. One run producing *several* records is
+  deferred; the design it wants is an optional `each` naming the JSONPath whose every match
+  is a record, with field paths read relative to each match.
+- Only runs that **passed** contribute, and the log gives the tally
+  (`Collected into "launched": 2 record(s) from 2 row(s)`) — a short list must be visible,
+  not inferred. A path matching nothing **leaves its field out** rather than writing `null`,
+  which would interpolate downstream as the four characters `null`.
+- **`collect.when` is the bar; passing is only the floor.** A negative case expecting a 400
+  *passes*, and no campaign was created — so "did the run pass" is the wrong question for whether
+  it produced anything. Without a condition it works only by accident: whether a rejected launch
+  contributes depends on whether the error body happens to carry a field with the same name as
+  one being collected, which is an accident of the API's error shape rather than anything the
+  author said. A Rhai expression against the response, interpolated like `check` and `until`;
+  absent means "any run that passed", which is every step written before it. Neither-true-nor-
+  false is a **broken condition, not a verdict**: nothing is collected, the reason is said once,
+  and the step's own verdict is unchanged (the requests were fine) so the consuming step fails
+  naming the missing variable rather than the tool guessing.
+- **Collection notes are said once for the step, never per run** (`CollectTally`). The first
+  attempt logged each miss where it happened and was unusable on the very dataset this exists
+  for: nineteen rows, nine of them negative cases expecting a 400 and therefore holding no id at
+  all. Two lines per such row is eighteen warnings about a run doing exactly what it was told,
+  and a warning that is usually wrong is one nobody reads. So: one line naming the runs that
+  produced no record, one per field genuinely missing from a record that *did* come back (the
+  interesting case — something returned, incomplete), and one per multi-matching field, deduped.
+  A row-scoped `[label] ` prefix on any collection complaint means the noise is back, and a test
+  pins exactly that rather than counting one phrase.
+- **Nothing collected → the variable is absent, not `[]`.** "No variable named launched" is
+  something the consuming step can name and point at; `[]` reads as "the API returned
+  nothing", a different bug with a different fix.
+- Each record carries **`_row`**, the source row's label, used *only* to label the iteration
+  that consumes it and never spread as a variable — so a failure reads "the 100-recipients
+  campaign's status check failed", not "iteration 2 failed". The one reserved field name.
+- The test case's **own `exports` still die per row**, keeping their existing warning. Node
+  `outputVars` are about *this step in this flow*; test-case exports are about *this request*.
+  That split is why one collects and the other cannot.
+- **`RowPlan::Items` synthesises rows**, and shares the `match plan` arm with `Rows`. The
+  loop, the verdict fold, the `SAT.env` fold, `iterations`, the child rows in `runs.rs` and
+  all five frontend renderers are the dataset's — walking a list costs one substitution, not
+  a second implementation of all of it. `plan_items` takes the context; `plan_rows` stays
+  pure.
+- Every way it can fail is `NothingSelected`, i.e. **`Failed` with a message**: no such
+  variable (naming the step that should run first), not a list, empty (*nothing ran is not a
+  pass*), plain values with no `as`, a list of lists, or both fan-out kinds at once. A field
+  that renders **blank is skipped by name** — row vars filter blanks, so it would otherwise
+  leave `{{campaignId}}` resolving from a *lower tier* and send a confidently wrong request.
+- **An item that cannot fill the request is not sent**, and the dropped items are named once
+  each, by the row that produced them. The request's `{{names}}` come from
+  `variables::declared_names` over the endpoint, payload and header values, minus `$`-built-ins
+  — those are generated per use, so counting them would make every item look unfillable and one
+  `?nonce={{$UUID}}` would silently disable the feature. A name resolvable from the flow is not
+  missing. **Blank was only half this guard**: a field *absent* from a record is not a blank
+  value, so the blank check never saw it, and a real run sent
+  `/campaigns/{{campaignId}}/status` — those fourteen literal characters — to a live API seven
+  times. The engine warns about a literal placeholder and sends anyway, which is right for a
+  request an author wrote and wrong here: the list wrote the iteration, and an item that cannot
+  fill the request tests nothing. Every item unfillable → `NothingSelected`, i.e. `Failed`.
+- **`NodeResult.iterations_of`** (`"item"`, absent for a dataset; migration 012) exists so no
+  screen says "2/2 rows passed" about a step with no rows. Stored, not derived from the
+  flow's current config — a flow can be edited after a run, and history must not be
+  re-labelled by today's configuration. Frontend reads it through `iterationNoun`.
+- Warnings: `FANOUT_COLLECTION_UNNAMED`, `FANOUT_COLLECTION_EMPTY`; errors
+  `FOREACH_WITHOUT_LIST`, `FOREACH_AND_FANOUT`. `FANOUT_DISCARDS_OUTPUT_VARS` is **gone** —
+  it described the opposite of what now happens. Whether the *list* exists is deliberately
+  not checked server-side (only run time knows); the panel checks it against upstream
+  collections, live, as a doubt rather than an error — a script or project variable can hold
+  a list too.
+- UI: one three-way toggle — **Once, as authored · Once per data row · Once per item in a
+  list** — so "both kinds" is not expressible, rather than validated afterwards. `{{braces}}`
+  are forgiven on the list name in the panel, the engine and the validator, so one config has
+  one reading. `lib/nodeConfig.ts` holds the config type that used to be two inline casts.
+- `getUpstreamCollections` (not `getUpstreamVariables`) finds the lists: output-variable
+  names are a record's *fields*, so asking the wrong one suggests `campaignId` where the
+  answer is `launched`.
+
 ## Conventions
 - Commit messages: `feat:`, `fix:`, `chore:` prefixes
 - Backend tests: `cargo test` — unit tests inline in source files

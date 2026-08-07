@@ -23,6 +23,9 @@ import type { BodyType, Dataset, FormField, TestCaseExecutionResult } from "@/li
 import { DatasetEditor } from "@/components/DatasetEditor";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { emptyDataset, runnableAlone, runnableLabel } from "@/lib/dataset";
+import { iterationNoun } from "@/lib/consoleDetails";
+import { collectedByRow, exportLines, recordFields } from "@/lib/executionDecor";
+import { escapeIsOurs } from "@/lib/modalLayer";
 
 interface TestCaseEditorProps {
   testCaseId?: string; // Optional - undefined means create mode
@@ -531,6 +534,12 @@ export const TestCaseEditor = ({
         handleSave();
       }
       if (e.key === 'Escape') {
+        // Not ours if something modal is open. This is a *document* listener, so an Escape
+        // aimed at a dialog inside the editor reached here too and closed the editor out from
+        // under it — you pressed Escape to dismiss a field editor and landed on the welcome
+        // page. The rule lives in `lib/modalLayer` so it can be tested without standing up an
+        // editor, and it covers the node config sheet and every dialog added later.
+        if (!escapeIsOurs()) return;
         handleClose();
       }
     };
@@ -1276,6 +1285,53 @@ export const TestCaseEditor = ({
 
 /** Renders one execution result — status bar plus Body / Headers / Request.
  *  Extracted so the data-driven drill-down reuses it instead of duplicating it. */
+/**
+ * What a step handed to the steps after it.
+ *
+ * Exports were rendered **nowhere** in the run history — not for a plain step and not for a
+ * fan-out. That was survivable while an export was a scalar you could re-derive from the
+ * response body on screen beside it. It stopped being survivable once a step's whole product
+ * is a collected list: the response bodies are all there, and the thing assembled from them
+ * was not.
+ *
+ * One component for both shapes. The summary line carries the value truncated, so a scalar
+ * needs no interaction at all; opening it gives the pretty-printed whole, which is what a
+ * list of records actually needs.
+ */
+function ExportsBlock({
+  exports,
+  collected,
+}: {
+  exports: Record<string, unknown> | null | undefined;
+  /** Named "Collected" for a step that ran more than once — the word its own config uses. */
+  collected: boolean;
+}) {
+  const lines = exportLines(exports, 96);
+  if (lines.length === 0) return null;
+
+  return (
+    <div className="shrink-0 border-b bg-muted/20 px-6 py-2">
+      {lines.map(({ name, value }) => (
+        <details key={name} className="group">
+          <summary className="cursor-pointer list-none font-mono text-[11px] leading-relaxed text-muted-foreground marker:content-none">
+            <span className="text-muted-foreground/70">
+              {collected ? "collected" : "exported"}{" "}
+            </span>
+            <span className="text-foreground">{name}</span>
+            <span className="text-muted-foreground/70"> = </span>
+            {value}
+            <span className="ml-1.5 text-muted-foreground/50 group-open:hidden">▸</span>
+            <span className="ml-1.5 hidden text-muted-foreground/50 group-open:inline">▾</span>
+          </summary>
+          <pre className="mt-1 max-h-64 overflow-auto rounded bg-background/60 p-2 font-mono text-[11px] leading-relaxed">
+            {JSON.stringify((exports ?? {})[name], null, 2)}
+          </pre>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 export function SingleResultView({
   result,
   wordWrap,
@@ -1363,6 +1419,8 @@ export function SingleResultView({
             ))}
           </div>
         )}
+
+        <ExportsBlock exports={result.exports} collected={false} />
 
         {/* Sub-tabs for Response details */}
         <Tabs defaultValue="body" className="flex-1 min-h-0 flex flex-col overflow-hidden">
@@ -1519,6 +1577,13 @@ export function DatasetResultView({
   running: boolean;
 }) {
   const rows = aggregate.iterations ?? [];
+  // "Row" is right for a dataset and wrong for a step that walks a collected list, and this
+  // one table renders both. The aggregate says which.
+  const noun = iterationNoun(aggregate);
+  // What each row contributed, shown against that row. The separate block above the table
+  // answered "which row produced this id" only via a `_row` field the reader had to
+  // cross-reference — the long way round to the one question worth asking.
+  const collected = collectedByRow(aggregate);
   const passed = rows.filter((r) => r.status === "passed").length;
   // A row skipped because it is parked or needs a flow is neither a pass nor a problem.
   // Counting it as "not passed" turned the whole strip red on a run where nothing failed
@@ -1545,10 +1610,12 @@ export function DatasetResultView({
       <div className="h-full flex flex-col">
         <div className="flex items-center gap-2 border-b border-border px-4 py-2">
           <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => onSelect(null)}>
-            <ArrowLeft className="h-3.5 w-3.5" /> All rows
+            <ArrowLeft className="h-3.5 w-3.5" /> All {noun.many}
           </Button>
           <span className="text-muted-foreground/50">/</span>
-          <span className="text-[13px] font-medium">{row.row_label ?? `Row ${selected + 1}`}</span>
+          <span className="text-[13px] font-medium">
+            {row.row_label ?? `${noun.One} ${selected + 1}`}
+          </span>
           <div className="flex-1" />
           <Button
             variant="ghost"
@@ -1605,8 +1672,8 @@ export function DatasetResultView({
             {/* "2 of 17 rows" rather than "2 rows": the seventeen are what you wrote, and
                 the two are what this run covered. */}
             {skipped > 0
-              ? `${rows.length - skipped} of ${rows.length} rows ran`
-              : `${rows.length} ${rows.length === 1 ? "row" : "rows"}`}
+              ? `${rows.length - skipped} of ${rows.length} ${noun.many} ran`
+              : `${rows.length} ${rows.length === 1 ? noun.one : noun.many}`}
           </span>
           <span className="text-sm text-muted-foreground">
             {passed} passed
@@ -1644,12 +1711,18 @@ export function DatasetResultView({
         </div>
       </div>
 
+      {/* Only what no row claimed. The rest is interleaved into the table below, against the
+          row that produced it. */}
+      {collected.unclaimed.length > 0 && (
+        <ExportsBlock exports={{ "unmatched records": collected.unclaimed }} collected />
+      )}
+
       <div className="min-h-0 flex-1 overflow-auto">
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead className="w-10 py-2">#</TableHead>
-              <TableHead className="py-2">Row</TableHead>
+              <TableHead className="py-2">{noun.One}</TableHead>
               <TableHead className="w-24 py-2">Result</TableHead>
               <TableHead className="w-20 py-2">HTTP</TableHead>
               <TableHead className="w-20 py-2">Time</TableHead>
@@ -1668,7 +1741,20 @@ export function DatasetResultView({
                     here is row 7 in the Data tab even with the skips folded away. */}
                 <TableCell className="py-2 text-xs text-muted-foreground">{i + 1}</TableCell>
                 <TableCell className="py-2 text-[13px] font-medium">
-                  {row.row_label ?? `Row ${i + 1}`}
+                  {row.row_label ?? `${noun.One} ${i + 1}`}
+                  {/* Under the name rather than in a column of its own: a seventh column in a
+                      six-column table would squeeze the five that are always there for the
+                      sake of one that often isn't. */}
+                  {collected.byRow.has(i) && (
+                    <span className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                      {recordFields(collected.byRow.get(i)!).map(({ name, value }) => (
+                        <span key={name} className="font-mono text-[11px] font-normal">
+                          <span className="text-muted-foreground">{name} </span>
+                          <span className="text-foreground/80">{value}</span>
+                        </span>
+                      ))}
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="py-2">
                   {/* Three outcomes, not two: a skipped row is muted, because nothing

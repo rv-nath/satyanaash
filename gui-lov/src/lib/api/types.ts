@@ -323,6 +323,12 @@ export interface TestCaseExecutionResult {
   row_index?: number;
   /** Label for that row — its name, else "Row N" */
   row_label?: string;
+  /**
+   * What the `iterations` are, when they are not data rows — `"item"` for a step that walks
+   * a collected list. Absent for a dataset fan-out, which is every run recorded before it,
+   * so `iterationNoun` supplies the default rather than every caller.
+   */
+  iterations_of?: string;
   /** Per-row results; present only on the aggregate of a "run all rows" run */
   iterations?: TestCaseExecutionResult[];
 }

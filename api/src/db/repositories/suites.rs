@@ -153,12 +153,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
-        for statement in include_str!("../../../migrations/009_runs.sql").split(';') {
-            let stmt = statement.trim();
-            if stmt.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with("--")) {
-                sqlx::query(stmt).execute(&pool).await.unwrap();
-            }
-        }
+        crate::db::pool::apply_run_schema(&pool).await;
         sqlx::query("INSERT INTO projects (id) VALUES ('p1')").execute(&pool).await.unwrap();
         SqlxSuiteRepository::new(pool)
     }

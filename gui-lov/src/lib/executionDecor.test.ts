@@ -3,6 +3,7 @@ import {
   canvasNodeName,
   completedCount,
   executionClassFor,
+  collectedByRow,
   exportLines,
   nodeExecState,
 } from "@/lib/executionDecor";
@@ -99,5 +100,56 @@ describe("exportLines", () => {
   it("flattens a value that isn't a string onto one line", () => {
     expect(exportLines({ n: 3 })).toEqual([{ name: "n", value: "3" }]);
     expect(exportLines({ o: { a: 1 } })).toEqual([{ name: "o", value: '{"a":1}' }]);
+  });
+});
+
+describe("collectedByRow", () => {
+  const row = (label: string) => ({ row_label: label });
+
+  it("pairs each record with the row that produced it", () => {
+    const result = collectedByRow({
+      iterations: [row("first"), row("second")],
+      exports: { launched: [{ id: "a", _row: "first" }, { id: "b", _row: "second" }] },
+    });
+    expect(result.byRow.get(0)).toMatchObject({ id: "a" });
+    expect(result.byRow.get(1)).toMatchObject({ id: "b" });
+    expect(result.unclaimed).toEqual([]);
+  });
+
+  it("skips rows that contributed nothing", () => {
+    // The normal case in a mixed dataset: a negative row expecting a 400 passes and has no id.
+    const result = collectedByRow({
+      iterations: [row("positive"), row("negative"), row("also positive")],
+      exports: { launched: [{ id: "a", _row: "positive" }, { id: "c", _row: "also positive" }] },
+    });
+    expect(result.byRow.get(0)).toMatchObject({ id: "a" });
+    expect(result.byRow.has(1)).toBe(false);
+    expect(result.byRow.get(2)).toMatchObject({ id: "c" });
+  });
+
+  it("keeps two rows with the same name apart", () => {
+    // The reason this zips instead of looking up by `_row`: nothing stops two rows sharing a
+    // name, and a lookup would hand both of them the first record — pairing an id with a row
+    // that did not produce it, which is worse than showing nothing.
+    const result = collectedByRow({
+      iterations: [row("same"), row("same")],
+      exports: { launched: [{ id: "a", _row: "same" }, { id: "b", _row: "same" }] },
+    });
+    expect(result.byRow.get(0)).toMatchObject({ id: "a" });
+    expect(result.byRow.get(1)).toMatchObject({ id: "b" });
+  });
+
+  it("reports a record no row claimed rather than dropping it", () => {
+    const result = collectedByRow({
+      iterations: [row("here")],
+      exports: { launched: [{ id: "x", _row: "somewhere else" }] },
+    });
+    expect(result.byRow.size).toBe(0);
+    expect(result.unclaimed).toHaveLength(1);
+  });
+
+  it("is empty when nothing was collected", () => {
+    expect(collectedByRow({ iterations: [row("a")] }).byRow.size).toBe(0);
+    expect(collectedByRow({}).unclaimed).toEqual([]);
   });
 });

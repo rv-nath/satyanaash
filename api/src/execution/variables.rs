@@ -294,6 +294,15 @@ impl VarSource {
 }
 
 /// Names inside `{{...}}`, in the order they appear.
+/// The `{{names}}` a template declares, built-ins included — the caller decides what to do
+/// with `$`-prefixed ones.
+///
+/// `pub(crate)` so an item fan-out can ask what the request needs before sending it. One
+/// regex, so "which names does this request declare" cannot come to mean two things.
+pub(crate) fn declared_names(template: &str) -> Vec<String> {
+    template_names(template)
+}
+
 fn template_names(template: &str) -> Vec<String> {
     let re = match Regex::new(r"\{\{(\$?[\w]+)(?:\(([^)]*)\))?\}\}") {
         Ok(re) => re,
@@ -315,7 +324,10 @@ fn preview(value: &str) -> String {
     format!("{}… ({} chars)", head, value.chars().count())
 }
 
-fn value_to_string(value: &Value) -> String {
+/// How a value reads once it is text. `pub(crate)` because a row variable synthesised
+/// from a collected record must render exactly as it would anywhere else — one function,
+/// so `{{campaignId}}` cannot mean two things.
+pub(crate) fn value_to_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),

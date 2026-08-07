@@ -7,6 +7,7 @@
  */
 import type { TestCaseExecutionResult } from "@/lib/api/types";
 import { attemptsNote } from "@/lib/poll";
+import { collectedByRow, recordFields } from "@/lib/executionDecor";
 
 export interface ConsoleLogDetail {
   label: string;
@@ -114,6 +115,16 @@ export function fanOutDetails(aggregate: TestCaseExecutionResult): ConsoleLogDet
     details.push({ label: "Error", value: aggregate.error_message, type: "error" });
   }
 
+  // What each row contributed goes *on that row*, below. Only records no row claimed are
+  // shown here — losing one silently would be worse than an odd-looking extra block.
+  const collected = collectedByRow(aggregate);
+  if (collected.unclaimed.length > 0) {
+    details.push({
+      label: "Collected, unmatched",
+      value: JSON.stringify(collected.unclaimed, null, 2),
+    });
+  }
+
   for (const row of rows) {
     const failed = row.status !== "passed" && row.status !== "skipped";
     // A row that was never sent has no request or response to show, so its reason is the
@@ -125,10 +136,18 @@ export function fanOutDetails(aggregate: TestCaseExecutionResult): ConsoleLogDet
         : resultDetails({ ...row, logs: [] })
             .map((d) => `${d.label}: ${d.value}`)
             .join("\n");
+    // Prefixed to the row's own detail, so the answer to "what did this row give me" is in
+    // the block named after that row.
+    const record = collected.byRow.get(rows.indexOf(row));
+    const withRecord = record
+      ? `Collected: ${recordFields(record)
+          .map((f) => `${f.name} = ${f.value}`)
+          .join("\n           ")}\n${value}`
+      : value;
     details.push({
       label: rowHeading(row, width),
       note: rowVerdict(row),
-      value,
+      value: withRecord,
       ...(failed ? { type: "error" as const } : {}),
     });
   }
@@ -167,11 +186,31 @@ export function detailSummary(value: string): string {
   return lines > 1 ? `${lines} lines · ${size}` : size;
 }
 
+/**
+ * What one iteration of a step is called, singular and plural.
+ *
+ * A step walking a collected list reports through the dataset's machinery, so every screen
+ * below would otherwise say "2/2 rows passed" about something with no rows. The noun comes
+ * from the result rather than from the flow's current config, because a flow can be edited
+ * after a run and history must not be re-labelled by today's configuration.
+ */
+export function iterationNoun(result: Pick<TestCaseExecutionResult, "iterations_of">): {
+  one: string;
+  many: string;
+  /** Capitalised, for a fallback label like "Item 3" where a name is missing. */
+  One: string;
+} {
+  return result.iterations_of === "item"
+    ? { one: "item", many: "items", One: "Item" }
+    : { one: "row", many: "rows", One: "Row" };
+}
+
 /** The console's headline for a result — "6/8 rows passed" when it fanned out. */
 export function resultHeadline(result: TestCaseExecutionResult, name: string): string {
   const suffix = result.teardown ? " [teardown]" : "";
   const rows = result.iterations;
   if (rows) {
+    const noun = iterationNoun(result);
     const passed = rows.filter((r) => r.status === "passed").length;
     const skipped = rows.filter((r) => r.status === "skipped").length;
     // Skipped rows are excluded from the denominator rather than counted as failures, so
@@ -183,9 +222,9 @@ export function resultHeadline(result: TestCaseExecutionResult, name: string): s
     // Every row skipped is not a pass. The engine reports the aggregate as skipped; say
     // it in words too, because "0/0 rows passed" beside a ○ is a riddle.
     if (ran === 0) {
-      return `${statusIcon(result.status)} ${name}${suffix}: nothing ran — all ${rows.length} rows are parked or need a flow (${result.duration_ms}ms)`;
+      return `${statusIcon(result.status)} ${name}${suffix}: nothing ran — all ${rows.length} ${noun.many} are parked or need a flow (${result.duration_ms}ms)`;
     }
-    return `${statusIcon(result.status)} ${name}${suffix}: ${passed}/${ran} rows passed${note} (${result.duration_ms}ms)`;
+    return `${statusIcon(result.status)} ${name}${suffix}: ${passed}/${ran} ${noun.many} passed${note} (${result.duration_ms}ms)`;
   }
   // A poll's duration is the whole wait, so the attempt count is what makes it legible:
   // "4.2s" alone cannot tell one slow request from three quick ones and two waits.

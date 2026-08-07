@@ -118,12 +118,7 @@ mod tests {
         sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE flows (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE test_cases (id TEXT PRIMARY KEY)").execute(&pool).await.unwrap();
-        for statement in include_str!("../../migrations/009_runs.sql").split(';') {
-            let stmt = statement.trim();
-            if stmt.lines().any(|l| !l.trim().is_empty() && !l.trim().starts_with("--")) {
-                sqlx::query(stmt).execute(&pool).await.unwrap();
-            }
-        }
+        crate::db::pool::apply_run_schema(&pool).await;
         sqlx::query("INSERT INTO projects (id) VALUES ('p1')").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO flows (id) VALUES ('f1')").execute(&pool).await.unwrap();
         pool
@@ -153,6 +148,7 @@ mod tests {
                 row_index: None,
                 row_label: None,
                 attempts: None,
+                iterations_of: None,
                 iterations: None,
             }],
             context: Default::default(),

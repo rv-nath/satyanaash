@@ -93,3 +93,52 @@ export function exportLines(
     };
   });
 }
+
+/**
+ * Which record each row of a fan-out contributed.
+ *
+ * Shown beside the row rather than in one block above the table, because "which row produced
+ * this id" is the question, and a list of records that answers it only by a `_row` field the
+ * reader has to cross-reference is answering it the long way round.
+ *
+ * **Zipped, not looked up by label.** Both sequences are in row order and only passing rows
+ * with a match contribute, so walking them together is exact — where matching on `_row` alone
+ * would pair the wrong record with the wrong row the moment two rows share a name, which
+ * nothing prevents.
+ */
+export function collectedByRow(aggregate: {
+  iterations?: { row_label?: string }[];
+  exports?: Record<string, unknown> | null;
+}): {
+  /** Keyed by position in `iterations`. */
+  byRow: Map<number, Record<string, unknown>>;
+  /** Records no row claimed. Should be empty; shown separately if it ever isn't, because
+   *  silently dropping a collected value is worse than an odd-looking extra block. */
+  unclaimed: Record<string, unknown>[];
+} {
+  const rows = aggregate.iterations ?? [];
+  const records = Object.values(aggregate.exports ?? {})
+    .filter((v): v is unknown[] => Array.isArray(v))
+    .flat()
+    .filter((r): r is Record<string, unknown> => !!r && typeof r === "object");
+
+  const byRow = new Map<number, Record<string, unknown>>();
+  let next = 0;
+  rows.forEach((row, i) => {
+    const record = records[next];
+    if (record && record[RECORD_ROW_KEY] === (row.row_label ?? "")) {
+      byRow.set(i, record);
+      next += 1;
+    }
+  });
+  return { byRow, unclaimed: records.slice(next) };
+}
+
+/** The engine's reserved field naming the row a record came from. */
+export const RECORD_ROW_KEY = "_row";
+
+/** A record's own fields, without the bookkeeping one. */
+export function recordFields(record: Record<string, unknown>): { name: string; value: string }[] {
+  const { [RECORD_ROW_KEY]: _row, ...fields } = record;
+  return exportLines(fields, 60);
+}

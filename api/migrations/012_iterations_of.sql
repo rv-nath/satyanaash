@@ -1,0 +1,16 @@
+-- What a fan-out aggregate's child rows are, when they are not data rows.
+--
+-- A step set to "once per item in a list" reports through the dataset's machinery: one
+-- child row per element, the same worst-of fold, the same per-iteration records. Without
+-- this column every screen would say "2/2 rows passed" about a step with no rows -- a
+-- small lie, in the one place an author looks to find out what ran.
+--
+-- Stored rather than derived from the flow's current config, because a flow can be edited
+-- after a run and re-labelling a past run by today's configuration would make history say
+-- something that was never true.
+--
+-- NULL means data rows, which is every run recorded before this. So nothing needs
+-- backfilling and no existing report changes.
+--
+-- Idempotent through the duplicate-column guard in pool.rs.
+ALTER TABLE run_results ADD COLUMN iterations_of TEXT;
