@@ -11,6 +11,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import { useProjects, useCreateProject, useDeleteProject } from "@/hooks/useApi";
+import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
+import type { Project } from "@/lib/api/types";
 
 const Projects = () => {
   // Fetch projects from API
@@ -41,12 +43,19 @@ const Projects = () => {
     }
   };
 
-  const handleDeleteProject = async (id: string) => {
+  // Confirmed first, always. A project cascades to its requests, flows, suites and its whole
+  // run history, with no undo and no export — and this was a single click in a dropdown.
+  const [pendingDelete, setPendingDelete] = useState<Project | null>(null);
+
+  const handleDeleteProject = async (project: Project) => {
     try {
-      await deleteProjectMutation.mutateAsync(id);
-      toast.success("Project deleted");
+      await deleteProjectMutation.mutateAsync(project.id);
+      setPendingDelete(null);
+      toast.success(`${project.name} deleted`);
     } catch (err) {
-      toast.error("Failed to delete project");
+      // The dialog stays open on failure: it holds the typed confirmation, and making someone
+      // find the menu and type the name again to retry would be its own small punishment.
+      toast.error(err instanceof Error ? err.message : "Failed to delete project");
       console.error(err);
     }
   };
@@ -203,7 +212,7 @@ const Projects = () => {
                               className="text-destructive"
                               onClick={(e) => {
                                 e.preventDefault();
-                                handleDeleteProject(project.id);
+                                setPendingDelete(project);
                               }}
                             >
                               <Trash2 className="w-4 h-4 mr-2" />
@@ -237,6 +246,15 @@ const Projects = () => {
           </div>
         )}
       </main>
+
+      {pendingDelete && (
+        <DeleteProjectDialog
+          project={pendingDelete}
+          onClose={() => setPendingDelete(null)}
+          onConfirm={() => handleDeleteProject(pendingDelete)}
+          deleting={deleteProjectMutation.isPending}
+        />
+      )}
     </div>
   );
 };
