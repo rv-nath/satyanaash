@@ -108,6 +108,10 @@ pub struct SuiteRun<'a> {
     pub flow_repo: &'a dyn FlowRepository,
     pub tc_repo: &'a dyn TestCaseRepository,
     pub run_repo: Arc<dyn RunRepository>,
+    /// The callback inboxes, so an await node inside a suite watches the same ones a flow run
+    /// does. Left out, a suite would time out on every wait while the callbacks arrived in the
+    /// set nobody was reading.
+    pub hooks: crate::hooks::Hooks,
 }
 
 impl SuiteRun<'_> {
@@ -256,7 +260,8 @@ impl SuiteRun<'_> {
         variables: HashMap<String, Value>,
         out: &mpsc::Sender<ExecutionEvent>,
     ) -> Result<FlowExecutionResult, AppError> {
-        let engine = ExecutionEngine::new(self.debug_mode, self.base_url.clone());
+        let engine = ExecutionEngine::new(self.debug_mode, self.base_url.clone())
+            .with_hooks(self.hooks.clone());
 
         match member.kind {
             MemberKind::Flow => {
@@ -461,7 +466,7 @@ mod tests {
             _id: &str,
             _group_id: Option<&str>,
         ) -> Result<crate::db::models::Flow, AppError> {
-            unimplemented!()
+            unimplemented!("a suite never moves a flow between groups")
         }
     }
 
@@ -544,8 +549,8 @@ mod tests {
                 canvas_settings: serde_json::json!({}),
                 variables: Default::default(),
             },
-            group_id: None,
             version: 1,
+            group_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -592,6 +597,7 @@ mod tests {
             environment_name: None,
             debug_mode: false,
             base_url: None,
+            hooks: crate::hooks::Hooks::new(),
             flow_repo: &repos,
             tc_repo: &repos,
             run_repo: runs.clone(),
@@ -642,6 +648,7 @@ mod tests {
             environment_name: None,
             debug_mode: false,
             base_url: None,
+            hooks: crate::hooks::Hooks::new(),
             flow_repo: &repos,
             tc_repo: &repos,
             run_repo: runs,
@@ -699,6 +706,7 @@ mod tests {
             environment_name: None,
             debug_mode: false,
             base_url: None,
+            hooks: crate::hooks::Hooks::new(),
             flow_repo: &repos,
             tc_repo: &repos,
             run_repo: runs,

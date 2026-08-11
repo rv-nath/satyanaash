@@ -16,6 +16,13 @@ pub struct Config {
 
     /// Log level (trace, debug, info, warn, error)
     pub log_level: String,
+
+    /// Port for the callback receiver.
+    ///
+    /// Its own listener, bound `0.0.0.0` whatever `BIND_HOST` says, because the sender is in a
+    /// cluster and cannot reach loopback. Only *recording* is on it — reading stays on the main
+    /// API, which is why the main API can go on staying local.
+    pub hook_port: u16,
 }
 
 impl Config {
@@ -33,6 +40,11 @@ impl Config {
                 .unwrap_or(3001),
 
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+
+            hook_port: env::var("HOOK_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(3002),
         }
     }
 }

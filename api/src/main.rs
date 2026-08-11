@@ -6,13 +6,14 @@ mod db;
 mod error;
 mod execution;
 mod files;
+mod hooks;
 mod shutdown;
 mod validation;
 
 use std::sync::Arc;
 
 use axum::{
-    routing::{delete, get, patch, post, put},
+    routing::{any, delete, get, patch, post, put},
     Json, Router,
 };
 use tower_http::cors::{Any, CorsLayer};
@@ -20,7 +21,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::api::{executions, file_store, flow_groups, flows, groups, projects, runs, suites, test_cases};
+use crate::api::{executions, file_store, flow_groups, flows, groups, hooks as hook_api, projects, runs, suites, test_cases};
 use crate::api::executions::ExecutionState;
 use crate::config::Config;
 use crate::db::pool::init_pool;
@@ -52,6 +53,8 @@ async fn main() -> anyhow::Result<()> {
     let run_repo = Arc::new(SqlxRunRepository::new(pool.clone()));
     let suite_repo = Arc::new(SqlxSuiteRepository::new(pool.clone()));
     let file_store_repo = Arc::new(SqlxFileStoreRepository::new(pool.clone()));
+    // Shared by both listeners: the recorder writes to it, the loopback API reads from it.
+    let hooks = crate::hooks::Hooks::new();
 
     // Configure CORS
     let cors = CorsLayer::new()
@@ -96,6 +99,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/flow-groups/{id}", delete(flow_groups::delete_group))
         .with_state(flow_group_repo.clone() as Arc<dyn crate::db::repositories::FlowGroupRepository>);
 
+    // Reading what has arrived. On the *main* API on purpose: `BIND_HOST` keeps this on loopback,
+    // and the recorder below — the part the network can reach — cannot read anything back.
+    let hook_read_routes = Router::new()
+        .route("/api/v1/hooks", get(hook_api::list))
+        .route("/api/v1/hooks/{*path}", get(hook_api::read))
+        .with_state(hooks.clone());
 
     // Build flow routes
     let flow_routes = Router::new()
@@ -119,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
         run_repo: run_repo.clone(),
         suite_repo: suite_repo.clone(),
         steps: Default::default(),
+        hooks: hooks.clone(),
     };
     let execution_routes = Router::new()
         .route("/api/v1/flows/{id}/validate", post(executions::validate_flow))
@@ -179,12 +189,45 @@ async fn main() -> anyhow::Result<()> {
         .merge(project_routes)
         .merge(test_case_routes)
         .merge(group_routes)
+        .merge(hook_read_routes)
         .merge(flow_group_routes)
         .merge(flow_routes)
         .merge(execution_routes)
         .merge(file_store_routes)
         .layer(cors)
         .layer(TraceLayer::new_for_http());
+
+    // The callback receiver: its own listener, its own port, write-only.
+    //
+    // Bound 0.0.0.0 whatever `BIND_HOST` says, because the sender is inside a cluster and cannot
+    // reach loopback — and *only* the recorder is on it, so what the network can reach is one
+    // endpoint that stores a request and answers 200. It cannot read anything, including the
+    // callbacks it recorded.
+    //
+    // `DefaultBodyLimit` is 2 MB in axum; lowered here because a delivery report is small and this
+    // is the one endpoint an unauthenticated caller can post to. Anything under the limit and over
+    // `MAX_BODY_BYTES` is recorded truncated and says so, rather than being refused — a non-2xx is
+    // an instruction to retry on most platforms, and the report would be lost either way.
+    let hook_app = Router::new()
+        .route("/hooks/{*path}", any(hook_api::record))
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+        .layer(TraceLayer::new_for_http())
+        .with_state(hooks);
+
+    let hook_addr = format!("0.0.0.0:{}", config.hook_port);
+    let hook_listener = tokio::net::TcpListener::bind(&hook_addr).await?;
+    info!(
+        "Callback receiver listening on http://{} — reachable, unauthenticated, and write-only.          A test's drCallbackUrl points here: http://<this host>:{}/hooks/<your path>",
+        hook_addr, config.hook_port
+    );
+    let hook_server = tokio::spawn(async move {
+        if let Err(e) = axum::serve(hook_listener, hook_app)
+            .with_graceful_shutdown(crate::shutdown::stop_requested())
+            .await
+        {
+            tracing::error!("Callback receiver stopped: {}", e);
+        }
+    });
 
     // Start server
     let addr = format!("{}:{}", config.host, config.port);
@@ -194,6 +237,11 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Ctrl+C sets the stop flag, which the receiver is already waiting on, so it winds itself
+    // down. This covers the other way out — the main server returning for its own reasons — where
+    // nothing would otherwise tell the receiver to stop.
+    hook_server.abort();
 
     info!("Server shut down gracefully");
     Ok(())

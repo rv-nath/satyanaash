@@ -41,6 +41,22 @@ export interface CollectConfig {
   when?: string;
 }
 
+/**
+ * What a step that waits for a callback is waiting for.
+ *
+ * The path is the tail of the URL the test puts in its payload — `drCallbackUrl` — so it is
+ * normally a flow variable shared with that payload, and interpolated like any other field.
+ */
+export interface AwaitCallbackConfig {
+  path?: string;
+  /** How many to wait for. A campaign to two recipients reports twice. */
+  count?: number;
+  timeoutMs?: number;
+}
+
+/** Mirrors `AWAIT_TIMEOUT_MS` in the engine, so the panel shows what will actually happen. */
+export const AWAIT_TIMEOUT_MS = 60_000;
+
 export interface NodeConfig {
   inputVars?: InputVariable[];
   outputVars?: OutputVariable[];
@@ -51,6 +67,7 @@ export interface NodeConfig {
   poll?: { until?: string; intervalMs?: number; timeoutMs?: number };
   forEach?: ForEachConfig;
   collect?: CollectConfig;
+  awaitCallback?: AwaitCallbackConfig;
 }
 
 /**
@@ -160,4 +177,32 @@ export function walkSummary(list: string, itemVar: string, upstream: string[]): 
 export function walkBadge(config: NodeConfig | undefined): string | undefined {
   if (runModeOf(config) !== "items") return undefined;
   return `per ${listName(config?.forEach)}`;
+}
+
+/**
+ * What a waiting step does, in one line under its fields.
+ *
+ * States the timeout in seconds because a timeout is the thing an author gets wrong — the
+ * failure it produces reads "no callback arrived", which is indistinguishable from a sender
+ * that never called.
+ */
+export function awaitSummary(cfg: AwaitCallbackConfig | undefined): string {
+  const path = (cfg?.path ?? "").trim();
+  // A 0 is a cleared field, not "wait for nothing" — the same reading the engine gives it.
+  const count = cfg?.count && cfg.count > 0 ? cfg.count : 1;
+  const ms = cfg?.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : AWAIT_TIMEOUT_MS;
+  const secs = Math.round(ms / 100) / 10;
+
+  if (!path) {
+    return "Give this step the path your test puts in its callback URL — it cannot run without one.";
+  }
+  const many = count === 1 ? "one callback" : `${count} callbacks`;
+  return `Waits up to ${secs}s for ${many} at ${path}. Nothing arrives in time — the step fails, and the flow takes its failure edge.`;
+}
+
+/** The badge a waiting node wears on the canvas: how many, and for how long. */
+export function awaitBadge(cfg: AwaitCallbackConfig | undefined): string {
+  const count = cfg?.count && cfg.count > 0 ? cfg.count : 1;
+  const ms = cfg?.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : AWAIT_TIMEOUT_MS;
+  return `${count} · ${Math.round(ms / 1000)}s`;
 }

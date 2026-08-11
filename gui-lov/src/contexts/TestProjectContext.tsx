@@ -67,7 +67,7 @@ export interface Flow {
   flowVariables?: Record<string, unknown>;
 }
 
-export type NodeType = 'start' | 'end' | 'testCase' | 'group';
+export type NodeType = 'start' | 'end' | 'testCase' | 'group' | 'awaitCallback';
 
 export type ActiveTab = 'canvas' | 'tests';
 export type SidebarTab = 'tests' | 'flows';

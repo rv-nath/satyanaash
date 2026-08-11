@@ -21,6 +21,8 @@ Environment variables (all optional with defaults):
 - `BIND_HOST` — default: `127.0.0.1`
 - `PORT` — default: `3001`
 - `LOG_LEVEL` — default: `info`
+- `HOOK_PORT` — default: `3002`. The callback receiver, bound `0.0.0.0` whatever `BIND_HOST`
+  says, and write-only. See "Receiving a callback" below
 
 ### Frontend
 ```bash
@@ -419,6 +421,123 @@ context clones that were dropped at the end of each iteration.
 - `getUpstreamCollections` (not `getUpstreamVariables`) finds the lists: output-variable
   names are a record's *fields*, so asking the wrong one suggests `campaignId` where the
   answer is `launched`.
+
+## Receiving a callback, and waiting for one
+
+Several test cases put a `drCallbackUrl` in their payload and expect that URL to be POSTed when
+the message is delivered. Nothing could receive an inbound request, so those cases asserted on the
+202 acknowledgement and stopped — the delivery, the thing under test, was checked by nothing.
+
+Two halves: somewhere for the callback to land, and a step that waits for it.
+
+### The receiver — its own listener, its own port
+
+A second `axum::serve` in `main.rs` on `HOOK_PORT` (default **3002**), bound `0.0.0.0` whatever
+`BIND_HOST` says, while the main API stays on loopback. Worth saying out loud, because
+"satyanaash opens a port to the LAN" is a sentence someone should read before it surprises them.
+
+- **Write-only on the exposed side.** `ANY /hooks/{*path}` records and always replies 200. Reading
+  an inbox (`GET /api/v1/hooks[/{*path}]`) is on the **main** API only: a delivery report carries
+  phone numbers, so the part anyone can reach must not hand them back. A GET on 3002 is a 404, and
+  the smoke test checks it.
+- **Any method, any body, any path, no pre-registration.** A delivery report is somebody else's
+  contract; refusing a shape is refusing the test. The author mints paths client-side so the server
+  cannot know them in advance, and refusing an unknown one would silently drop a real report —
+  the one failure here that must not be quiet. Non-JSON is kept as text.
+- **Bounded, because it is unauthenticated by construction**: 64 KB per body, 100 per path, 256
+  paths, 60-minute TTL. Full is full — the *oldest* goes and the drop is **counted** (`dropped`),
+  because an inbox that quietly forgot something is worse than one that says it is full. Expiry
+  deliberately does **not** count towards it: "your inbox overflowed" and "an hour passed" are
+  different facts, and only the first is actionable.
+- **The cap covers `json` too**, which is the only reason it caps anything. The first version parsed
+  the body *before* clipping it, so a 200 KB report kept a clipped `body` beside a complete parsed
+  copy — a record contradicting itself, and a limit that saved nothing, the parsed form being the
+  larger of the two. A clipped note now carries no `json` at all.
+- **In memory, in one `Hooks` handle** threaded through `ExecutionState`, `executions.rs` (all
+  three engine sites) and `SuiteRun`. A *second* `Hooks` would be a second set of inboxes and every
+  wait would time out while the callbacks piled up in the one nobody was reading — which is why
+  `ExecutionEngine::new` defaults to its own (each test gets an isolated set) and `with_hooks` is
+  what the serving paths call.
+- **Signalled by a `watch` counter, not a notification.** `Notify` had a lost-wakeup: `notified()`
+  does not register the waiter until first polled, and `notify_waiters()` only wakes waiters already
+  registered, so a callback landing between "read the inbox" and "await" was missed and the step sat
+  out its whole timeout with the callback already in the inbox. A `watch::Receiver` remembers the
+  version it has seen, which makes the race **unwritable** rather than fixed. Caught by its own
+  test, before it was ever seen.
+
+### The wait — a control node that reports a verdict
+
+`node_type: "awaitCallback"`, a fifth branch beside `start`/`end`/`testCase`/`group`. **No test
+case**: a node that sends nothing has no request to describe, and pointing it at one would leave
+that test case's Request tab showing an endpoint nothing ever calls — the pattern already rejected
+once for datasets. Unlike the other control nodes it *does* report a verdict, because "the delivery
+report never came" is a test result and has to be able to be red.
+
+Config is `config.awaitCallback = { path, count?, timeoutMs? }` beside `config.check` and
+`config.outputVars`. It **shares the `"testCase"` dispatch arm** — the stats, the completed event,
+the failure-edge routing and the final status are identical, and a second copy of that arm would be
+a second place for the routing rules to drift.
+
+**The callback becomes the step's `response`.** That is what makes this cheap: the Expect, the
+output variables, the console's rendering and run-history persistence all key off `response` and
+needed no teaching. The knowing misnomer is `status`, which is **what satyanaash replied** (200) and
+never a status the caller sent — so the console *suppresses* it for a wait rather than relabelling
+it, and calls the body **"Callback received"**. A row reading "Status 200" beside a report that said
+`FAILED` is the one thing that must never appear.
+
+- **Only callbacks that arrive after the run began count** (`RunState::started_at`). A path is a
+  name the author chose and will reuse next week, so last week's report is still in that inbox and
+  would satisfy today's assertion instantly. A `received_at >= run_start` filter (`since`), no
+  clearing and no bookkeeping — and **nothing is armed per run**: the receiver records
+  unconditionally from boot, so there is no pre-scan of the graph for paths and no listener to
+  start. That falls out of accepting any path with no pre-registration.
+  - **The step's own start was the first version, and it was wrong for the ordinary layout.** The
+    step that provokes a callback is not the step that waits for it, and what sits between them
+    takes time: a 19-row fan-out keeps sending for seconds after the row carrying the callback URL,
+    so a delivery report arriving during rows 7–19 landed before the waiter started and was
+    discarded — reported, correctly and uselessly, as "no callback arrived". The run is the right
+    scope: it keeps the protection that matters while making the gap irrelevant, however many steps
+    sit in it. The trade it accepts is an earlier step *in the same run* provoking a callback on the
+    same path, and a rerun picking up a very late report from the previous attempt.
+  - Pinned from both sides — `the_boundary_is_the_run_not_the_step` (mid-run counts, pre-run does
+    not) and `a_whole_flow_counts_callbacks_from_when_the_run_began`, which goes through
+    `execute_flow` because the unit tests pass their own boundary and could not see the wiring:
+    with `started_at` set to the epoch every one of them still passed.
+- **Nothing in the wait is periodic.** Every wake is a real event — an arrival, the deadline, the
+  stream closing, a stop. An earlier version had a 250 ms cancellation sweep, which found arrivals
+  on its own: that made the watch channel look optional, left the lost-wakeup bug untestable, and
+  forced the latency test's bound tighter than the sweep, where it flaked.
+- **Timing out is `Failed`, never `Error`.** Nothing broke; the callback did not come. `Error` aborts
+  the flow and claims something systemic, hiding the rest of the run from an author whose only
+  problem is a sender that has not implemented delivery reports yet.
+- **A status-code Expect is refused, not honoured.** Against our own 200 it would pass whatever the
+  callback said; against "the status the caller sent" it compares to something that does not exist.
+  The message says to write an expression instead.
+- **An unresolved path fails at once** rather than waiting out the timeout: a minute on an inbox
+  literally called `dr/{{dr_path}}` then reporting "no callback arrived" names the wrong problem and
+  sends the author to look at the sender.
+- A wait can hold a run open for a minute, so **abandonment is honoured inside the node**: the
+  stream's `closed()` and `shutdown::stop_requested()` are select arms, because a task parked in the
+  wait cannot be reached by a boundary check — the same reason `pause_before_next` selects on
+  `closed()`.
+- `AWAIT_WITHOUT_PATH` is a validation **error**, so a wait with no path is reported before the run
+  rather than sixty seconds into one. A flow of only await nodes is not `EMPTY_FLOW`.
+- **One source of truth for the path.** A flow variable feeds both the payload's callback URL and
+  the node's path (`{{hook_base}}/{{dr_path}}` and `dr/{{dr_path}}`), interpolated like every other
+  field, so the two cannot drift. **`hook_base` is the author's own project variable, not config**:
+  the address that reaches this machine depends on who is calling — a minikube pod sees
+  `192.168.49.1`, a host on the LAN sees something else — so the server cannot know it, and a
+  `HOOK_BASE` env var would be one setting that is right for one caller. **Stated limitation:** two concurrent runs sharing a path can take
+  each other's callbacks; a variable in the path is the fix.
+- Dropped onto the canvas from a new **Steps** palette in the left rail, which rides the
+  `application/json` `{type, data}` channel the test-case and flow drags already use — so
+  `handleDrop`, `addNodeToCanvas` and the undo history took it unchanged. Double-click opens its
+  config, since there is no test tab behind it.
+
+**Deferred:** handing *all* the callbacks to `iterations` so a `collect` could walk them (wants a
+third iteration noun taught to the dataset renderers; the case in hand waits for one report);
+persisting inboxes across restarts (a callback matters to a run in flight, and the one that matters
+is already on the step's saved result); replying non-2xx to exercise a sender's retry logic.
 
 ## Conventions
 - Commit messages: `feat:`, `fix:`, `chore:` prefixes

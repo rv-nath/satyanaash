@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { StepPalette } from "./StepPalette";
 import {
   FileCode, Plus, FolderPlus, Edit2, Trash2, MoreVertical, Loader2, Search, X,
   ChevronRight, ChevronDown, Check, Copy,
@@ -396,6 +397,12 @@ export const TestInventory = ({ onAddTestCase, onEditTestCase, onDeleteTestCase 
             </Button>
           )}
         </div>
+      </div>
+
+      {/* Steps that are not test cases. Above the list rather than inside it: a control node is
+          not a test case and does not belong in a count of them. */}
+      <div className="border-b border-sidebar-border pt-2">
+        <StepPalette />
       </div>
 
       {/* List */}

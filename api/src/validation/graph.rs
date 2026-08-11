@@ -257,6 +257,13 @@ impl<'a> GraphValidator<'a> {
             }
         }
 
+        // 6e. Steps that wait for a callback. An error, not a warning: a wait with no path
+        // cannot run at all, and the run-time report would come sixty seconds into a flow
+        // rather than before it started.
+        for node in graph.nodes.iter().filter(|n| n.node_type == "awaitCallback") {
+            errors.extend(await_errors(node));
+        }
+
         // 7. Check group node flow references
         let referenced_flow_ids: Vec<String> = graph.nodes.iter()
             .filter(|n| n.node_type == "group")
@@ -328,8 +335,9 @@ impl<'a> GraphValidator<'a> {
         }
 
         // Empty flow check
-        let has_test_nodes = graph.nodes.iter()
-            .any(|n| n.node_type == "testCase" || n.node_type == "group");
+        let has_test_nodes = graph.nodes.iter().any(|n| {
+            n.node_type == "testCase" || n.node_type == "group" || n.node_type == "awaitCallback"
+        });
 
         if !has_test_nodes {
             warnings.push(ValidationIssue::warning(
@@ -526,6 +534,27 @@ fn for_each_issues(node: &GraphNode) -> Vec<ValidationIssue> {
     }
 
     issues
+}
+
+/// A step that waits for a callback, checked before a run rather than sixty seconds into one.
+fn await_errors(node: &GraphNode) -> Vec<ValidationIssue> {
+    let cfg = node.data.get("config").and_then(|c| c.get("awaitCallback"));
+    let path = cfg
+        .and_then(|c| c.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    if path.is_empty() {
+        return vec![ValidationIssue::error_with_node(
+            "AWAIT_WITHOUT_PATH",
+            "This step waits for a callback but no path is set — give it the path your test \
+             puts in its callback URL"
+                .to_string(),
+            &node.id,
+        )];
+    }
+    Vec::new()
 }
 
 /// all otherwise discovered from a puzzling result. `test_case` is None when the
@@ -911,4 +940,37 @@ mod tests {
         assert!(reachable.contains("end"));
         assert!(!reachable.contains("orphan"));
     }
+
+    #[test]
+    fn an_await_step_with_no_path_is_an_error_before_the_run() {
+        // Reported here rather than sixty seconds into a flow, which is when the engine's own
+        // version of this message arrives.
+        let node = GraphNode {
+            id: "w1".to_string(),
+            node_type: "awaitCallback".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({ "config": { "awaitCallback": { "count": 1 } } }),
+            width: None,
+            height: None,
+        };
+        assert_eq!(codes(await_errors(&node)), vec!["AWAIT_WITHOUT_PATH"]);
+    }
+
+    #[test]
+    fn an_await_step_with_a_path_is_fine_even_though_the_inbox_may_be_empty() {
+        // Whether anything will arrive is only knowable at run time, so it is not this rule's
+        // business — the same reason the list a forEach walks is not checked here.
+        let node = GraphNode {
+            id: "w1".to_string(),
+            node_type: "awaitCallback".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({
+                "config": { "awaitCallback": { "path": "dr/{{dr_path}}" } }
+            }),
+            width: None,
+            height: None,
+        };
+        assert!(await_errors(&node).is_empty());
+    }
+
 }

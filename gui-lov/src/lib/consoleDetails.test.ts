@@ -296,3 +296,46 @@ describe("folding a big detail", () => {
     expect(detailSummary("just one line")).toBe("13 chars");
   });
 });
+
+describe("a step that waited for a callback", () => {
+  const waited: TestCaseExecutionResult = {
+    node_id: "w1",
+    test_case_name: "Await callback",
+    status: "passed",
+    duration_ms: 1200,
+    request: { method: "AWAIT", url: "callback at dr/jt1", headers: {}, body: "waiting for 1 callback(s), up to 60000ms" },
+    response: { status: 200, headers: {}, body: '{"status":"DELIVERED"}' },
+    logs: [],
+  } as unknown as TestCaseExecutionResult;
+
+  it("never shows the 200 it replied, which is not the caller's status", () => {
+    // The one thing this must not do: print "Status 200" beside a delivery report that said
+    // FAILED. A callback is a request and carries no status of its own.
+    const labels = resultDetails(waited).map((d) => d.label);
+    expect(labels).not.toContain("Status");
+  });
+
+  it("calls the body a callback received, not a response", () => {
+    const details = resultDetails(waited);
+    expect(details.find((d) => d.label === "Callback received")?.value).toContain("DELIVERED");
+    expect(details.map((d) => d.label)).not.toContain("Response");
+  });
+
+  it("says what it was waiting for rather than naming a method it never used", () => {
+    const first = resultDetails(waited)[0];
+    expect(first.label).toBe("Waiting for");
+    expect(first.value).toBe("callback at dr/jt1");
+    expect(first.value).not.toContain("AWAIT");
+  });
+
+  it("leaves an ordinary request alone", () => {
+    const sent = {
+      ...waited,
+      request: { method: "POST", url: "https://x/api", headers: {}, body: undefined },
+    } as unknown as TestCaseExecutionResult;
+    const labels = resultDetails(sent).map((d) => d.label);
+    expect(labels).toContain("Status");
+    expect(labels).toContain("Response");
+    expect(labels).not.toContain("Callback received");
+  });
+});

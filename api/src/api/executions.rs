@@ -35,6 +35,10 @@ pub struct ExecutionState {
     pub run_repo: Arc<dyn RunRepository>,
     pub suite_repo: Arc<dyn SuiteRepository>,
     pub steps: StepRegistry,
+    /// The callback inboxes an await-callback node watches. The same handle the exposed
+    /// recorder writes into — a second `Hooks` would be a second set of inboxes, and every
+    /// wait would time out while the callbacks piled up in the one nobody was reading.
+    pub hooks: crate::hooks::Hooks,
 }
 
 /// The runs the author is currently driving, keyed by execution id.
@@ -205,7 +209,7 @@ pub async fn execute_flow(
     let execution_id = Uuid::new_v4().to_string();
 
     // Create execution engine with base URL
-    let engine = ExecutionEngine::new(input.debug_mode, base_url);
+    let engine = ExecutionEngine::new(input.debug_mode, base_url).with_hooks(state.hooks.clone());
 
     // Execute the flow
     let result = engine.execute_flow(
@@ -314,10 +318,11 @@ pub async fn execute_flow_stream(
     let debug_mode = input.debug_mode;
     let steps = state.steps.clone();
     let environment_name = input.environment_name.clone();
+    let hooks = state.hooks.clone();
 
     // Spawn execution in background task
     tokio::spawn(async move {
-        let engine = ExecutionEngine::new(debug_mode, base_url);
+        let engine = ExecutionEngine::new(debug_mode, base_url).with_hooks(hooks);
         let outcome = engine.run_flow(
             &exec_id,
             &flow,
@@ -468,7 +473,7 @@ pub async fn execute_test_case(
     let environment = env_override.unwrap_or_else(|| extract_project_variables(&project.settings));
 
     // Create execution engine
-    let engine = ExecutionEngine::new(false, base_url);
+    let engine = ExecutionEngine::new(false, base_url).with_hooks(state.hooks.clone());
 
     // "Run all rows" with an empty dataset degrades to a normal single run, so the
     // client never gets an empty matrix.

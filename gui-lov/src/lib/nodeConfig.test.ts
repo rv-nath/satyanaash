@@ -7,6 +7,9 @@ import {
   stripBraces,
   walkBadge,
   walkSummary,
+  AWAIT_TIMEOUT_MS,
+  awaitBadge,
+  awaitSummary,
 } from "@/lib/nodeConfig";
 
 describe("how many times a step runs", () => {
@@ -151,5 +154,40 @@ describe("the canvas badge", () => {
     expect(walkBadge({ forEachRow: true })).toBeUndefined();
     expect(walkBadge({})).toBeUndefined();
     expect(walkBadge(undefined)).toBeUndefined();
+  });
+});
+
+describe("a step that waits for a callback", () => {
+  it("says how long it waits and what happens when nothing comes", () => {
+    // The timeout is the field an author gets wrong, and the failure it produces reads "no
+    // callback arrived" — indistinguishable from a sender that never called. So the panel
+    // states the wait, and states that the flow takes its failure edge.
+    const line = awaitSummary({ path: "dr/jt1", count: 1, timeoutMs: 30000 });
+    expect(line).toContain("30s");
+    expect(line).toContain("one callback");
+    expect(line).toContain("dr/jt1");
+    expect(line).toMatch(/fails/);
+  });
+
+  it("counts plural callbacks in words, not as a bare number", () => {
+    expect(awaitSummary({ path: "dr/x", count: 2 })).toContain("2 callbacks");
+  });
+
+  it("asks for the path when there isn't one, because it cannot run without it", () => {
+    expect(awaitSummary({ count: 1 })).toMatch(/cannot run/);
+    expect(awaitSummary(undefined)).toMatch(/cannot run/);
+  });
+
+  it("reads a 0 as a cleared field, matching the engine", () => {
+    // "Wait for no callbacks" and "give up after no time" are not things an author can mean, so
+    // a 0 has to show as what it will behave as — or the panel and the engine disagree.
+    const line = awaitSummary({ path: "dr/x", count: 0, timeoutMs: 0 });
+    expect(line).toContain("one callback");
+    expect(line).toContain(`${AWAIT_TIMEOUT_MS / 1000}s`);
+  });
+
+  it("badges the canvas node with how many and for how long", () => {
+    expect(awaitBadge({ count: 2, timeoutMs: 45000 })).toBe("2 · 45s");
+    expect(awaitBadge(undefined)).toBe(`1 · ${AWAIT_TIMEOUT_MS / 1000}s`);
   });
 });

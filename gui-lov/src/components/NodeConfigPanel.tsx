@@ -29,6 +29,7 @@ import {
   pollTiming,
   secondsToMs,
 } from "@/lib/poll";
+import { AwaitConfigPanel } from "./AwaitConfigPanel";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
 
@@ -172,6 +173,13 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
 
   if (!node || node.type === "start" || node.type === "end") {
     return null;
+  }
+
+  // A waiting step has no request, so almost nothing below applies to it: no dataset rows to
+  // pick, no polling, no run mode, no endpoint for the header. Delegated rather than branched
+  // through, and *after* the hooks above so the rule about calling them unconditionally holds.
+  if (node.type === "awaitCallback") {
+    return <AwaitConfigPanel node={node} onClose={onClose} />;
   }
 
   const testCase = node.data.testCaseId

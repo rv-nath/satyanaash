@@ -18,7 +18,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
-import { TestCaseNode, StartNode, EndNode, GroupNode } from "./CustomNodes";
+import { TestCaseNode, StartNode, EndNode, GroupNode, AwaitCallbackNode } from "./CustomNodes";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { cleanupBandFor } from "@/lib/cleanupBand";
@@ -34,6 +34,7 @@ const nodeTypes = {
   start: StartNode,
   end: EndNode,
   group: GroupNode,
+  awaitCallback: AwaitCallbackNode,
 };
 
 const TestCanvasContent = () => {
@@ -359,6 +360,13 @@ const TestCanvasContent = () => {
    * sidebar is a detour when you are already pointing at it.
    */
   const handleNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
+    // A waiting step has no test case to open, so the natural gesture opens its config —
+    // otherwise double-clicking it does nothing at all and reads as a dead node.
+    if (node.type === 'awaitCallback') {
+      setSelectedNode(node);
+      setShowConfigPanel(true);
+      return;
+    }
     // Group nodes open their own editor, and start/end have nothing behind them.
     if (node.type !== 'testCase') return;
     const testCaseId = (node.data as { testCaseId?: string } | undefined)?.testCaseId;

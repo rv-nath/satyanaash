@@ -109,6 +109,7 @@ pub async fn execute_suite_stream(
     let debug_mode = input.debug_mode;
     let environment_name = input.environment_name.clone();
     let exec_id = execution_id.clone();
+    let hooks = state.hooks.clone();
 
     tokio::spawn(async move {
         let runner = SuiteRun {
@@ -122,6 +123,7 @@ pub async fn execute_suite_stream(
             flow_repo: flow_repo.as_ref(),
             tc_repo: tc_repo.as_ref(),
             run_repo,
+            hooks,
         };
         if let Err(e) = runner.execute(members, environment, variables, tx.clone()).await {
             let _ = tx.send(ExecutionEvent::Error { message: e.to_string() }).await;

@@ -14,6 +14,7 @@ use crate::db::models::{DataRow, ExportVariable, Flow, GraphNode, TestCase};
 use crate::db::repositories::TestCaseRepository;
 use crate::error::AppError;
 use crate::execution::body::BodyType;
+use crate::hooks::{Hooks, Received};
 
 use super::{ExecutionContext, AssertionEngine, HttpExecutor, PreTestScriptEngine, VarSource};
 use super::assertions::AssertionInput;
@@ -259,6 +260,123 @@ fn fan_out(node: &GraphNode) -> FanOut {
 }
 
 /// What a node will actually run.
+/// How long an `awaitCallback` node waits before giving up.
+///
+/// A delivery report is usually seconds. Sixty is long enough that a slow one is not reported
+/// as absent, and short enough that a flow whose callback will never come does not hold a run
+/// open for minutes.
+pub const AWAIT_TIMEOUT_MS: u64 = 60_000;
+
+/// What the console calls a step that sends nothing, when the author gave it no alias.
+const AWAIT_STEP_NAME: &str = "Await callback";
+
+/// This node's `outputVars`, and a word about each row that cannot work.
+///
+/// Free-standing because two kinds of node read it now: a test-case node taking values out of
+/// a response, and an await node taking them out of a callback. A silent blank row is the
+/// failure this warns about — the name simply never resolves three steps later.
+fn output_vars(node: &GraphNode, logs: &mut Vec<String>) -> Vec<ExportVariable> {
+    let mut out: Vec<ExportVariable> = Vec::new();
+    if let Some(rows) = node
+        .data
+        .get("config")
+        .and_then(|c| c.get("outputVars"))
+        .and_then(|v| v.as_array())
+    {
+        for row in rows {
+            let field = |key: &str| {
+                row.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string()
+            };
+            let (name, path) = (field("name"), field("path"));
+            match (name.is_empty(), path.is_empty()) {
+                (false, false) => out.push(ExportVariable { name, json_path: path }),
+                (false, true) => logs.push(format!(
+                    "⚠ Output variable \"{}\" has no JSON path, so nothing was \
+                     captured — {{{{{}}}}} will not resolve",
+                    name, name
+                )),
+                (true, false) => logs.push(format!(
+                    "⚠ Output variable with path {} has no name, so nothing was captured",
+                    path
+                )),
+                // A blank row the author just added and hasn't filled in.
+                (true, true) => {}
+            }
+        }
+    }
+    out
+}
+
+/// What an `awaitCallback` node waits for.
+struct AwaitConfig {
+    /// The inbox to watch, under the receiver's base — the tail of what the test put in its
+    /// callback URL. Interpolated before use, so one flow variable can feed both.
+    path: String,
+    /// How many callbacks to wait for. A campaign to two recipients reports twice.
+    count: usize,
+    timeout_ms: u64,
+}
+
+/// Read straight from the node, with defaults, so a node saved with no config at all still has
+/// a meaning to report on rather than being unreachable.
+fn await_config(node: &GraphNode) -> AwaitConfig {
+    let cfg = node.data.get("config").and_then(|c| c.get("awaitCallback"));
+    let str_field = |key: &str| {
+        cfg.and_then(|c| c.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    // A 0 reads as unset, the same reading `poll_config` gives it. "Wait for no callbacks" and
+    // "give up after no time at all" are not things an author can mean, so a 0 is a cleared
+    // field rather than an instruction.
+    let num = |key: &str, default: u64| {
+        cfg.and_then(|c| c.get(key))
+            .and_then(|v| v.as_u64())
+            .filter(|v| *v > 0)
+            .unwrap_or(default)
+    };
+    AwaitConfig {
+        path: str_field("path"),
+        count: num("count", 1) as usize,
+        timeout_ms: num("timeoutMs", AWAIT_TIMEOUT_MS),
+    }
+}
+
+/// What this step was waiting for, in the slot the console gives a request.
+///
+/// There is no request. `AWAIT` goes where a method goes because a blank there reads as a bug,
+/// and the console labels the block so the reader is never told a call was made.
+fn await_request_log(path: &str, cfg: &AwaitConfig) -> RequestLog {
+    RequestLog {
+        method: "AWAIT".to_string(),
+        url: format!("callback at {}", path),
+        headers: HashMap::new(),
+        body: Some(format!(
+            "waiting for {} callback(s), up to {}ms",
+            cfg.count, cfg.timeout_ms
+        )),
+    }
+}
+
+/// The callback, as the step's response.
+///
+/// Reusing `response` is what makes this node cheap: the Expect, the output variables, the
+/// console's rendering and run-history persistence all key off it and needed no teaching.
+///
+/// The knowing misnomer is `status`. A callback is a *request* and carries no status of its
+/// own, so this is **what satyanaash replied** — 200, always. The console labels the block
+/// "Callback received" so nothing implies the caller sent a status it did not.
+fn callback_as_response(last: &Received) -> ResponseLog {
+    ResponseLog {
+        status: 200,
+        headers: last.headers.clone(),
+        body: last.body.clone(),
+        json: last.json.clone(),
+    }
+}
+
 enum RowPlan {
     /// Once, as authored.
     Once,
@@ -1286,6 +1404,19 @@ struct RunState<'a> {
     /// Raised when the process is going down. Read at the same boundary as a client
     /// walking away, and answered the same way: stop, but clean up.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When this run began — the boundary an await node counts callbacks from.
+    ///
+    /// **Not when the waiting step began**, which was the first version and was wrong for the
+    /// ordinary layout. The step that provokes a callback is not the step that waits for it, and
+    /// anything between them takes time: a 19-row fan-out sends for seconds after the row that
+    /// carried the callback URL, so a delivery report arriving during rows 7–19 landed before the
+    /// waiter started and was discarded as stale. Reported, correctly and uselessly, as "no
+    /// callback arrived".
+    ///
+    /// The run is the right scope because it keeps the protection that matters — nothing from a
+    /// previous run or from last week can satisfy a fresh wait — while making the gap between
+    /// provoking and awaiting irrelevant, however many steps sit in it.
+    started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl RunState<'_> {
@@ -1353,6 +1484,12 @@ pub struct ExecutionEngine {
     /// The process-wide stop flag, held rather than read from a static so a test can
     /// give an engine its own and never touch the one every other test is reading.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The callback inboxes an `awaitCallback` node watches.
+    ///
+    /// Defaulted rather than required, so the twenty-odd `ExecutionEngine::new` call sites in
+    /// the tests keep working — and each gets its *own* empty set of inboxes, which is what a
+    /// test wants anyway. The serving paths hand in the process's real one.
+    hooks: Hooks,
 }
 
 impl ExecutionEngine {
@@ -1368,7 +1505,16 @@ impl ExecutionEngine {
             debug_mode,
             base_url,
             stop: crate::shutdown::flag(),
+            hooks: Hooks::new(),
         }
+    }
+
+    /// Watch these inboxes. Without this an await node watches an empty set and every wait
+    /// times out — which is why the serving paths all call it, and why a test that means to
+    /// exercise a wait has to hand in the same `Hooks` it records into.
+    pub fn with_hooks(mut self, hooks: Hooks) -> Self {
+        self.hooks = hooks;
+        self
     }
 
     /// Give this engine its own stop flag, so a test can raise one without touching the
@@ -1441,7 +1587,14 @@ impl ExecutionEngine {
 
         // Count executable nodes for progress
         let total_nodes = flow.graph_data.nodes.iter()
-            .filter(|n| n.node_type == "testCase" || n.node_type == "group")
+            // An await node reports a verdict, so it is one of the steps the progress bar is
+            // counting towards. Leaving it out would make a two-step flow report "1 of 1" and
+            // then run something else.
+            .filter(|n| {
+                n.node_type == "testCase"
+                    || n.node_type == "group"
+                    || n.node_type == "awaitCallback"
+            })
             .count();
 
         // Emit started event
@@ -1460,6 +1613,7 @@ impl ExecutionEngine {
             event_tx: &event_tx,
             stepper: resume_rx.map(Stepper::new),
             stop: self.stop.clone(),
+            started_at: chrono::Utc::now(),
         };
 
         // Execute graph starting from START node
@@ -1580,7 +1734,11 @@ impl ExecutionEngine {
                 // Reached end node
                 Ok("completed".to_string())
             }
-            "testCase" => {
+            // One arm, because everything after the executor call is identical: the stats, the
+            // completed event, the failure-edge routing and the final status. An await node is a
+            // control node that reports a verdict, so it wants all of it — a second copy of this
+            // arm would be a second place for the routing rules to drift.
+            "testCase" | "awaitCallback" => {
                 // Nobody is listening any more, so stop here instead of working through
                 // the rest of the flow unobserved. Those nodes would still create
                 // accounts, send messages and delete things, with every result going
@@ -1595,10 +1753,13 @@ impl ExecutionEngine {
                     return Ok("stopped".to_string());
                 }
 
-                // Execute test case node
-                let result = self.execute_test_case_node(
-                    node, tc_repo, &mut state.tc_cache, ctx, state.event_tx, None
-                ).await;
+                let result = if node.node_type == "awaitCallback" {
+                    self.execute_await_node(node, ctx, state.event_tx, state.started_at).await
+                } else {
+                    self.execute_test_case_node(
+                        node, tc_repo, &mut state.tc_cache, ctx, state.event_tx, None
+                    ).await
+                };
 
                 let status = result.status.clone();
                 state.stats.total += 1;
@@ -1679,6 +1840,334 @@ impl ExecutionEngine {
                 Ok("completed".to_string())
             }
         }
+    }
+
+    /// An `awaitCallback` node: wait for an inbound callback instead of sending a request.
+    ///
+    /// A control node — no test case, no method, no URL, no dataset — that nevertheless reports
+    /// a verdict, because "the delivery report never came" is a test result and has to be able
+    /// to be red. Several test cases here put a `drCallbackUrl` in their payload and then assert
+    /// on the 202 acknowledgement, so the delivery, the thing actually under test, was never
+    /// checked by anything.
+    async fn execute_await_node(
+        &self,
+        node: &GraphNode,
+        ctx: &mut ExecutionContext,
+        event_tx: &Option<mpsc::Sender<ExecutionEvent>>,
+        // When this run began. Passed in rather than stamped here — see `RunState::started_at`
+        // for why the step's own start is the wrong boundary.
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> NodeResult {
+        let start = std::time::Instant::now();
+        let mut logs = Vec::new();
+
+        let node_label = node
+            .data
+            .get("alias")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        // Every exit reports the same identity; only the verdict, the message and how far we got
+        // differ. Each expansion returns, so moving `logs` repeatedly is fine.
+        macro_rules! done {
+            ($status:expr, $err:expr, $req:expr, $resp:expr, $exports:expr, $expected:expr) => {
+                return NodeResult {
+                    node_label: node_label.clone(),
+                    node_id: node.id.clone(),
+                    teardown: None,
+                    expected: $expected,
+                    // No test case behind this node, by design: a node that sends nothing has no
+                    // request to describe, and pointing it at a test case would leave that test
+                    // case's Request tab showing an endpoint nothing ever calls.
+                    test_case_id: None,
+                    test_case_name: Some(AWAIT_STEP_NAME.to_string()),
+                    status: $status,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    request: $req,
+                    response: $resp,
+                    exports: $exports,
+                    env: None,
+                    error_message: $err,
+                    logs,
+                    row_index: None,
+                    row_label: None,
+                    attempts: None,
+                    iterations_of: None,
+                    iterations: None,
+                }
+            };
+        }
+
+        let cfg = await_config(node);
+        if cfg.path.is_empty() {
+            done!(
+                NodeStatus::Failed,
+                Some(
+                    "This step waits for a callback but no path is set — open the node and give \
+                     it the path your test puts in its callback URL"
+                        .to_string()
+                ),
+                None,
+                None,
+                None,
+                None
+            );
+        }
+
+        // Interpolated like every other authored string, which is what lets one flow variable
+        // feed both the payload's callback URL and this path, so the two cannot drift.
+        let path = ctx.interpolate(&cfg.path).unwrap_or_else(|_| cfg.path.clone());
+
+        // An unresolved name is refused here rather than waited out. Waiting sixty seconds on an
+        // inbox literally called `dr/{{dr_path}}` — which nothing will ever write to — then
+        // reporting "no callback arrived" would name the wrong problem, and the author would go
+        // looking at the sender.
+        if path.contains("{{") {
+            let reason = format!(
+                "the callback path is still {} — the variable did not resolve, so this step \
+                 would wait on an inbox nothing can write to",
+                path
+            );
+            logs.push(reason.clone());
+            done!(
+                NodeStatus::Failed,
+                Some(reason),
+                Some(await_request_log(&path, &cfg)),
+                None,
+                None,
+                None
+            );
+        }
+
+        logs.push(format!(
+            "waiting for {} callback(s) at {} — up to {}ms, counting anything that arrived \
+             since this run began",
+            cfg.count, path, cfg.timeout_ms
+        ));
+
+        // Armed *before* the inbox is first read, and that order is the whole reason `Hooks`
+        // signals with a watch channel rather than a notification. A receiver remembers the
+        // version it has seen, so a callback landing between this line and the read below has
+        // already bumped the counter and `changed()` returns at once. With a bare notification
+        // the wake would fire while nobody was registered yet, and this step would wait out its
+        // entire timeout with the callback sitting in the inbox.
+        let mut ticks = self.hooks.subscribe();
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(cfg.timeout_ms);
+
+        let received = loop {
+            let got = self.hooks.since(&path, since);
+            if got.len() >= cfg.count {
+                logs.push(format!(
+                    "{} callback(s) arrived after {}ms",
+                    got.len(),
+                    start.elapsed().as_millis()
+                ));
+                break got;
+            }
+
+            tokio::select! {
+                // Something arrived somewhere. Whether it was *this* path is decided by the read
+                // at the top of the loop, not here: one counter serves every waiting step, and
+                // filtering by path in the signal would mean a channel per path and a registry
+                // to keep them in.
+                _ = ticks.changed() => {}
+
+                _ = tokio::time::sleep_until(deadline) => {
+                    let arrived = self.hooks.since(&path, since).len();
+                    let reason = format!(
+                        "no callback at {} within {}ms ({} of {} arrived)",
+                        path, cfg.timeout_ms, arrived, cfg.count
+                    );
+                    logs.push(reason.clone());
+                    // Failed, never Error. Nothing broke — the callback did not come. `Error`
+                    // aborts the flow and claims something systemic went wrong, which is a
+                    // different and worse story, and it would hide the rest of the run from an
+                    // author whose only problem is a sender that has not implemented delivery
+                    // reports yet.
+                    done!(
+                        NodeStatus::Failed,
+                        Some(reason),
+                        Some(await_request_log(&path, &cfg)),
+                        None,
+                        None,
+                        None
+                    );
+                }
+
+                // The run's own stream closed: the tab went away. Learnt through the select
+                // rather than a check between wakes, because this task is parked inside `wait`
+                // and a boundary check cannot reach it — the same reason `pause_before_next`
+                // selects on `closed()`.
+                _ = async {
+                    match event_tx {
+                        Some(tx) => tx.closed().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {}
+
+                // Ctrl+C. The same primitive a parked stepped run selects on, and for the same
+                // reason: this task is inside `wait` and no boundary check can reach it.
+                _ = crate::shutdown::stop_requested() => {}
+            }
+
+            // Nothing periodic wakes this loop. That is deliberate — a timed sweep would find
+            // an arrival on its own within a tick, which makes the watch channel look optional
+            // and leaves the lost-wakeup bug it exists to prevent untestable. Every wake here
+            // is a real event: an arrival, the deadline, the tab closing, or a stop.
+
+            if self.stop.load(std::sync::atomic::Ordering::Relaxed)
+                || event_tx.as_ref().is_some_and(|tx| tx.is_closed())
+            {
+                let reason = format!(
+                    "stopped waiting at {}: the run was abandoned before the callback arrived",
+                    path
+                );
+                logs.push(reason.clone());
+                done!(
+                    NodeStatus::Failed,
+                    Some(reason),
+                    Some(await_request_log(&path, &cfg)),
+                    None,
+                    None,
+                    None
+                );
+            }
+        };
+
+        // The last one is the response. Earlier ones are logged rather than discarded silently,
+        // so a step that waited for two can show both.
+        //
+        // Handing *all* of them to `iterations` — so a `collect` could walk them — is deferred:
+        // it wants the dataset renderers taught a third iteration noun, and the case in hand
+        // waits for one report.
+        for (i, r) in received.iter().enumerate() {
+            logs.push(format!(
+                "callback {}/{}: {} {} {}",
+                i + 1,
+                received.len(),
+                r.method,
+                r.path,
+                summarise_body(&r.body)
+            ));
+        }
+        let last = received.last().expect("the loop breaks only with at least one");
+        let response = callback_as_response(last);
+
+        // This node's Expect, against the callback, interpolated like every other string.
+        let raw_check = node
+            .data
+            .get("config")
+            .and_then(|c| c.get("check"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let own_check = raw_check.map(|c| ctx.interpolate(c).unwrap_or_else(|_| c.to_string()));
+
+        let (passed, expected, failure) = match parse_check(own_check.as_deref()) {
+            // Arrival is the assertion: the step waited, and the callback came.
+            Check::Unstated => (
+                true,
+                Some(format!("{} callback(s) at {}", cfg.count, path)),
+                None,
+            ),
+            // A status code here can only mean one of two things, and both are wrong. Comparing
+            // against our own 200 would pass whatever the callback said; comparing against a
+            // status the caller "sent" is comparing against something that does not exist. So
+            // it is refused, rather than quietly passing.
+            Check::Status(code) => (
+                false,
+                Some(code.to_string()),
+                Some(
+                    "a callback carries no status code of its own — this step's Expect must be \
+                     an expression about what arrived, like response.json.status == \"DELIVERED\""
+                        .to_string(),
+                ),
+            ),
+            Check::Expr(expr) => match self.assertions.evaluate(AssertionInput {
+                script: expr,
+                status: response.status,
+                body: &response.body,
+                json: &response.json,
+                headers: &response.headers,
+                env: &ctx.environment_snapshot(),
+            }) {
+                Ok(outcome) => {
+                    // An Expect may capture, the same as a row's.
+                    for (name, value) in &outcome.vars {
+                        ctx.set(name, value.clone());
+                    }
+                    for (name, value) in &outcome.env {
+                        ctx.set_environment_var(name, value.clone());
+                    }
+                    match outcome.passed {
+                        Some(true) => (true, Some(expr.to_string()), None),
+                        Some(false) => (
+                            false,
+                            Some(expr.to_string()),
+                            Some(format!("Expect was not true: {}", expr)),
+                        ),
+                        None => (
+                            false,
+                            Some(expr.to_string()),
+                            Some(
+                                "Expect must be an expression that is true or false".to_string(),
+                            ),
+                        ),
+                    }
+                }
+                Err(e) => (
+                    false,
+                    Some(expr.to_string()),
+                    Some(format!("Expect could not be evaluated: {}", plain(&e))),
+                ),
+            },
+        };
+
+        // Output variables come out of the callback, so a later step can use what it carried —
+        // a messageId to reconcile against, say. Run whatever the verdict, matching the rule a
+        // request node already follows.
+        let wanted = output_vars(node, &mut logs);
+        let specs: Vec<&ExportVariable> = wanted.iter().collect();
+        let exports = if specs.is_empty() {
+            None
+        } else {
+            match &response.json {
+                Some(json) => {
+                    let mut multi = Vec::new();
+                    let got = capture(
+                        &specs,
+                        json,
+                        CaptureKind::Export,
+                        self.debug_mode,
+                        &mut logs,
+                        &mut multi,
+                    );
+                    for (name, value) in &got {
+                        ctx.set(name, value.clone());
+                    }
+                    if got.is_empty() { None } else { Some(got) }
+                }
+                None => {
+                    logs.push(format!(
+                        "⚠ The callback body is not JSON, so nothing was captured for: {}",
+                        specs.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ")
+                    ));
+                    None
+                }
+            }
+        };
+
+        done!(
+            if passed { NodeStatus::Passed } else { NodeStatus::Failed },
+            failure,
+            Some(await_request_log(&path, &cfg)),
+            Some(response),
+            exports,
+            expected
+        );
     }
 
     /// Execute a test case node
@@ -1893,34 +2382,7 @@ impl ExecutionEngine {
         // Node-level outputVars merge with the test case's own exports. A row that
         // is only half filled in used to be dropped in silence, and the only symptom
         // was {{name}} arriving literally at some later node — so say so here.
-        let mut node_output_vars: Vec<ExportVariable> = Vec::new();
-        if let Some(rows) = node.data
-            .get("config")
-            .and_then(|c| c.get("outputVars"))
-            .and_then(|v| v.as_array())
-        {
-            for row in rows {
-                let field = |key: &str| {
-                    row.get(key).and_then(|v| v.as_str()).unwrap_or("").trim().to_string()
-                };
-                let (name, path) = (field("name"), field("path"));
-                match (name.is_empty(), path.is_empty()) {
-                    (false, false) => node_output_vars
-                        .push(ExportVariable { name, json_path: path }),
-                    (false, true) => logs.push(format!(
-                        "⚠ Output variable \"{}\" has no JSON path, so nothing was \
-                         captured — {{{{{}}}}} will not resolve",
-                        name, name
-                    )),
-                    (true, false) => logs.push(format!(
-                        "⚠ Output variable with path {} has no name, so nothing was captured",
-                        path
-                    )),
-                    // A blank row the author just added and hasn't filled in.
-                    (true, true) => {}
-                }
-            }
-        }
+        let node_output_vars = output_vars(node, &mut logs);
 
         // The name the author gave this step's collection, when it runs more than once.
         // Read here beside the fields it gathers, since one is meaningless without the other.
@@ -3466,8 +3928,8 @@ mod tests {
             name: "Test Flow".to_string(),
             description: None,
             graph_data: GraphData { nodes, edges, canvas_settings: serde_json::json!({}), variables: HashMap::new() },
-            group_id: None,
             version: 1,
+            group_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -7063,4 +7525,446 @@ mod tests {
         let exports = engine.process_exports(&tc, &[], &json, &mut ctx, &mut logs);
         assert!(exports.is_none());
     }
+
+    // ---- awaitCallback: a step that sends nothing ---------------------------------------
+    //
+    // Several test cases here put a `drCallbackUrl` in their payload and then assert on the 202
+    // acknowledgement, so the delivery — the thing under test — was checked by nothing. These
+    // pin the rules that make a wait trustworthy: a stale callback cannot satisfy a fresh wait,
+    // a wait that ends empty is red rather than a crash, and the status reported is ours.
+
+    fn await_node(cfg: serde_json::Value) -> GraphNode {
+        make_node("w1", "awaitCallback", serde_json::json!({ "config": cfg }))
+    }
+
+    fn arrived(path: &str, body: &str) -> Received {
+        Received {
+            method: "POST".into(),
+            path: path.into(),
+            query: None,
+            headers: HashMap::new(),
+            body: body.into(),
+            json: serde_json::from_str(body).ok(),
+            truncated: false,
+            received_at: chrono::Utc::now(),
+        }
+    }
+
+    /// A wait with a callback landing just after the step begins.
+    ///
+    /// Built *inside* the task rather than passed in, and that is the point: `received_at` is
+    /// stamped at construction, so an eagerly-built `Received` lands before the step's `since`
+    /// boundary and correctly does not count. Six of these tests were written the eager way and
+    /// failed — the rule catching its own test author.
+    async fn wait_for(hooks: &Hooks, node: &GraphNode, path: &str, body: &str) -> NodeResult {
+        let writer = hooks.clone();
+        let (path, body) = (path.to_string(), body.to_string());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived(&path, &body));
+        });
+        wait_on(hooks, node).await
+    }
+
+    /// A wait against its own inboxes, with nothing watching.
+    async fn wait_on(hooks: &Hooks, node: &GraphNode) -> NodeResult {
+        wait_since(hooks, node, chrono::Utc::now()).await
+    }
+
+    /// A wait counting from an explicit boundary, as a run does.
+    async fn wait_since(
+        hooks: &Hooks,
+        node: &GraphNode,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> NodeResult {
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        engine.execute_await_node(node, &mut ctx, &None, since).await
+    }
+
+    #[tokio::test]
+    async fn a_callback_that_arrived_before_the_run_began_does_not_count() {
+        // The rule that makes an authored path safe to reuse. A path is a name the author chose
+        // and will use again next week, so last week's delivery report is still in that inbox —
+        // without the `since` boundary it satisfies today's assertion instantly and the step
+        // goes green having waited for nothing.
+        let hooks = Hooks::new();
+        hooks.record(arrived("dr/jt1", r#"{"status":"DELIVERED"}"#));
+
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/jt1", "timeoutMs": 300 }
+        }));
+        let result = wait_on(&hooks, &node).await;
+
+        assert_eq!(result.status, NodeStatus::Failed, "{:?}", result.error_message);
+        assert!(
+            result.error_message.as_deref().unwrap().contains("0 of 1 arrived"),
+            "{:?}",
+            result.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_callback_that_landed_while_earlier_steps_were_still_running_still_counts() {
+        // The bug the boundary moved for. The step that provokes a callback is not the step that
+        // waits for it: a 19-row fan-out keeps sending for seconds after the row carrying the
+        // callback URL, so a delivery report arriving during rows 7–19 lands *before* the waiter
+        // starts. Counting from the step would discard it and report "no callback arrived" —
+        // true of the step, false of the run, and useless to the author.
+        let hooks = Hooks::new();
+        let run_began = chrono::Utc::now();
+
+        // Mid-run: after the run started, before the waiting step does.
+        hooks.record(arrived("dr/jt1", r#"{"status":"DELIVERED"}"#));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/jt1", "timeoutMs": 300 }
+        }));
+        let result = wait_since(&hooks, &node, run_began).await;
+
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+        assert_eq!(
+            result.response.as_ref().unwrap().json.as_ref().unwrap()["status"],
+            serde_json::json!("DELIVERED")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_boundary_is_the_run_not_the_step() {
+        // Both halves in one place, because the value of the rule is the *pair*: mid-run counts,
+        // pre-run does not. A boundary that accepted everything would pass the test above too.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/pair", "timeoutMs": 300 }
+        }));
+
+        hooks.record(arrived("dr/pair", r#"{"n":"before"}"#));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let run_began = chrono::Utc::now();
+
+        assert_eq!(
+            wait_since(&hooks, &node, run_began).await.status,
+            NodeStatus::Failed,
+            "a callback from before the run must not count"
+        );
+
+        hooks.record(arrived("dr/pair", r#"{"n":"during"}"#));
+        let during = wait_since(&hooks, &node, run_began).await;
+        assert_eq!(during.status, NodeStatus::Passed, "{:?}", during.error_message);
+        // The mid-run one, not the stale one, even though both sit in the inbox.
+        assert_eq!(
+            during.response.as_ref().unwrap().json.as_ref().unwrap()["n"],
+            serde_json::json!("during")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_whole_flow_counts_callbacks_from_when_the_run_began() {
+        // Through `execute_flow`, because the unit tests above pass their own boundary and so
+        // cannot see the wiring at all: with `RunState::started_at` set to the epoch every one of
+        // them still passed, and a wait would have accepted a delivery report from last week.
+        //
+        // A flow of start → await → end, which is only expressible because the waiter is a
+        // control node with no test case behind it.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let repo = MockTestCaseRepository::new();
+        let flow = make_flow(
+            "flow1",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node(
+                    "w",
+                    "awaitCallback",
+                    serde_json::json!({
+                        "config": { "awaitCallback": { "path": "dr/wired", "timeoutMs": 250 } }
+                    }),
+                ),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![
+                make_edge("e1", "start", "w", None),
+                make_edge("e2", "w", "end", Some("success")),
+            ],
+        );
+
+        // Sitting in the inbox before the run is asked for.
+        hooks.record(arrived("dr/wired", r#"{"status":"STALE"}"#));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let stale = engine
+            .execute_flow("exec-stale", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+        assert_eq!(stale.status, "failed", "a pre-run callback must not satisfy the wait");
+        assert_eq!(stale.stats.failed, 1);
+        // And the step is counted as a step, not skipped over the way an unknown node type is.
+        assert_eq!(stale.stats.total, 1);
+
+        // Now one that lands during the run.
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived("dr/wired", r#"{"status":"DELIVERED"}"#));
+        });
+        let live = engine
+            .execute_flow("exec-live", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+        assert_eq!(live.status, "completed", "{:?}", live.results[0].error_message);
+        assert_eq!(live.stats.passed, 1);
+        assert_eq!(
+            live.results[0].response.as_ref().unwrap().json.as_ref().unwrap()["status"],
+            serde_json::json!("DELIVERED")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_wait_ends_the_moment_a_callback_lands() {
+        // Event, not poll: the timeout is far longer than the test could tolerate, so this only
+        // passes if the watch channel wakes the step rather than a tick finding it later.
+        let hooks = Hooks::new();
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived("dr/jt1", r#"{"status":"DELIVERED"}"#));
+        });
+
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/jt1", "timeoutMs": 30_000 }
+        }));
+        let started = std::time::Instant::now();
+        let result = wait_on(&hooks, &node).await;
+
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+        // Meaningful because nothing in the wait is periodic: delete the watch wake and this
+        // sits until the 30s timeout, so any bound well under that catches it. An earlier
+        // version had a 250ms cancellation sweep, which found the callback on its own — the
+        // bound then had to be tighter than the sweep, and it flaked under a loaded suite.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?} — the arrival did not wake it",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_that_times_out_is_failed_not_errored() {
+        // `Error` aborts the whole flow and claims something systemic went wrong. Nothing broke:
+        // the callback did not come. Getting this wrong hides the rest of the run from an author
+        // whose only problem is a sender that has not implemented delivery reports yet.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/never", "timeoutMs": 200 }
+        }));
+        let result = wait_on(&hooks, &node).await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert_ne!(result.status, NodeStatus::Error);
+        assert!(result.error_message.as_deref().unwrap().contains("dr/never"));
+    }
+
+    #[tokio::test]
+    async fn a_wait_for_two_callbacks_ends_on_the_second() {
+        // A campaign to two recipients reports twice, and a step that returned after the first
+        // would assert against half an answer.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/two", "count": 2, "timeoutMs": 400 }
+        }));
+
+        let one = wait_for(&hooks, &node, "dr/two", r#"{"n":1}"#).await;
+        assert_eq!(one.status, NodeStatus::Failed, "one is not two");
+        // Specifically because one of two arrived — not because none did, which is what this
+        // asserted before the `since` boundary corrected it.
+        assert!(
+            one.error_message.as_deref().unwrap().contains("1 of 2 arrived"),
+            "{:?}",
+            one.error_message
+        );
+
+        let hooks = Hooks::new();
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            writer.record(arrived("dr/two", r#"{"n":1}"#));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            writer.record(arrived("dr/two", r#"{"n":2}"#));
+        });
+        let both = wait_on(&hooks, &node).await;
+        assert_eq!(both.status, NodeStatus::Passed, "{:?}", both.error_message);
+        // The last one is the response, so an Expect reads the most recent report.
+        assert_eq!(
+            both.response.as_ref().unwrap().json.as_ref().unwrap()["n"],
+            serde_json::json!(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_await_step_reports_the_status_satyanaash_replied_not_one_the_caller_sent() {
+        // A callback is a request and carries no status. Reusing `response` is what makes this
+        // node cheap, and 200 is the honest value: it is what we replied.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/s", "timeoutMs": 2_000 }
+        }));
+        let result = wait_for(&hooks, &node, "dr/s", "not json at all").await;
+
+        let response = result.response.as_ref().unwrap();
+        assert_eq!(response.status, 200);
+        // Non-JSON is kept as text rather than refused — a delivery report is somebody else's
+        // contract, and refusing a shape we did not expect would be refusing the test.
+        assert_eq!(response.body, "not json at all");
+        assert!(response.json.is_none());
+        assert_eq!(result.request.as_ref().unwrap().method, "AWAIT");
+    }
+
+    #[tokio::test]
+    async fn a_status_code_expect_is_refused_rather_than_passing_on_our_own_200() {
+        // `200` here would compare against what *we* replied and pass whatever the callback
+        // said — a green that means nothing. The other reading, a status the caller sent, does
+        // not exist. So it is refused with a sentence saying what to write instead.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/s", "timeoutMs": 2_000 },
+            "check": "200"
+        }));
+        let result = wait_for(&hooks, &node, "dr/s", r#"{"status":"FAILED"}"#).await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(
+            result.error_message.as_deref().unwrap().contains("no status code of its own"),
+            "{:?}",
+            result.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expect_decides_the_verdict_from_what_arrived() {
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/s", "timeoutMs": 2_000 },
+            "check": "response.json.status == \"DELIVERED\""
+        }));
+        let result = wait_for(&hooks, &node, "dr/s", r#"{"status":"FAILED"}"#).await;
+
+        // Arrived, so the wait succeeded — and failed on content, which is the distinction the
+        // whole node exists to make.
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(result.response.is_some(), "the callback is still reported");
+        assert_eq!(result.expected.as_deref(), Some("response.json.status == \"DELIVERED\""));
+    }
+
+    #[tokio::test]
+    async fn with_no_expect_at_all_arrival_is_the_assertion() {
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/s", "timeoutMs": 2_000 }
+        }));
+        let result = wait_for(&hooks, &node, "dr/s", r#"{"anything":true}"#).await;
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+    }
+
+    #[tokio::test]
+    async fn an_unresolved_path_fails_at_once_rather_than_waiting_out_the_timeout() {
+        // Waiting a minute on an inbox literally called `dr/{{dr_path}}` — which nothing can
+        // write to — and then reporting "no callback arrived" names the wrong problem, and sends
+        // the author to look at the sender.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/{{dr_path}}", "timeoutMs": 30_000 }
+        }));
+        let started = std::time::Instant::now();
+        let result = wait_on(&hooks, &node).await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(
+            result.error_message.as_deref().unwrap().contains("did not resolve"),
+            "{:?}",
+            result.error_message
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "it waited anyway");
+    }
+
+    #[tokio::test]
+    async fn a_step_with_no_path_says_which_field_is_missing() {
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({ "awaitCallback": { "timeoutMs": 200 } }));
+        let result = wait_on(&hooks, &node).await;
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(result.error_message.as_deref().unwrap().contains("no path is set"));
+    }
+
+    #[tokio::test]
+    async fn output_variables_come_out_of_the_callback() {
+        // So a later step can reconcile against what the report carried.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/s", "timeoutMs": 2_000 },
+            "outputVars": [{ "name": "delivered_id", "path": "$.messageId" }]
+        }));
+
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            // Built here, not before the spawn: `received_at` is stamped at construction.
+            writer.record(arrived("dr/s", r#"{"messageId":"m-42","status":"DELIVERED"}"#));
+        });
+        let result = engine
+            .execute_await_node(&node, &mut ctx, &None, chrono::Utc::now())
+            .await;
+
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+        assert_eq!(result.exports.as_ref().unwrap()["delivered_id"], serde_json::json!("m-42"));
+        // And is usable by the next step, not merely reported.
+        assert_eq!(ctx.resolve("delivered_id"), Some(&serde_json::json!("m-42")));
+    }
+
+    #[tokio::test]
+    async fn a_wait_stops_when_the_run_is_abandoned() {
+        // A wait can hold a run open for a minute, which is exactly where "a run nobody is
+        // watching stops" has to be true *inside* a node and not only between them.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/gone", "timeoutMs": 30_000 }
+        }));
+
+        // The tab closed: the stream's receiver is gone. The real signal, and the only one that
+        // can reach a task parked inside the wait.
+        let (tx, rx) = mpsc::channel::<ExecutionEvent>(4);
+        drop(rx);
+
+        let started = std::time::Instant::now();
+        let result = engine
+            .execute_await_node(&node, &mut ctx, &Some(tx), chrono::Utc::now())
+            .await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(
+            result.error_message.as_deref().unwrap().contains("abandoned"),
+            "{:?}",
+            result.error_message
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "it kept waiting for {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_zero_reads_as_unset_not_as_wait_for_nothing() {
+        // The reading `poll_config` already gives a 0: a cleared field, not an instruction.
+        // "Wait for no callbacks" and "give up after no time" are not things an author can mean.
+        let cfg = await_config(&await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/x", "count": 0, "timeoutMs": 0 }
+        })));
+        assert_eq!(cfg.count, 1);
+        assert_eq!(cfg.timeout_ms, AWAIT_TIMEOUT_MS);
+    }
+
 }

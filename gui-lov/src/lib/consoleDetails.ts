@@ -37,8 +37,18 @@ export const statusIcon = (status: TestCaseExecutionResult["status"]): string =>
 export function resultDetails(result: TestCaseExecutionResult): ConsoleLogDetail[] {
   const details: ConsoleLogDetail[] = [];
 
+  // A step that waited for a callback rather than sending one. The engine marks it by putting
+  // `AWAIT` where a method goes, which is the only signal on the result — and the coupling is
+  // deliberate: a callback is reported through `response`, so without relabelling, the console
+  // would show "Request: AWAIT …" and a 200 that the reader would take for the caller's status.
+  // It is ours. Nothing here may imply a call was made or a status was sent.
+  const awaited = result.request?.method === "AWAIT";
+
   if (result.request) {
-    details.push({ label: "Request", value: `${result.request.method} ${result.request.url}` });
+    details.push({
+      label: awaited ? "Waiting for" : "Request",
+      value: awaited ? result.request.url : `${result.request.method} ${result.request.url}`,
+    });
     if (result.request.headers && Object.keys(result.request.headers).length > 0) {
       details.push({ label: "Headers", value: JSON.stringify(result.request.headers, null, 2) });
     }
@@ -48,13 +58,21 @@ export function resultDetails(result: TestCaseExecutionResult): ConsoleLogDetail
   }
 
   if (result.response) {
-    details.push({
-      label: "Status",
-      value: String(result.response.status),
-      type: result.response.status >= 400 ? "error" : "info",
-    });
+    // Suppressed for a wait, not relabelled: 200 is what satyanaash replied to the sender, and
+    // there is no reading of it a test author wants. A row saying "Status 200" beside a delivery
+    // report that said FAILED is the one thing this must never show.
+    if (!awaited) {
+      details.push({
+        label: "Status",
+        value: String(result.response.status),
+        type: result.response.status >= 400 ? "error" : "info",
+      });
+    }
     if (result.response.body) {
-      details.push({ label: "Response", value: pretty(result.response.body.trim()) });
+      details.push({
+        label: awaited ? "Callback received" : "Response",
+        value: pretty(result.response.body.trim()),
+      });
     }
   }
 
