@@ -456,6 +456,13 @@ mod tests {
         async fn update_graph(&self, _: &str, _: crate::db::models::UpdateGraphData) -> Result<crate::db::models::Flow, AppError> { unimplemented!() }
         async fn delete(&self, _: &str) -> Result<(), AppError> { unimplemented!() }
         async fn find_existing_ids(&self, _: &[String]) -> Result<std::collections::HashSet<String>, AppError> { unimplemented!() }
+        async fn set_group(
+            &self,
+            _id: &str,
+            _group_id: Option<&str>,
+        ) -> Result<crate::db::models::Flow, AppError> {
+            unimplemented!()
+        }
     }
 
     #[async_trait::async_trait]
@@ -537,6 +544,7 @@ mod tests {
                 canvas_settings: serde_json::json!({}),
                 variables: Default::default(),
             },
+            group_id: None,
             version: 1,
             created_at: Utc::now(),
             updated_at: Utc::now(),

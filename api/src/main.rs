@@ -20,11 +20,11 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::api::{executions, file_store, flows, groups, projects, runs, suites, test_cases};
+use crate::api::{executions, file_store, flow_groups, flows, groups, projects, runs, suites, test_cases};
 use crate::api::executions::ExecutionState;
 use crate::config::Config;
 use crate::db::pool::init_pool;
-use crate::db::repositories::{SqlxFileStoreRepository, SqlxFlowRepository, SqlxProjectRepository, SqlxRunRepository, SqlxSuiteRepository, SqlxTestCaseRepository, SqlxTestGroupRepository};
+use crate::db::repositories::{SqlxFileStoreRepository, SqlxFlowGroupRepository, SqlxFlowRepository, SqlxProjectRepository, SqlxRunRepository, SqlxSuiteRepository, SqlxTestCaseRepository, SqlxTestGroupRepository};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let test_case_repo = Arc::new(SqlxTestCaseRepository::new(pool.clone()));
     let test_group_repo = Arc::new(SqlxTestGroupRepository::new(pool.clone()));
     let flow_repo = Arc::new(SqlxFlowRepository::new(pool.clone()));
+    let flow_group_repo = Arc::new(SqlxFlowGroupRepository::new(pool.clone()));
     let run_repo = Arc::new(SqlxRunRepository::new(pool.clone()));
     let suite_repo = Arc::new(SqlxSuiteRepository::new(pool.clone()));
     let file_store_repo = Arc::new(SqlxFileStoreRepository::new(pool.clone()));
@@ -86,6 +87,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/groups/{id}", delete(groups::delete_group))
         .with_state(test_group_repo.clone());
 
+    // Buckets of flows. Their own router because their own state — and their own route prefix,
+    // `flow-groups`, so nothing has to guess whether /groups means tests or flows.
+    let flow_group_routes = Router::new()
+        .route("/api/v1/projects/{project_id}/flow-groups", post(flow_groups::create_group))
+        .route("/api/v1/projects/{project_id}/flow-groups", get(flow_groups::list_groups))
+        .route("/api/v1/flow-groups/{id}", patch(flow_groups::update_group))
+        .route("/api/v1/flow-groups/{id}", delete(flow_groups::delete_group))
+        .with_state(flow_group_repo.clone() as Arc<dyn crate::db::repositories::FlowGroupRepository>);
+
+
     // Build flow routes
     let flow_routes = Router::new()
         // Nested under projects (create/list)
@@ -94,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
         // Standalone (get/update/delete by ID)
         .route("/api/v1/flows/{id}", get(flows::get_flow))
         .route("/api/v1/flows/{id}", patch(flows::update_flow))
+        .route("/api/v1/flows/{id}/group", patch(flows::move_flow))
         .route("/api/v1/flows/{id}/graph", put(flows::update_graph))
         .route("/api/v1/flows/{id}/clone", post(flows::clone_flow))
         .route("/api/v1/flows/{id}", delete(flows::delete_flow))
@@ -167,6 +179,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(project_routes)
         .merge(test_case_routes)
         .merge(group_routes)
+        .merge(flow_group_routes)
         .merge(flow_routes)
         .merge(execution_routes)
         .merge(file_store_routes)

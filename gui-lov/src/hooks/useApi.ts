@@ -8,7 +8,7 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { projectsApi, testCasesApi, flowsApi, groupsApi } from '@/lib/api';
+import { projectsApi, testCasesApi, flowsApi, groupsApi, flowGroupsApi } from '@/lib/api';
 import type {
   CreateProjectRequest,
   UpdateProjectRequest,
@@ -31,6 +31,7 @@ export const queryKeys = {
   testCases: (projectId: string) => ['testCases', projectId] as const,
   testCase: (id: string) => ['testCase', id] as const,
   groups: (projectId: string) => ['groups', projectId] as const,
+  flowGroups: (projectId: string) => ['flowGroups', projectId] as const,
   flows: (projectId: string) => ['flows', projectId] as const,
   flow: (id: string) => ['flow', id] as const,
 };
@@ -201,6 +202,69 @@ export function useDeleteGroup() {
       queryClient.invalidateQueries({ queryKey: queryKeys.groups(projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.testCases(projectId) });
     },
+  });
+}
+
+// ============ Flow Group Hooks ============
+//
+// The same four, over `flow-groups`. Separate hooks rather than a parameterised one: the query
+// keys must not collide, and a mutation that could be pointed at the wrong kind of group is a
+// mistake nothing would catch until a bucket vanished from the wrong sidebar.
+
+/** Fetch flow groups for a project (newest first) */
+export function useFlowGroups(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.flowGroups(projectId),
+    queryFn: () => flowGroupsApi.list(projectId),
+    enabled: !!projectId,
+  });
+}
+
+export function useCreateFlowGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, name }: { projectId: string; name: string }) =>
+      flowGroupsApi.create(projectId, name),
+    onSuccess: (_, { projectId }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.flowGroups(projectId) });
+    },
+  });
+}
+
+export function useRenameFlowGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string; projectId: string }) =>
+      flowGroupsApi.rename(id, name),
+    onSuccess: (_, { projectId }) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.flowGroups(projectId) });
+    },
+  });
+}
+
+/** Delete a flow group; its flows fall back to Ungrouped. */
+export function useDeleteFlowGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id }: { id: string; projectId: string }) => flowGroupsApi.delete(id),
+    onSuccess: (_, { projectId }) => {
+      // The groups list changed. The *flows* list deliberately is not invalidated: autosave
+      // debounces at 2000ms, so a refetch here could return a pre-edit graph and the context's
+      // resync would overwrite unsaved canvas work. The caller moves the affected flows in
+      // local state instead; the cache catches up on its own next fetch.
+      queryClient.invalidateQueries({ queryKey: queryKeys.flowGroups(projectId) });
+    },
+  });
+}
+
+/** Move a flow into a group, or out of every group with `null`. */
+export function useMoveFlowToGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ flowId, groupId }: { flowId: string; groupId: string | null }) =>
+      flowGroupsApi.move(flowId, groupId),
+    // Nothing invalidated, for the reason in `useDeleteFlowGroup`. The caller calls the
+    // context's `setFlowGroup` so the sidebar moves at once, without a refetch.
   });
 }
 

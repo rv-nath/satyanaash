@@ -61,6 +61,7 @@ async fn run_migrations(pool: &AnyPool) -> Result<(), sqlx::Error> {
         include_str!("../../migrations/010_body_type.sql"),
         include_str!("../../migrations/011_file_stores.sql"),
         include_str!("../../migrations/012_iterations_of.sql"),
+        include_str!("../../migrations/013_flow_groups.sql"),
     ];
 
     for sql in migrations {

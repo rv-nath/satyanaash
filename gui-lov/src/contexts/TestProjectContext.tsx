@@ -53,6 +53,8 @@ export interface Flow {
   id: string;
   name: string;
   description?: string;
+  /** The sidebar bucket this flow sits in. `null`/absent is Ungrouped. */
+  groupId?: string | null;
   testCases: TestCase[];
   expanded: boolean;
   version: number; // For optimistic locking
@@ -151,6 +153,16 @@ interface TestProjectContextType {
   addFlow: (group: Omit<Flow, "id" | "testCases" | "expanded">) => void;
   updateFlow: (id: string, updates: Partial<Flow>) => void;
   deleteFlow: (id: string) => void;
+  /**
+   * Move a flow between sidebar buckets, locally.
+   *
+   * Deliberately *not* `updateFlow`: that pushes undo history, so a sidebar drag would land in
+   * the same Ctrl+Z stack as canvas edits. And deliberately not a query invalidation — autosave
+   * debounces at 2000ms, so a refetch triggered by a drag could return a pre-edit graph and
+   * `setFlows` would overwrite up to two seconds of unsaved canvas work. The server is updated
+   * by the API call; this keeps the sidebar honest until the cache catches up on its own.
+   */
+  setFlowGroup: (id: string, groupId: string | null) => void;
   addTestCase: (testCase: Omit<TestCase, "id">) => void;
   updateTestCase: (id: string, updates: Partial<TestCase>) => void;
   deleteTestCase: (id: string) => void;
@@ -265,6 +277,7 @@ function fromApiFlow(flow: ApiFlow): Flow {
     internalEdges: edges,
     edgeSettings,
     flowVariables,
+    groupId: flow.group_id ?? null,
     testCases: [],
   };
 }
@@ -638,6 +651,10 @@ export const TestProjectProvider = ({
     setFlows(flows.map(g => g.id === id ? { ...g, ...updates } : g));
   }, [flows, history]);
 
+  const setFlowGroup = useCallback((id: string, groupId: string | null) => {
+    setFlows(prev => prev.map(f => (f.id === id ? { ...f, groupId } : f)));
+  }, []);
+
   const deleteFlow = useCallback((id: string) => {
     const group = flows.find(g => g.id === id);
     history.pushState(flows, `Delete group: ${group?.name || id}`);
@@ -960,6 +977,7 @@ export const TestProjectProvider = ({
         addFlow,
         updateFlow,
         deleteFlow,
+        setFlowGroup,
         addTestCase,
         updateTestCase,
         deleteTestCase,

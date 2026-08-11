@@ -210,6 +210,23 @@ export interface Flow {
   description: string | null;
   graph_data: GraphData;
   version: number;
+  /** The bucket this flow sits in. Absent or null is Ungrouped — every flow predating groups. */
+  group_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * A bucket of flows.
+ *
+ * Structurally a `TestGroup`, and deliberately its own type: they are separate tables and a
+ * separate set of names, so a function that takes one must not silently accept the other.
+ * **Not** the canvas `group` node, which runs a sub-flow — that name is the older misnomer.
+ */
+export interface FlowGroup {
+  id: string;
+  project_id: string;
+  name: string;
   created_at: string;
   updated_at: string;
 }

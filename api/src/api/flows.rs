@@ -135,6 +135,21 @@ pub async fn update_flow(
     Ok(Json(flow))
 }
 
+/// PATCH /api/v1/flows/:id/group - Move a flow into a group, or out with a null
+///
+/// Separate from `update_flow` and without a version: see `MoveFlow`. Nothing validates that the
+/// group exists — a bad id lands the flow in a bucket the sidebar does not draw, which reads as
+/// Ungrouped, and the alternative is a second repository in this handler's state for a case the
+/// UI cannot produce.
+pub async fn move_flow(
+    State(repo): State<Arc<dyn FlowRepository>>,
+    Path(id): Path<String>,
+    Json(input): Json<MoveFlow>,
+) -> Result<Json<Flow>, AppError> {
+    let flow = repo.set_group(&id, input.group_id.as_deref()).await?;
+    Ok(Json(flow))
+}
+
 /// PUT /api/v1/flows/:id/graph - Update graph data (with optimistic locking)
 pub async fn update_graph(
     State(repo): State<Arc<dyn FlowRepository>>,

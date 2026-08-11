@@ -52,6 +52,7 @@ impl FlowRepository for SqlxFlowRepository {
             description: input.description,
             graph_data,
             version: 1,
+            group_id: None,
             created_at: now,
             updated_at: now,
         })
@@ -59,7 +60,7 @@ impl FlowRepository for SqlxFlowRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<Option<Flow>, AppError> {
         let row = sqlx::query(
-            r#"SELECT id, project_id, name, description, graph_data,
+            r#"SELECT id, project_id, name, description, graph_data, group_id,
                version, created_at, updated_at
                FROM flows WHERE id = ?"#
         )
@@ -86,7 +87,7 @@ impl FlowRepository for SqlxFlowRepository {
 
         // Get paginated results
         let rows = sqlx::query(
-            r#"SELECT id, project_id, name, description, graph_data,
+            r#"SELECT id, project_id, name, description, graph_data, group_id,
                version, created_at, updated_at
                FROM flows WHERE project_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"#
         )
@@ -149,6 +150,7 @@ impl FlowRepository for SqlxFlowRepository {
             description,
             graph_data: existing.graph_data,
             version: new_version,
+            group_id: existing.group_id,
             created_at: existing.created_at,
             updated_at: now,
         })
@@ -191,6 +193,7 @@ impl FlowRepository for SqlxFlowRepository {
             description: existing.description,
             graph_data: input.graph_data,
             version: new_version,
+            group_id: existing.group_id,
             created_at: existing.created_at,
             updated_at: now,
         })
@@ -207,6 +210,26 @@ impl FlowRepository for SqlxFlowRepository {
         }
 
         Ok(())
+    }
+
+    async fn set_group(&self, id: &str, group_id: Option<&str>) -> Result<Flow, AppError> {
+        // No version check and no `updated_at` bump: which bucket a flow sits in is about the
+        // sidebar, not the flow. Tying it to the graph's optimistic lock would let a drag fail
+        // because somebody else edited the canvas, and would move a flow to the top of a
+        // recently-changed list for being tidied.
+        let result = sqlx::query("UPDATE flows SET group_id = ? WHERE id = ?")
+            .bind(group_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("Flow {} not found", id)));
+        }
+
+        self.get_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", id)))
     }
 
     async fn find_existing_ids(&self, ids: &[String]) -> Result<std::collections::HashSet<String>, AppError> {
@@ -245,6 +268,7 @@ fn row_to_flow(row: &sqlx::any::AnyRow) -> Result<Flow, AppError> {
         description: row.try_get("description")?,
         graph_data: serde_json::from_str(&graph_data_str)?,
         version: row.try_get("version")?,
+        group_id: row.try_get("group_id")?,
         created_at: chrono::DateTime::parse_from_rfc3339(&created_str)
             .map_err(|e| AppError::Internal(e.to_string()))?
             .with_timezone(&Utc),

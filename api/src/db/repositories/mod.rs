@@ -13,14 +13,14 @@ mod projects;
 mod runs;
 mod suites;
 mod test_cases;
-mod test_groups;
+mod groups;
 pub use file_stores::SqlxFileStoreRepository;
 pub use flows::SqlxFlowRepository;
 pub use projects::SqlxProjectRepository;
 pub use runs::SqlxRunRepository;
 pub use suites::SqlxSuiteRepository;
 pub use test_cases::SqlxTestCaseRepository;
-pub use test_groups::SqlxTestGroupRepository;
+pub use groups::{SqlxFlowGroupRepository, SqlxTestGroupRepository};
 
 /// Project repository trait
 #[async_trait]
@@ -43,6 +43,9 @@ pub trait FlowRepository: Send + Sync {
     async fn delete(&self, id: &str) -> Result<(), AppError>;
     /// Check which IDs exist (for validation)
     async fn find_existing_ids(&self, ids: &[String]) -> Result<std::collections::HashSet<String>, AppError>;
+    /// Move a flow into a group, or out of every group with `None`. Does not touch `version`
+    /// or `updated_at` — see `MoveFlow`.
+    async fn set_group(&self, id: &str, group_id: Option<&str>) -> Result<Flow, AppError>;
 }
 
 /// Test case repository trait
@@ -134,5 +137,19 @@ pub trait TestGroupRepository: Send + Sync {
     async fn list_by_project(&self, project_id: &str) -> Result<Vec<TestGroup>, AppError>;
     async fn update(&self, id: &str, input: UpdateTestGroup) -> Result<TestGroup, AppError>;
     /// Delete a group; its test cases fall back to Ungrouped (group_id = NULL).
+    async fn delete(&self, id: &str) -> Result<(), AppError>;
+}
+
+/// Flow group repository trait.
+///
+/// The same four operations as `TestGroupRepository` and the same implementation behind it
+/// (`repositories::groups`). Two traits rather than one, because axum keys handler state by
+/// type: two `Arc<dyn GroupRepository>` in one app could not be told apart.
+#[async_trait]
+pub trait FlowGroupRepository: Send + Sync {
+    async fn create(&self, project_id: &str, input: CreateFlowGroup) -> Result<FlowGroup, AppError>;
+    async fn list_by_project(&self, project_id: &str) -> Result<Vec<FlowGroup>, AppError>;
+    async fn update(&self, id: &str, input: UpdateFlowGroup) -> Result<FlowGroup, AppError>;
+    /// Delete a group; its flows fall back to Ungrouped (group_id = NULL).
     async fn delete(&self, id: &str) -> Result<(), AppError>;
 }

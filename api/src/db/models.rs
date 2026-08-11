@@ -55,6 +55,10 @@ pub struct Flow {
     pub description: Option<String>,
     pub graph_data: GraphData,
     pub version: i32,
+    /// The bucket this flow sits in; `None` is Ungrouped, which is every flow that predates
+    /// grouping. Skipped when absent, like `description`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -192,7 +196,7 @@ pub struct TestCase {
 
 /// Test group entity (single-level bucket for organizing test cases)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestGroup {
+pub struct Group {
     pub id: String,
     pub project_id: String,
     pub name: String,
@@ -200,16 +204,38 @@ pub struct TestGroup {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Create test group request
+/// Create group request
 #[derive(Debug, Clone, Deserialize)]
-pub struct CreateTestGroup {
+pub struct CreateGroup {
     pub name: String,
 }
 
-/// Update test group request
+/// Update group request
 #[derive(Debug, Clone, Deserialize)]
-pub struct UpdateTestGroup {
+pub struct UpdateGroup {
     pub name: String,
+}
+
+// A bucket of tests and a bucket of flows are the same row over different tables, so they are
+// the same type. The aliases keep each caller reading in its own vocabulary — and keep the
+// existing test-group code and its tests spelled exactly as they were.
+pub type TestGroup = Group;
+pub type FlowGroup = Group;
+pub type CreateTestGroup = CreateGroup;
+pub type UpdateTestGroup = UpdateGroup;
+pub type CreateFlowGroup = CreateGroup;
+pub type UpdateFlowGroup = UpdateGroup;
+
+/// Move a flow into a group, or out of every group with `null`.
+///
+/// Its own request rather than a field on `UpdateFlow`, and deliberately without a `version`:
+/// which bucket a flow sits in is about the sidebar, not about the flow's content. Threading it
+/// through the graph's optimistic lock would mean a drag could fail because somebody edited the
+/// canvas, and would bump a version number that describes the graph.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MoveFlow {
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 /// Export variable definition - extracts values from response using JSONPath

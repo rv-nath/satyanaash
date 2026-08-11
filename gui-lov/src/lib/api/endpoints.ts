@@ -11,6 +11,7 @@ import type {
   CreateTestCaseRequest,
   UpdateTestCaseRequest,
   TestGroup,
+  FlowGroup,
   Flow,
   CreateFlowRequest,
   UpdateFlowRequest,
@@ -107,6 +108,31 @@ export const groupsApi = {
 
   /** Delete a group (its tests fall back to Ungrouped) */
   delete: (id: string) => apiClient.delete(`/groups/${id}`),
+};
+
+// ============ Flow Groups API ============
+
+/** Buckets of flows. `flow-groups` in the path, so nothing has to guess which kind. */
+export const flowGroupsApi = {
+  list: (projectId: string) => apiClient.get<FlowGroup[]>(`/projects/${projectId}/flow-groups`),
+
+  create: (projectId: string, name: string) =>
+    apiClient.post<FlowGroup>(`/projects/${projectId}/flow-groups`, { name }),
+
+  rename: (id: string, name: string) =>
+    apiClient.patch<FlowGroup>(`/flow-groups/${id}`, { name }),
+
+  /** Delete a group; its flows fall back to Ungrouped rather than being deleted. */
+  delete: (id: string) => apiClient.delete(`/flow-groups/${id}`),
+
+  /**
+   * Move a flow into a group, or out of every group with `null`.
+   *
+   * No `version`: which bucket a flow sits in is about the sidebar, not the graph, so a drag
+   * cannot fail because somebody else edited the canvas.
+   */
+  move: (flowId: string, groupId: string | null) =>
+    apiClient.patch<Flow>(`/flows/${flowId}/group`, { group_id: groupId }),
 };
 
 // ============ Flows API ============

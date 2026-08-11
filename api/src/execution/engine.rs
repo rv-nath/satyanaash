@@ -3466,6 +3466,7 @@ mod tests {
             name: "Test Flow".to_string(),
             description: None,
             graph_data: GraphData { nodes, edges, canvas_settings: serde_json::json!({}), variables: HashMap::new() },
+            group_id: None,
             version: 1,
             created_at: Utc::now(),
             updated_at: Utc::now(),
