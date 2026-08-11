@@ -1,9 +1,9 @@
 /**
  * Auto-validate hook for flow graph changes
  *
- * Validates on flow switch and after structural changes (debounced).
- * Only triggers on structural changes (node/edge additions/deletions),
- * not on position changes or visual settings.
+ * Validates on flow switch, and after any change a rule could have an opinion about
+ * (debounced) — the graph's shape *and* each node's config. Not on positions or visual
+ * settings, which no rule reads.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -32,16 +32,26 @@ interface UseAutoValidateReturn {
 }
 
 /**
- * Compute a hash of the graph structure for change detection.
- * Only tracks structural changes (node IDs/types, edge connections), not positions.
+ * What counts as a change worth re-validating for.
+ *
+ * Positions and visual settings are excluded because no rule reads them. **Config is
+ * included, and used not to be** — which meant every config-derived verdict froze at
+ * whatever it was when the node was last added or moved between nodes. Fixing a
+ * `POLL_WITHOUT_UNTIL` never cleared it; an await node, which is always dropped with no
+ * path and so always starts on an error, showed a stale `AWAIT_WITHOUT_PATH` until the
+ * author switched flows and came back. The panel said one thing and the server another.
+ *
+ * A spurious re-validation from key order in the stringified config is harmless — it is
+ * debounced, and one extra POST is cheaper than a wrong verdict left on screen.
  */
-function computeGraphHash(nodes: Node[], edges: Edge[]): string {
+export function computeGraphHash(nodes: Node[], edges: Edge[]): string {
   // Include node IDs, types, and test case/flow references
   const nodeData = nodes.map(n => ({
     id: n.id,
     type: n.type,
     testCaseId: n.data?.testCaseId,
     flowId: n.data?.flowId,
+    config: n.data?.config,
   })).sort((a, b) => a.id.localeCompare(b.id));
 
   // Include edge connections (source/target)
