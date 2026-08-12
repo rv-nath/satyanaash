@@ -342,6 +342,13 @@ aggregate hardcoding `exports: None`, and a warning saying so. Two campaigns lau
 two data rows left no way to call a status API for either one — the ids lived in per-row
 context clones that were dropped at the end of each iteration.
 
+- **A path of `$` is warned about in the panel** (`rootPathWarning`), because it is the one wrong
+  path with no run-time warning at all: every other mistake produces "nothing at `$.foo` —
+  `{{name}}` will not resolve", while `$` always matches and so always looks fine. What it does is
+  store the *entire body* under one name, which cannot then be used — interpolation has no dots, so
+  `{{campaign_info.campaignId}}` can never resolve and `{{campaign_info}}` pastes the whole JSON
+  body into the request. That is exactly what one real flow did. `$..field` is left alone: it is a
+  recursive-descent query and matches fields, not the root.
 - **Records, not parallel arrays.** `campaignIds` and `txnIds` as two lists hold the pairing
   and *cannot express it*: the interpolation regex has no dots and no brackets, so the second
   run could never ask for **its** `txnId`. One record per run is what keeps a response's
@@ -522,6 +529,18 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   `closed()`.
 - `AWAIT_WITHOUT_PATH` is a validation **error**, so a wait with no path is reported before the run
   rather than sixty seconds into one. A flow of only await nodes is not `EMPTY_FLOW`.
+- `AWAIT_PATH_SHARED` warns when two steps wait on one inbox. **A wait filters the inbox, it does
+  not consume from it** — nothing is removed or marked when one is satisfied — so two steps with a
+  count of 1 each do not take one callback apiece: the second re-reads the same inbox and the same
+  callback satisfies it at once. Both go green and the author believes they waited for two. A
+  *warning*, because two steps asserting different things about the same report is a real thing to
+  want. Compared as authored, not as resolved: two nodes holding `dr/{{dr_path}}` are the same
+  inbox whatever it resolves to, and run time is the only place a resolved path exists.
+- **`GraphValidator::validate` has a test harness now** (`NoRepos`), because until it did, nothing
+  covered `validate` *calling* its rules — every test invoked a rule function directly, and deleting
+  the `await_path_clashes` line from the validator left all 320 tests green. `poll_warnings`,
+  `for_each_issues` and `fan_out_warnings` were all unwireable without a failure too. A rule nothing
+  calls is a rule that does not exist.
 - **One source of truth for the path.** A flow variable feeds both the payload's callback URL and
   the node's path (`{{hook_base}}/{{dr_path}}` and `dr/{{dr_path}}`), interpolated like every other
   field, so the two cannot drift. **`hook_base` is the author's own project variable, not config**:

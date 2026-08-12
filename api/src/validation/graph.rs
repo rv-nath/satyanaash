@@ -263,6 +263,8 @@ impl<'a> GraphValidator<'a> {
         for node in graph.nodes.iter().filter(|n| n.node_type == "awaitCallback") {
             errors.extend(await_errors(node));
         }
+        // Cross-node, so it cannot live in `await_errors`: two waits on one inbox.
+        warnings.extend(await_path_clashes(&graph.nodes));
 
         // 7. Check group node flow references
         let referenced_flow_ids: Vec<String> = graph.nodes.iter()
@@ -533,6 +535,65 @@ fn for_each_issues(node: &GraphNode) -> Vec<ValidationIssue> {
         ));
     }
 
+    issues
+}
+
+/// Two or more steps waiting on the same inbox.
+///
+/// A wait *filters* the inbox, it does not consume from it: nothing is removed or marked when a
+/// wait is satisfied. So two steps on one path with a count of 1 each do not take one callback
+/// apiece — the second re-reads the same inbox and the same callback satisfies it, immediately.
+///
+/// A warning rather than an error, because there is a real reading of it: two steps asserting
+/// different things about the *same* report. What must not happen is an author believing they
+/// have waited for two.
+///
+/// Compared as authored, not as resolved. Two nodes both holding `dr/{{dr_path}}` are the same
+/// inbox whatever it resolves to, which is exactly the case worth catching, and run time is the
+/// only place a resolved path exists.
+fn await_path_clashes(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
+    use std::collections::HashMap;
+
+    let mut by_path: HashMap<&str, Vec<&GraphNode>> = HashMap::new();
+    for node in nodes.iter().filter(|n| n.node_type == "awaitCallback") {
+        let path = node
+            .data
+            .get("config")
+            .and_then(|c| c.get("awaitCallback"))
+            .and_then(|c| c.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        // A blank path is AWAIT_WITHOUT_PATH's business. Two of them are not a clash, they are
+        // two unconfigured steps, and saying both things about one node is noise.
+        if !path.is_empty() {
+            by_path.entry(path).or_default().push(node);
+        }
+    }
+
+    let mut issues = Vec::new();
+    for (path, sharing) in by_path {
+        if sharing.len() < 2 {
+            continue;
+        }
+        // One issue per node, so every node involved is marked on the canvas rather than
+        // whichever one happened to be first.
+        for node in &sharing {
+            issues.push(ValidationIssue::warning_with_node(
+                "AWAIT_PATH_SHARED",
+                format!(
+                    "{} steps wait for a callback at {} — nothing is consumed when a wait \
+                     succeeds, so one callback satisfies them all. To wait for {} callbacks, \
+                     use one step with a count of {}",
+                    sharing.len(),
+                    path,
+                    sharing.len(),
+                    sharing.len()
+                ),
+                &node.id,
+            ));
+        }
+    }
     issues
 }
 
@@ -971,6 +1032,206 @@ mod tests {
             height: None,
         };
         assert!(await_errors(&node).is_empty());
+    }
+
+
+    /// An await node with a path, for the clash rule.
+    fn waiter(id: &str, path: &str) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: "awaitCallback".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({ "config": { "awaitCallback": { "path": path } } }),
+            width: None,
+            height: None,
+        }
+    }
+
+    #[test]
+    fn two_steps_waiting_on_one_inbox_are_warned_about() {
+        // A wait filters the inbox, it does not consume from it, so two steps with a count of 1
+        // each do not take one callback apiece — the same one satisfies both, at once. An author
+        // who wanted two reports has to be told, because both steps go green.
+        let issues = await_path_clashes(&[waiter("w1", "dr/{{dr_path}}"), waiter("w2", "dr/{{dr_path}}")]);
+        assert_eq!(codes(issues.clone()), vec!["AWAIT_PATH_SHARED", "AWAIT_PATH_SHARED"]);
+        // Both nodes, so the canvas marks each of them rather than whichever came first.
+        let marked: std::collections::HashSet<_> =
+            issues.iter().filter_map(|i| i.node_id.clone()).collect();
+        assert_eq!(marked.len(), 2);
+        assert!(issues[0].message.contains("count of 2"), "{}", issues[0].message);
+    }
+
+    #[test]
+    fn a_warning_not_an_error_because_two_asserts_on_one_report_is_a_real_thing() {
+        // Two steps checking different things about the *same* delivery report is legitimate.
+        // What must not happen is believing you waited for two.
+        let issues = await_path_clashes(&[waiter("w1", "dr/x"), waiter("w2", "dr/x")]);
+        assert!(issues.iter().all(|i| i.severity == "warning"));
+    }
+
+    #[test]
+    fn different_paths_are_not_a_clash() {
+        assert!(await_path_clashes(&[waiter("w1", "dr/a"), waiter("w2", "dr/b")]).is_empty());
+    }
+
+    #[test]
+    fn two_unconfigured_waiters_are_not_a_clash() {
+        // Blank is AWAIT_WITHOUT_PATH's business. Saying both things about one node is noise,
+        // and "these two share the inbox ''" is not a sentence about anything.
+        let issues = await_path_clashes(&[waiter("w1", ""), waiter("w2", "   ")]);
+        assert!(issues.is_empty(), "{:?}", codes(issues.clone()));
+    }
+
+    #[test]
+    fn one_waiter_alone_is_never_a_clash() {
+        assert!(await_path_clashes(&[waiter("w1", "dr/x")]).is_empty());
+    }
+
+    #[test]
+    fn three_sharing_says_three() {
+        let issues = await_path_clashes(&[waiter("a", "dr/x"), waiter("b", "dr/x"), waiter("c", "dr/x")]);
+        assert_eq!(issues.len(), 3);
+        assert!(issues[0].message.contains("3 steps"), "{}", issues[0].message);
+        assert!(issues[0].message.contains("count of 3"), "{}", issues[0].message);
+    }
+
+
+    // ---- the validator itself, not just its rules ----------------------------------------
+    //
+    // Every test above calls one rule function directly, so until this harness existed nothing
+    // covered `validate` *calling* them: deleting the `await_path_clashes` line from it left all
+    // 320 tests green. The rules were pinned; the wiring was not, and a rule nothing calls is a
+    // rule that does not exist.
+
+    struct NoRepos;
+
+    #[async_trait::async_trait]
+    impl TestCaseRepository for NoRepos {
+        async fn create(&self, _: &str, _: crate::db::models::CreateTestCase) -> Result<TestCase, AppError> { unimplemented!() }
+        async fn get_by_id(&self, _: &str) -> Result<Option<TestCase>, AppError> { Ok(None) }
+        async fn list_by_project(&self, _: &str, _: crate::db::models::Pagination) -> Result<crate::db::models::PaginatedResponse<TestCase>, AppError> { unimplemented!() }
+        async fn update(&self, _: &str, _: crate::db::models::UpdateTestCase) -> Result<TestCase, AppError> { unimplemented!() }
+        async fn delete(&self, _: &str) -> Result<(), AppError> { unimplemented!() }
+        async fn find_existing_ids(&self, _: &[String]) -> Result<std::collections::HashSet<String>, AppError> {
+            Ok(std::collections::HashSet::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl FlowRepository for NoRepos {
+        async fn create(&self, _: &str, _: crate::db::models::CreateFlow) -> Result<Flow, AppError> { unimplemented!() }
+        async fn get_by_id(&self, _: &str) -> Result<Option<Flow>, AppError> { Ok(None) }
+        async fn list_by_project(&self, _: &str, _: crate::db::models::Pagination) -> Result<crate::db::models::PaginatedResponse<Flow>, AppError> { unimplemented!() }
+        async fn update(&self, _: &str, _: crate::db::models::UpdateFlow) -> Result<Flow, AppError> { unimplemented!() }
+        async fn update_graph(&self, _: &str, _: crate::db::models::UpdateGraphData) -> Result<Flow, AppError> { unimplemented!() }
+        async fn delete(&self, _: &str) -> Result<(), AppError> { unimplemented!() }
+        async fn find_existing_ids(&self, _: &[String]) -> Result<std::collections::HashSet<String>, AppError> {
+            Ok(std::collections::HashSet::new())
+        }
+        async fn set_group(&self, _: &str, _: Option<&str>) -> Result<Flow, AppError> { unimplemented!() }
+    }
+
+    fn flow_of(nodes: Vec<GraphNode>, edges: Vec<crate::db::models::GraphEdge>) -> Flow {
+        Flow {
+            id: "f1".to_string(),
+            project_id: "p1".to_string(),
+            name: "flow".to_string(),
+            description: None,
+            group_id: None,
+            graph_data: crate::db::models::GraphData {
+                nodes,
+                edges,
+                canvas_settings: serde_json::json!({}),
+                variables: std::collections::HashMap::new(),
+            },
+            version: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn plain(id: &str, node_type: &str) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: node_type.to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({}),
+            width: None,
+            height: None,
+        }
+    }
+
+    fn edge(id: &str, from: &str, to: &str) -> crate::db::models::GraphEdge {
+        crate::db::models::GraphEdge {
+            id: id.to_string(),
+            source: from.to_string(),
+            target: to.to_string(),
+            edge_type: None,
+            data: serde_json::Value::Null,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_validator_reports_a_shared_callback_path() {
+        let repos = NoRepos;
+        let validator = GraphValidator::new(&repos, &repos);
+        let flow = flow_of(
+            vec![
+                plain("start", "start"),
+                waiter("w1", "dr/{{dr_path}}"),
+                waiter("w2", "dr/{{dr_path}}"),
+                plain("end", "end"),
+            ],
+            vec![
+                edge("e1", "start", "w1"),
+                edge("e2", "w1", "w2"),
+                edge("e3", "w2", "end"),
+            ],
+        );
+
+        let result = validator.validate(&flow).await.unwrap();
+        let codes: Vec<&str> = result.warnings.iter().map(|w| w.code.as_str()).collect();
+        assert_eq!(
+            codes.iter().filter(|c| **c == "AWAIT_PATH_SHARED").count(),
+            2,
+            "warnings were {:?}",
+            codes
+        );
+        // A warning, so the flow is still runnable.
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[tokio::test]
+    async fn the_validator_reports_a_waiter_with_no_path_and_refuses_the_flow() {
+        let repos = NoRepos;
+        let validator = GraphValidator::new(&repos, &repos);
+        let flow = flow_of(
+            vec![plain("start", "start"), waiter("w1", ""), plain("end", "end")],
+            vec![edge("e1", "start", "w1"), edge("e2", "w1", "end")],
+        );
+
+        let result = validator.validate(&flow).await.unwrap();
+        assert!(result.errors.iter().any(|e| e.code == "AWAIT_WITHOUT_PATH"), "{:?}", result.errors);
+        assert!(!result.valid);
+    }
+
+    #[tokio::test]
+    async fn a_flow_of_only_waiters_is_not_an_empty_flow() {
+        // start → await → end is a real flow, and only expressible because a waiter needs no
+        // test case. EMPTY_FLOW counted testCase and group nodes only.
+        let repos = NoRepos;
+        let validator = GraphValidator::new(&repos, &repos);
+        let flow = flow_of(
+            vec![plain("start", "start"), waiter("w1", "dr/x"), plain("end", "end")],
+            vec![edge("e1", "start", "w1"), edge("e2", "w1", "end")],
+        );
+
+        let result = validator.validate(&flow).await.unwrap();
+        assert!(
+            !result.warnings.iter().any(|w| w.code == "EMPTY_FLOW"),
+            "{:?}",
+            result.warnings
+        );
     }
 
 }

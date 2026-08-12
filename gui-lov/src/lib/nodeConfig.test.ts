@@ -7,6 +7,7 @@ import {
   stripBraces,
   walkBadge,
   walkSummary,
+  rootPathWarning,
   AWAIT_TIMEOUT_MS,
   awaitBadge,
   awaitSummary,
@@ -189,5 +190,50 @@ describe("a step that waits for a callback", () => {
   it("badges the canvas node with how many and for how long", () => {
     expect(awaitBadge({ count: 2, timeoutMs: 45000 })).toBe("2 · 45s");
     expect(awaitBadge(undefined)).toBe(`1 · ${AWAIT_TIMEOUT_MS / 1000}s`);
+  });
+});
+
+describe("a path that takes the whole response", () => {
+  it("says what $ actually captures, and that nothing else will tell you", () => {
+    // The compounding part: every other wrong path produces "nothing at $.foo — {{name}} will
+    // not resolve" at run time. `$` always matches, so it is the one wrong path with no
+    // downstream warning at all. This is the only place it can be said.
+    const note = rootPathWarning("$", "campaign_info", "once")!;
+    expect(note).toContain("entire body");
+    expect(note).toMatch(/always succeeds/);
+    expect(note).toContain("$.campaignId");
+  });
+
+  it("explains the dots, which is why the blob cannot be used", () => {
+    // {{campaign_info.campaignId}} is not something interpolation can resolve — the regex has
+    // no dots — so the captured object is unreachable and pastes in whole.
+    expect(rootPathWarning("$", "campaign_info", "once")).toContain("no dots");
+  });
+
+  it("says the collection version for a step that runs more than once", () => {
+    const note = rootPathWarning("$", "campaign_info", "rows")!;
+    expect(note).toMatch(/one field containing everything/);
+    expect(note).toMatch(/walking the list/);
+  });
+
+  it("treats $. the same as $", () => {
+    expect(rootPathWarning("$.", "x", "once")).toBeDefined();
+    expect(rootPathWarning("  $  ", "x", "once")).toBeDefined();
+  });
+
+  it("leaves a recursive-descent query alone, which is a real query", () => {
+    // `$..campaignId` matches fields, not the root. Warning about it would be wrong.
+    expect(rootPathWarning("$..campaignId", "x", "once")).toBeUndefined();
+  });
+
+  it("says nothing about an ordinary path", () => {
+    expect(rootPathWarning("$.campaignId", "x", "once")).toBeUndefined();
+    expect(rootPathWarning("$.data.items[0].id", "x", "items")).toBeUndefined();
+    expect(rootPathWarning("", "x", "once")).toBeUndefined();
+  });
+
+  it("copes with an unnamed row, which is how one is added", () => {
+    // The + button adds a blank row, so the path can be typed before the name.
+    expect(rootPathWarning("$", "", "once")).toContain("this variable");
   });
 });

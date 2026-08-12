@@ -206,3 +206,37 @@ export function awaitBadge(cfg: AwaitCallbackConfig | undefined): string {
   const ms = cfg?.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : AWAIT_TIMEOUT_MS;
   return `${count} · ${Math.round(ms / 1000)}s`;
 }
+
+/**
+ * What a whole-response path actually does, said where it is typed.
+ *
+ * `$` matches the root, so the capture stores the **entire body** under one name. It is worth a
+ * warning for two reasons that compound:
+ *
+ * - **It always succeeds**, so the "nothing at $.foo — {{name}} will not resolve" warning that
+ *   catches every other wrong path can never fire for this one. A typo fails loudly; `$` fails
+ *   silently.
+ * - **Interpolation has no dots.** `{{campaign_info.campaignId}}` is not a thing that can
+ *   resolve, so the captured blob cannot be reached into. `{{campaign_info}}` on its own pastes
+ *   the whole JSON body into the URL or payload.
+ *
+ * Which is how one real flow sent a request with an entire response embedded in it, and why the
+ * fix was to name the fields instead. Returns undefined for any ordinary path.
+ */
+export function rootPathWarning(
+  path: string,
+  name: string,
+  mode: RunMode,
+): string | undefined {
+  const trimmed = path.trim();
+  // `$` and `$.` are the two ways to write "the whole thing". Not `$..foo`, which is a real
+  // recursive-descent query and matches fields rather than the root.
+  if (trimmed !== "$" && trimmed !== "$.") return undefined;
+
+  const label = name.trim() || "this variable";
+  const reach =
+    mode === "once"
+      ? `{{${label}}} would paste the whole body in, and {{${label}}}.field is not something interpolation can resolve — it has no dots.`
+      : `Each record would hold one field containing everything, and a step walking the list could not reach inside it.`;
+  return `$ matches the whole response, so ${label} holds the entire body. It also always succeeds, so nothing will warn you it was wrong. ${reach} Point the path at the field you want, like $.campaignId.`;
+}

@@ -11,6 +11,7 @@ import {
   collectionSummary,
   itemVarSuggestion,
   listName,
+  rootPathWarning,
   runModeOf,
   stripBraces,
   walkSummary,
@@ -761,8 +762,14 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                     <ColLabel>Description</ColLabel>
                     <span className="w-9" />
                   </div>
-                  {outputVars.map((v, i) => (
-                    <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] items-center gap-2">
+                  {outputVars.map((v, i) => {
+                    // Said beside the field it is about, as it is typed — a path of `$` is the
+                    // one wrong path that never produces a run-time warning, because it always
+                    // matches. There is nothing later to catch it.
+                    const rootNote = rootPathWarning(v.path, v.name, runMode);
+                    return (
+                    <div key={i}>
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] items-center gap-2">
                       <Input
                         placeholder="variableName"
                         value={v.name}
@@ -782,8 +789,15 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                         className="h-9 text-[13px]"
                       />
                       <DeleteButton onClick={() => removeOutputVar(i)} label="Remove output variable" />
+                      </div>
+                      {rootNote && (
+                        <p className="mt-1 px-0.5 text-[11px] leading-relaxed text-warning">
+                          {rootNote}
+                        </p>
+                      )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </Section>

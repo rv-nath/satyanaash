@@ -346,3 +346,54 @@ describe("walking a list an earlier step collected", () => {
     expect(field).toHaveValue("campaignId");
   });
 });
+
+describe("a whole-response output path", () => {
+  it("warns beside the row, where nothing downstream ever will", () => {
+    // `$` is the one wrong path with no run-time warning — it always matches, so the engine's
+    // "nothing at $.foo" never fires. If the panel does not say it, nothing does.
+    render(
+      <NodeConfigPanel
+        node={node({ outputVars: [{ name: "campaign_info", path: "$" }] })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/entire body/i)).toBeInTheDocument();
+    expect(screen.getByText(/always succeeds/i)).toBeInTheDocument();
+  });
+
+  it("says nothing for an ordinary path", () => {
+    render(
+      <NodeConfigPanel
+        node={node({ outputVars: [{ name: "campaignId", path: "$.campaignId" }] })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/entire body/i)).not.toBeInTheDocument();
+  });
+
+  it("appears as soon as $ is typed, not on save", async () => {
+    render(
+      <NodeConfigPanel
+        node={node({ outputVars: [{ name: "campaign_info", path: "" }] })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/entire body/i)).not.toBeInTheDocument();
+    await userEvent.type(screen.getByPlaceholderText("$.campaignId"), "$");
+    expect(screen.getByText(/entire body/i)).toBeInTheDocument();
+  });
+
+  it("warns about the record shape when the step runs per row", async () => {
+    render(
+      <NodeConfigPanel
+        node={node({
+          forEachRow: true,
+          collect: { into: "launched" },
+          outputVars: [{ name: "campaign_info", path: "$" }],
+        })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/one field containing everything/i)).toBeInTheDocument();
+  });
+});
