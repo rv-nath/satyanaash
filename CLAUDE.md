@@ -577,6 +577,16 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   `192.168.49.1`, a host on the LAN sees something else — so the server cannot know it, and a
   `HOOK_BASE` env var would be one setting that is right for one caller. **Stated limitation:** two concurrent runs sharing a path can take
   each other's callbacks; a variable in the path is the fix.
+- **While it waits it spins and counts** (`2s / 60s`). The spinner is the **corner pip** every
+  other node uses — `absolute -right-2 -top-2`, same size, same card-coloured ring — because
+  "which node is going" must not be a different gesture per node type; an inline icon in the
+  header row read as a different kind of node rather than as the same node running. Outside the
+  flex row for the reason `TestCaseNode` already records: **nothing about a run may change a
+  node's size**, or a column the author lined up comes out staggered the moment it runs. The count
+  sits in a fixed-width slot for the same reason. The counting is the part no other node does,
+  because no other node is slow enough to need it: over a minute a static ring answers neither
+  "is this alive?" nor "how much longer?". The count is also what survives
+  `prefers-reduced-motion` — the spinner stops, the number does not.
 - **It emits `node_started`**, like a request node does from inside `execute_test_case_node`. Left
   out at first, and it is the one node type where the omission is worst: the canvas pulses the node
   it is told started, so a step that sits for a minute showed nothing at all and the run read as

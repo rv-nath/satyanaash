@@ -180,6 +180,21 @@ export function walkBadge(config: NodeConfig | undefined): string | undefined {
 }
 
 /**
+ * How long a wait will actually run for.
+ *
+ * One place, because a 0 means "cleared" rather than "give up at once" — the reading the engine
+ * gives it — and three callers were each deciding that for themselves.
+ */
+export function awaitTimeoutMs(cfg: AwaitCallbackConfig | undefined): number {
+  return cfg?.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : AWAIT_TIMEOUT_MS;
+}
+
+/** How many callbacks it waits for. A 0 is a cleared field, so one. */
+export function awaitCount(cfg: AwaitCallbackConfig | undefined): number {
+  return cfg?.count && cfg.count > 0 ? cfg.count : 1;
+}
+
+/**
  * What a waiting step does, in one line under its fields.
  *
  * States the timeout in seconds because a timeout is the thing an author gets wrong — the
@@ -188,10 +203,8 @@ export function walkBadge(config: NodeConfig | undefined): string | undefined {
  */
 export function awaitSummary(cfg: AwaitCallbackConfig | undefined): string {
   const path = (cfg?.path ?? "").trim();
-  // A 0 is a cleared field, not "wait for nothing" — the same reading the engine gives it.
-  const count = cfg?.count && cfg.count > 0 ? cfg.count : 1;
-  const ms = cfg?.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : AWAIT_TIMEOUT_MS;
-  const secs = Math.round(ms / 100) / 10;
+  const count = awaitCount(cfg);
+  const secs = Math.round(awaitTimeoutMs(cfg) / 100) / 10;
 
   if (!path) {
     return "Give this step the path your test puts in its callback URL — it cannot run without one.";
@@ -202,9 +215,7 @@ export function awaitSummary(cfg: AwaitCallbackConfig | undefined): string {
 
 /** The badge a waiting node wears on the canvas: how many, and for how long. */
 export function awaitBadge(cfg: AwaitCallbackConfig | undefined): string {
-  const count = cfg?.count && cfg.count > 0 ? cfg.count : 1;
-  const ms = cfg?.timeoutMs && cfg.timeoutMs > 0 ? cfg.timeoutMs : AWAIT_TIMEOUT_MS;
-  return `${count} · ${Math.round(ms / 1000)}s`;
+  return `${awaitCount(cfg)} · ${Math.round(awaitTimeoutMs(cfg) / 1000)}s`;
 }
 
 /**
