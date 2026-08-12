@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import {
   canvasNodeName,
@@ -151,5 +153,54 @@ describe("collectedByRow", () => {
   it("is empty when nothing was collected", () => {
     expect(collectedByRow({ iterations: [row("a")] }).byRow.size).toBe(0);
     expect(collectedByRow({}).unclaimed).toEqual([]);
+  });
+});
+
+describe("the stylesheet keeps the classes this file computes", () => {
+  /**
+   * Tailwind purges rules inside an `@layer` directive whose class names it cannot find in its
+   * content scan. Every class here is built at runtime — `exec-${state}` — so none of them is a
+   * literal string anywhere it looks.
+   *
+   * `.exec-running` was stripped from the stylesheet for exactly that reason and the "running"
+   * pulse never rendered, for any node type, for as long as the rule existed. `exec-passed`,
+   * `exec-failed` and `exec-next` survived only because they appear as literal strings *in this
+   * test file*, which sits inside the content glob — so deleting these tests would have silently
+   * broken the decorations they were testing. That is the trap this guards.
+   */
+  // From the project root, because `import.meta.url` is an http URL under the jsdom
+  // environment and `readFileSync` refuses it.
+  const css = readFileSync(resolve(process.cwd(), "src/index.css"), "utf8");
+
+  /** Every node-decoration rule, with whether it sits inside an @layer block. */
+  const decorationRules = () => {
+    const out: { selector: string; layered: boolean }[] = [];
+    let depth = 0;
+    const layerDepth: number[] = [];
+    for (const line of css.split("\n")) {
+      if (/^\s*@layer\b[^;]*\{/.test(line)) layerDepth.push(depth);
+      const m = line.match(/(\.react-flow__node\.[\w-]+)/);
+      if (m) out.push({ selector: m[1], layered: layerDepth.length > 0 });
+      depth += (line.match(/\{/g) || []).length;
+      const closes = (line.match(/\}/g) || []).length;
+      for (let i = 0; i < closes; i++) {
+        depth -= 1;
+        if (layerDepth.length && depth === layerDepth[layerDepth.length - 1]) layerDepth.pop();
+      }
+    }
+    return out;
+  };
+
+  it("declares every node decoration outside @layer, where Tailwind cannot purge it", () => {
+    const layered = decorationRules().filter((r) => r.layered).map((r) => r.selector);
+    expect(layered).toEqual([]);
+  });
+
+  it("still has a rule for each state this file can return", () => {
+    // A state with no rule renders nothing at all — which is the bug, just from the other side.
+    const selectors = decorationRules().map((r) => r.selector);
+    for (const state of ["running", "next", "passed", "failed", "error", "skipped"]) {
+      expect(selectors).toContain(`.react-flow__node.exec-${state}`);
+    }
   });
 });

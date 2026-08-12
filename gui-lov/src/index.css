@@ -179,66 +179,6 @@ All colors MUST be HSL.
     max-height: 16px !important;
   }
 
-  /* Validation highlighting for nodes */
-  .react-flow__node.validation-error > div {
-    border-color: hsl(var(--destructive)) !important;
-    box-shadow: 0 0 0 2px hsl(var(--destructive) / 0.3),
-                0 0 12px hsl(var(--destructive) / 0.2) !important;
-  }
-
-  .react-flow__node.validation-warning > div {
-    border-color: hsl(var(--warning)) !important;
-    box-shadow: 0 0 0 2px hsl(var(--warning) / 0.3),
-                0 0 12px hsl(var(--warning) / 0.2) !important;
-  }
-
-  /* What a run leaves on the nodes. Deliberately after the validation rules: same
-     specificity, so source order decides, and while a run is on screen what just
-     happened outranks the standing advice. */
-  .react-flow__node.exec-running > div {
-    border-color: hsl(var(--primary)) !important;
-    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.35),
-                0 0 16px hsl(var(--primary) / 0.35) !important;
-    animation: exec-pulse 1.4s ease-in-out infinite;
-  }
-
-  /* Paused, and this is the one that will run next. Dashed because nothing has
-     happened to it yet — it is a warning shot, not a result. */
-  .react-flow__node.exec-next > div {
-    border-style: dashed !important;
-    border-color: hsl(var(--primary)) !important;
-    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.2) !important;
-  }
-
-  .react-flow__node.exec-passed > div {
-    border-color: hsl(var(--success)) !important;
-    box-shadow: 0 0 0 2px hsl(var(--success) / 0.25) !important;
-  }
-
-  .react-flow__node.exec-failed > div,
-  .react-flow__node.exec-error > div {
-    border-color: hsl(var(--destructive)) !important;
-    box-shadow: 0 0 0 2px hsl(var(--destructive) / 0.3),
-                0 0 12px hsl(var(--destructive) / 0.2) !important;
-  }
-
-  /* Skipped is not a failure — it never ran. Stepped back rather than coloured. */
-  .react-flow__node.exec-skipped > div {
-    opacity: 0.65;
-  }
-
-  @keyframes exec-pulse {
-    0%, 100% { box-shadow: 0 0 0 3px hsl(var(--primary) / 0.35),
-                           0 0 16px hsl(var(--primary) / 0.35); }
-    50%      { box-shadow: 0 0 0 5px hsl(var(--primary) / 0.18),
-                           0 0 22px hsl(var(--primary) / 0.5); }
-  }
-
-  /* A run's animation is decoration, not information — the ring colour and the badge
-     both survive without it. */
-  @media (prefers-reduced-motion: reduce) {
-    .react-flow__node.exec-running > div { animation: none; }
-  }
 
   /* A hairline scrollbar for scroll areas inside a field or cell, where the
      platform's own bar — 16px wide with stepper arrows — is wider than the
@@ -272,3 +212,79 @@ All colors MUST be HSL.
     display: none;
   }
 }
+
+/* How a run and the validator mark a node — deliberately OUTSIDE @layer.
+ *
+ * Not a style choice: Tailwind purges rules inside an `@layer` directive when it cannot find
+ * their class names in its content scan, and these names are built at runtime
+ * (`exec-${state}` in lib/executionDecor.ts). `.exec-running` appears literally nowhere, so it
+ * was stripped from the stylesheet and the "this node is running" pulse never rendered — for
+ * any node type, since whenever this was written. `exec-passed`, `exec-failed` and `exec-next`
+ * survived only by accident: they are literal strings in lib/executionDecor.test.ts, which sits
+ * inside the content glob. Deleting that test would have silently taken the rest with it.
+ *
+ * Unlayered rules are never purged and outrank layered ones, which is right for overrides of a
+ * third party's elements. Keep the exec rules *after* the validation rules: same specificity, so
+ * source order decides, and a run in progress outranks standing advice.
+ */
+/* Validation highlighting for nodes */
+.react-flow__node.validation-error > div {
+  border-color: hsl(var(--destructive)) !important;
+  box-shadow: 0 0 0 2px hsl(var(--destructive) / 0.3),
+              0 0 12px hsl(var(--destructive) / 0.2) !important;
+}
+
+.react-flow__node.validation-warning > div {
+  border-color: hsl(var(--warning)) !important;
+  box-shadow: 0 0 0 2px hsl(var(--warning) / 0.3),
+              0 0 12px hsl(var(--warning) / 0.2) !important;
+}
+
+/* What a run leaves on the nodes. Deliberately after the validation rules: same
+   specificity, so source order decides, and while a run is on screen what just
+   happened outranks the standing advice. */
+.react-flow__node.exec-running > div {
+  border-color: hsl(var(--primary)) !important;
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.35),
+              0 0 16px hsl(var(--primary) / 0.35) !important;
+  animation: exec-pulse 1.4s ease-in-out infinite;
+}
+
+/* Paused, and this is the one that will run next. Dashed because nothing has
+   happened to it yet — it is a warning shot, not a result. */
+.react-flow__node.exec-next > div {
+  border-style: dashed !important;
+  border-color: hsl(var(--primary)) !important;
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.2) !important;
+}
+
+.react-flow__node.exec-passed > div {
+  border-color: hsl(var(--success)) !important;
+  box-shadow: 0 0 0 2px hsl(var(--success) / 0.25) !important;
+}
+
+.react-flow__node.exec-failed > div,
+.react-flow__node.exec-error > div {
+  border-color: hsl(var(--destructive)) !important;
+  box-shadow: 0 0 0 2px hsl(var(--destructive) / 0.3),
+              0 0 12px hsl(var(--destructive) / 0.2) !important;
+}
+
+/* Skipped is not a failure — it never ran. Stepped back rather than coloured. */
+.react-flow__node.exec-skipped > div {
+  opacity: 0.65;
+}
+
+@keyframes exec-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px hsl(var(--primary) / 0.35),
+                         0 0 16px hsl(var(--primary) / 0.35); }
+  50%      { box-shadow: 0 0 0 5px hsl(var(--primary) / 0.18),
+                         0 0 22px hsl(var(--primary) / 0.5); }
+}
+
+/* A run's animation is decoration, not information — the ring colour and the badge
+   both survive without it. */
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__node.exec-running > div { animation: none; }
+}
+

@@ -62,6 +62,16 @@ npm run dev        # Starts on http://localhost:8080
   `validation-*` ones — same specificity, so source order decides, and a run in
   progress outranks standing advice. The mapping is `executionClassFor`
   (`lib/executionDecor.ts`), kept pure so it can be tested without a graph
+  - **Those rules must stay OUTSIDE `@layer`.** Tailwind purges rules inside an `@layer`
+    directive whose class names it cannot find in its content scan, and every one of these is
+    built at runtime (`exec-${state}`). `.exec-running` was literal nowhere, so it was stripped
+    from the stylesheet and the "this node is running" pulse never rendered — for any node type,
+    for as long as the rule existed. `exec-passed` / `exec-failed` / `exec-next` survived only
+    because they are literal strings **in `executionDecor.test.ts`**, which sits inside the
+    content glob: deleting those tests would have silently broken the decorations they test.
+    Pinned now by a test in that file which parses `index.css` and fails if any
+    `.react-flow__node.*` rule is inside a layer. A class list is not the thing to check — the
+    class was always applied correctly; the stylesheet had no rule to match it
 
 ## Key Concepts
 
