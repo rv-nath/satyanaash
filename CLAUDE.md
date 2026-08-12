@@ -28,7 +28,8 @@ Environment variables (all optional with defaults):
 ```bash
 cd gui-lov
 npm install
-npm run dev        # Starts on http://localhost:8080
+npm run dev        # Starts on http://localhost:8081 (8080 is a krakend port-forward)
+                   # PORT=9090 npm run dev, or npm run dev -- --port 9090, to move it
 ```
 
 ## Architecture

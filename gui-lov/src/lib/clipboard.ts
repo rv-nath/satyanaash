@@ -2,7 +2,7 @@
  * Copying text to the clipboard, including where the modern API isn't there.
  *
  * `navigator.clipboard` only exists in a secure context, and this app is commonly
- * opened over `http://<lan-ip>:8080` from another machine — so relying on it alone
+ * opened over `http://<lan-ip>:8081` from another machine — so relying on it alone
  * would make a copy button silently do nothing for exactly the people who need it.
  * The `execCommand` path is deprecated but still works everywhere.
  */

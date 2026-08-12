@@ -76,7 +76,7 @@ Configuration (all optional):
 ```bash
 cd gui-lov
 npm install
-npm run dev        # starts http://localhost:8080
+npm run dev        # starts http://localhost:8081
 ```
 
 Open the app, create a **Project**, and start adding test cases and flows.
