@@ -149,6 +149,25 @@ npm run dev        # Starts on http://localhost:8080
 - **Project variables** stored in `project.settings.variables`, injected as environment into execution
 - **Variable interpolation:** `{{variableName}}` in URLs, headers, payloads — resolved from execution context
 
+## Deep links
+
+`/project/:id` and `/project/:id/test/:testId` are real routes, and `?flow=` / `?tab=` restore
+canvas and sidebar state — so a link to a flow can be pasted or bookmarked.
+
+**The main pane renders from `workspace.tabs`, not from `activeFlowId`**, and that is the whole
+subtlety. `?flow=` used to restore the *selection* only, so a shared link arrived with the project
+loaded — header, sidebar, everything — and an empty workspace showing the "Build a request" welcome
+pane. It read as "deep routing is not supported" when the single missing act was opening the tab.
+`/project/:id/test/:testId` had always called `openTestTab`; nothing did the equivalent for a flow.
+
+The deep-link effect is guarded by a **ref, not by comparing against `activeFlowId`**. That guard
+looks equivalent and is not: the "select the first flow" effect runs first, so when the linked flow
+happened to *be* the first one the ids already matched and nothing opened — a link that worked or
+did not depending on list order. Once per id, so closing the tab does not make it spring back,
+while back/forward to a different `?flow=` still opens that one. A flow id that is not in the list
+is ignored rather than opened empty: flows arrive after the first render, and a stale link is
+quieter ignored.
+
 ## Variable Resolution Order (in execution)
 
 Defined by `ExecutionContext::resolve` in `api/src/execution/variables.rs`.

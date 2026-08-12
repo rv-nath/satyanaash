@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode, useCallback, useEffect, useMemo } from "react";
+import { createContext, useContext, useState, ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -447,16 +447,41 @@ export const TestProjectProvider = ({
     }
   }, [initialFlows]);
 
-  // Sync activeFlowId with URL when URL changes (e.g., from navigation)
+  /**
+   * Deep link: `?flow=<id>` selects that flow **and opens it**.
+   *
+   * Opening is the half that was missing. This used to call `setActiveFlowIdState` alone, which
+   * restores the *selection* — but the main pane renders from `workspace.tabs`, so a pasted or
+   * bookmarked link arrived with an empty workspace and showed the "Build a request" welcome
+   * pane. The project itself had loaded fine, sidebar and all, which is what made it read as
+   * "deep routing doesn't work": the only missing piece was the tab.
+   *
+   * `/project/:id/test/:testId` has always done this for a test case (see the effect in
+   * `ProjectDetail`), so this closes an asymmetry rather than adding a feature.
+   *
+   * Guarded by a ref rather than by comparing against `activeFlowId`, and that distinction
+   * matters: the earlier `!== activeFlowId` test was silently right only when the linked flow
+   * was *not* the first in the list. When it was, the "select the first flow" effect above had
+   * already set it, the ids matched, and this did nothing — the same welcome pane, for a reason
+   * that depended on list order.
+   *
+   * Once per id, so closing the tab does not make it spring back, while browser back/forward to
+   * a different `?flow=` still opens that one.
+   */
+  const deepLinkedFlowId = useRef<string | null>(null);
   useEffect(() => {
-    const urlFlowIdCurrent = searchParams.get('flow');
-    if (urlFlowIdCurrent && urlFlowIdCurrent !== activeFlowId) {
-      // Validate the flow exists before setting
-      if (flows.some(g => g.id === urlFlowIdCurrent)) {
-        setActiveFlowIdState(urlFlowIdCurrent);
-      }
-    }
-  }, [searchParams, flows, activeFlowId]);
+    const urlFlowId = searchParams.get('flow');
+    if (!urlFlowId || deepLinkedFlowId.current === urlFlowId) return;
+    // Wait for the list rather than trusting the id: flows arrive after the first render, and an
+    // id that never appears is a stale link, which is quieter to ignore than to open empty.
+    if (!flows.some(g => g.id === urlFlowId)) return;
+
+    deepLinkedFlowId.current = urlFlowId;
+    setActiveFlowIdState(urlFlowId);
+    // `openFlow` activates an already-open tab rather than duplicating it, so this is also
+    // correct for a flow the author had open before navigating.
+    openFlowTab(urlFlowId, true);
+  }, [searchParams, flows, openFlowTab]);
 
   // Get active flow's nodes, edges, and edge settings
   const activeFlow = flows.find(g => g.id === activeFlowId);
