@@ -567,6 +567,14 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   `192.168.49.1`, a host on the LAN sees something else — so the server cannot know it, and a
   `HOOK_BASE` env var would be one setting that is right for one caller. **Stated limitation:** two concurrent runs sharing a path can take
   each other's callbacks; a variable in the path is the fix.
+- **It emits `node_started`**, like a request node does from inside `execute_test_case_node`. Left
+  out at first, and it is the one node type where the omission is worst: the canvas pulses the node
+  it is told started, so a step that sits for a minute showed nothing at all and the run read as
+  hung. The console branch is its own — "▶ Waiting for a callback: <name>", not "▶ Running" (it
+  sends nothing) and not the generic "▶ Entering: awaitCallback node" (which named neither the step
+  nor why the run appeared to stop). `handleEvent` is exported so each branch can be tested against
+  a fake sink: `activeNodeId` is cleared when the stream closes, so "the node was marked active
+  while it ran" is invisible from outside the hook.
 - Dropped onto the canvas from a new **Steps** palette in the left rail, which rides the
   `application/json` `{type, data}` channel the test-case and flow drags already use — so
   `handleDrop`, `addNodeToCanvas` and the undo history took it unchanged. Double-click opens its

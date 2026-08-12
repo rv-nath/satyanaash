@@ -506,7 +506,7 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
 }
 
 /** Where the stream loop puts what it reads. */
-interface EventSink {
+export interface EventSink {
   addLog: (message: string, type: ConsoleLog['type'], details?: ConsoleLogDetail[]) => void;
   envWrites: Record<string, unknown>;
   recordResult: (nodeId: string, result: NodeResult) => void;
@@ -581,7 +581,15 @@ async function pumpStream(
 }
 
 /** Handle individual execution events */
-function handleEvent(event: ExecutionEvent, sink: EventSink) {
+/**
+ * One event, applied to whatever is collecting the run.
+ *
+ * Exported so each branch can be tested against a fake sink. Reaching it through the hook can
+ * only see what survives the *end* of the stream, and the interesting properties here are all
+ * mid-run: `activeNodeId` is deliberately cleared when the stream closes, so "the node was marked
+ * active while it ran" is invisible from outside.
+ */
+export function handleEvent(event: ExecutionEvent, sink: EventSink) {
   const { addLog, envWrites } = sink;
   switch (event.type) {
     case 'started':
@@ -594,6 +602,12 @@ function handleEvent(event: ExecutionEvent, sink: EventSink) {
       sink.setActiveNodeId(event.node_id);
       if (event.node_type === 'testCase') {
         addLog(`▶ Running: ${nodeName(event)}`, 'info');
+      } else if (event.node_type === 'awaitCallback') {
+        // "Waiting", not "Running", and named rather than described by its type. This step can
+        // sit for a minute doing nothing observable, so the line has to say that is expected —
+        // "▶ Entering: awaitCallback node" told the author neither which step nor why the run
+        // had apparently stopped.
+        addLog(`▶ Waiting for a callback: ${nodeName(event)}`, 'info');
       } else if (event.node_type !== 'start' && event.node_type !== 'end') {
         addLog(`▶ Entering: ${event.node_type} node`, 'info');
       }

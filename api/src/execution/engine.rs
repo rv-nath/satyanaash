@@ -1900,6 +1900,24 @@ impl ExecutionEngine {
             };
         }
 
+        // Announce the step before waiting, which `execute_test_case_node` does at its own top
+        // and this did not. Without it the canvas never learns the step began: no pulse on the
+        // node, and no "▶ …" line in the console. That gap matters more here than anywhere else,
+        // because this is the only step that can sit for a minute — and a minute of a canvas
+        // showing nothing reads as a hung run rather than a wait.
+        if let Some(tx) = event_tx {
+            let _ = tx
+                .send(ExecutionEvent::NodeStarted {
+                    node_id: node.id.clone(),
+                    node_type: "awaitCallback".to_string(),
+                    node_label: node_label.clone(),
+                    // No test case behind a control node, so the name is the step's own.
+                    test_case_id: None,
+                    test_case_name: Some(AWAIT_STEP_NAME.to_string()),
+                })
+                .await;
+        }
+
         let cfg = await_config(node);
         if cfg.path.is_empty() {
             done!(
@@ -7718,6 +7736,50 @@ mod tests {
             live.results[0].response.as_ref().unwrap().json.as_ref().unwrap()["status"],
             serde_json::json!("DELIVERED")
         );
+    }
+
+    #[tokio::test]
+    async fn a_wait_announces_itself_before_it_starts_waiting() {
+        // The canvas pulses the node it is told started, and the console prints one line from the
+        // same event. Emitting nothing left a 60-second step invisible: no pulse, no line, and a
+        // run that looked hung. Asserted *before* the wait finishes, because "it announced itself
+        // eventually" is not the property — the author needs it at the start.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let node = make_node(
+            "w1",
+            "awaitCallback",
+            serde_json::json!({
+                "alias": "Chk drCallback fires",
+                "config": { "awaitCallback": { "path": "dr/announce", "timeoutMs": 150 } }
+            }),
+        );
+
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(8);
+        let waiting = tokio::spawn(async move {
+            engine
+                .execute_await_node(&node, &mut ctx, &Some(tx), chrono::Utc::now())
+                .await
+        });
+
+        let first = rx.recv().await.expect("a started event, before any result");
+        match first {
+            ExecutionEvent::NodeStarted { node_id, node_type, node_label, test_case_id, .. } => {
+                assert_eq!(node_id, "w1");
+                // The canvas keys its decoration off the id, but the console branches on the
+                // type — "testCase" here would print "▶ Running" for something that sends
+                // nothing, and no type at all prints the node's type as prose.
+                assert_eq!(node_type, "awaitCallback");
+                assert_eq!(node_label.as_deref(), Some("Chk drCallback fires"));
+                // No test case behind a control node.
+                assert!(test_case_id.is_none());
+            }
+            other => panic!("expected NodeStarted first, got {:?}", other),
+        }
+
+        let result = waiting.await.unwrap();
+        assert_eq!(result.status, NodeStatus::Failed, "it still timed out, as arranged");
     }
 
     #[tokio::test]
