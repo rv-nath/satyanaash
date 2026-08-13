@@ -397,3 +397,44 @@ describe("a whole-response output path", () => {
     expect(screen.getByText(/one field containing everything/i)).toBeInTheDocument();
   });
 });
+
+describe("adding an output variable", () => {
+  /** The Output variables section alone — Input variables has its own Add. */
+  const outputSection = () =>
+    screen.getByRole("heading", { name: "Output variables" }).closest("section") as HTMLElement;
+
+  const addersIn = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll("button")).filter((b) =>
+      /take a value|^\s*add\s*$/i.test(b.textContent || ""),
+    );
+
+  it("offers exactly one way to add the first one", () => {
+    // Both buttons called the same function, and the dashed one sits *inside* this section — so an
+    // author asked which of the two fills the collection. "Either" is the answer to a question the
+    // panel should not have raised.
+    render(<NodeConfigPanel node={node({})} onClose={vi.fn()} />);
+    const adders = addersIn(outputSection());
+    expect(adders).toHaveLength(1);
+    expect(adders[0].textContent).toMatch(/take a value/i);
+  });
+
+  it("moves the button to the header once a field exists", () => {
+    // The dashed row is a call to action for an empty list; with rows below it, the header is where
+    // the eye already is.
+    render(
+      <NodeConfigPanel
+        node={node({ outputVars: [{ name: "campaignId", path: "$.campaignId" }] })}
+        onClose={vi.fn()}
+      />,
+    );
+    const adders = addersIn(outputSection());
+    expect(adders).toHaveLength(1);
+    expect(adders[0].textContent).toMatch(/^\s*Add\s*$/);
+  });
+
+  it("the one button adds a row", async () => {
+    render(<NodeConfigPanel node={node({})} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByText(/take a value/i));
+    expect(screen.getByPlaceholderText("$.campaignId")).toBeInTheDocument();
+  });
+});

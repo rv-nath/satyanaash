@@ -465,6 +465,13 @@ context clones that were dropped at the end of each iteration.
   - The run-time message names **both** causes now. It used to say only "the step that collects it
     must run before this one", and the flow that hit this had the step running, upstream — so being
     told about ordering sent the author to look at the graph instead of at the node.
+  - **One add affordance at a time.** The Output variables section had two `+` buttons — the
+    header's "Add" and the dashed "Take a value from every response" — both calling
+    `addOutputVar`, and an author asked which of them fills the collection. "Either" is the answer
+    to a question the panel should not have raised: two buttons inside one section read as two
+    features. The header's is suppressed while the list is empty, so the dashed row is the only way
+    in; once a row exists the dashed row is gone and the header's is the only way. Pinned in both
+    directions, because hiding the header one unconditionally would leave no way to add a second.
   - `collectionSummary` states the **present** before the payoff: "Nothing is collected yet —
     "launched" will not exist until you add a field below." The old wording described only the
     future ("Add a field below, and each run will add one record"), so a step in exactly this state

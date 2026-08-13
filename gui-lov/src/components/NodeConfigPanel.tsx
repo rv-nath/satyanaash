@@ -687,7 +687,12 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                   ? "Pulled from the response by JSONPath, for the steps after this one"
                   : "Pulled from every response by JSONPath — one record per run, so a run's values stay together"
               }
-              onAdd={addOutputVar}
+              // Suppressed while the list is empty, because the dashed row below is the same
+              // action — and two `+` buttons inside one section read as two features. An author
+              // asked which of them fills the collection; the answer was "either", which is the
+              // answer to a question the panel should not have raised. Exactly one affordance at
+              // any moment: the dashed row when there is nothing yet, this when there is.
+              onAdd={outputVars.length === 0 ? undefined : addOutputVar}
             >
               {/* A step that runs more than once needs somewhere to put what each run
                   produced, and the author names it. Two parallel arrays — campaignIds and
