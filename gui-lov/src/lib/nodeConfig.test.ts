@@ -104,18 +104,23 @@ describe("what a step carries forward", () => {
     expect(collectionSummary("", fields)).toContain("need a list to be collected into");
   });
 
-  it("points at where a field is added, and says what it buys", () => {
-    // Not "has no fields yet": that repeated the empty row underneath it word for word, and
-    // between the two of them neither said where the Add button was.
+  it("says nothing is collected yet, points at where a field is added, and says what it buys", () => {
+    // All three, because dropping any one of them has cost something. Without "below" it repeated
+    // the empty row underneath word for word and neither said where the Add button was. Without
+    // the present tense it described only the future, so a step with "Collect into" and no fields
+    // read as configured — one real flow ran that way, collected nothing, and failed two steps
+    // later with "No variable named launched".
     const line = collectionSummary("launched", []);
+    expect(line).toMatch(/Nothing is collected yet/i);
+    expect(line).toMatch(/will not exist/i);
     expect(line).toContain("below");
     expect(line).toContain("one record");
     expect(line).toContain("launched");
   });
 
   it("ignores half-filled rows when listing the fields", () => {
-    expect(collectionSummary("launched", [{ name: "  ", path: "$.x" }])).toContain(
-      "Add a field below",
+    expect(collectionSummary("launched", [{ name: "  ", path: "$.x" }])).toMatch(
+      /add a field below/i,
     );
   });
 

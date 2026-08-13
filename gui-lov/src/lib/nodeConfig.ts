@@ -152,10 +152,12 @@ export function collectionSummary(
     return `${named.join(", ")} need a list to be collected into — name one above, or nothing is carried forward.`;
   }
   if (named.length === 0) {
-    // Points *down*, at the button in the empty row below, and states the payoff rather than
-    // repeating the instruction the empty row is already giving. Two messages saying the same
-    // thing in different words, one above the other, is how "add a field" became a puzzle.
-    return `Add a field below, and each run will add one record to "${list}".`;
+    // States the *present* first, then the payoff. The old wording — "Add a field below, and each
+    // run will add one record" — described only the future, so a step in exactly this state read as
+    // configured: one real flow ran with "Collect into: launched" and no fields, collected nothing,
+    // and failed two steps later with "No variable named launched". Points *down*, at the button in
+    // the empty row below, rather than repeating the instruction that row already gives.
+    return `Nothing is collected yet — "${list}" will not exist until you add a field below. Each run then adds one record to it.`;
   }
   return `Each run adds one record to "${list}"${only}, holding ${named.join(", ")}. A later step can run once per record.`;
 }

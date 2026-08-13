@@ -265,6 +265,8 @@ impl<'a> GraphValidator<'a> {
         }
         // Cross-node, so it cannot live in `await_errors`: two waits on one inbox.
         warnings.extend(await_path_clashes(&graph.nodes));
+        // Also cross-node: a step walking a list that another step promises and never fills.
+        errors.extend(unfillable_lists(&graph.nodes));
 
         // 7. Check group node flow references
         let referenced_flow_ids: Vec<String> = graph.nodes.iter()
@@ -535,6 +537,88 @@ fn for_each_issues(node: &GraphNode) -> Vec<ValidationIssue> {
         ));
     }
 
+    issues
+}
+
+/// A step walks a list that another step names but can never fill.
+///
+/// `FANOUT_COLLECTION_EMPTY` already warns on the *producer*: "Collect into" set with no output
+/// variables collects nothing, because there are no fields to put in a record. On its own that is
+/// only wasteful — nothing consumes the list, nothing breaks.
+///
+/// The moment a step in the same flow *walks* that name it stops being a warning and becomes
+/// provable: the list will never exist, so the consuming step fails every run. And it fails
+/// pointing at itself — "No variable named launched" — while the fix is on a different node, which
+/// is a bad afternoon. A real flow hit exactly this: nineteen rows sent, a waiter set to run once
+/// per record, and one amber warning on the producer lost among eight others.
+///
+/// Reported on **both** nodes: the consumer is where the failure appears, the producer is where the
+/// fix goes, and an author looking at either should be told.
+fn unfillable_lists(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
+    use std::collections::HashMap;
+
+    let cfg_of = |node: &GraphNode| node.data.get("config").cloned().unwrap_or(serde_json::Value::Null);
+    let name = |value: &serde_json::Value| {
+        value
+            .as_str()
+            .map(|s| s.trim().trim_start_matches("{{").trim_end_matches("}}").trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    // Lists a step promises but collects nothing into.
+    let mut hollow: HashMap<String, &GraphNode> = HashMap::new();
+    for node in nodes {
+        let cfg = cfg_of(node);
+        let Some(into) = cfg.get("collect").and_then(|c| c.get("into")).and_then(name) else {
+            continue;
+        };
+        let fields = cfg
+            .get("outputVars")
+            .and_then(|v| v.as_array())
+            .map(|rows| {
+                rows.iter().any(|row| {
+                    let text = |key: &str| row.get(key).and_then(|v| v.as_str()).unwrap_or("").trim();
+                    !text("name").is_empty() && !text("path").is_empty()
+                })
+            })
+            .unwrap_or(false);
+        if !fields {
+            hollow.insert(into, node);
+        }
+    }
+    if hollow.is_empty() {
+        return Vec::new();
+    }
+
+    let mut issues = Vec::new();
+    for node in nodes {
+        let cfg = cfg_of(node);
+        let Some(list) = cfg.get("forEach").and_then(|c| c.get("list")).and_then(name) else {
+            continue;
+        };
+        let Some(producer) = hollow.get(&list) else { continue };
+
+        issues.push(ValidationIssue::error_with_node(
+            "LIST_NEVER_FILLED",
+            format!(
+                "This step runs once per item of \"{}\", but the step collecting into that name \
+                 has no output variables — so \"{}\" is never created and this step cannot run. \
+                 Add the field(s) you want from each response to that step",
+                list, list
+            ),
+            &node.id,
+        ));
+        // And on the producer, which is where the fix goes.
+        issues.push(ValidationIssue::error_with_node(
+            "LIST_NEVER_FILLED",
+            format!(
+                "\"{}\" is collected here but has no fields, and a later step runs once per item \
+                 of it — add output variable(s) naming what to take from each response",
+                list
+            ),
+            &producer.id,
+        ));
+    }
     issues
 }
 
@@ -1334,6 +1418,136 @@ mod tests {
             ..waiter("w1", "dr/x")
         };
         assert!(await_errors(&node).is_empty());
+    }
+
+
+    /// A step that collects into `into`, with or without a field to collect.
+    fn collector(id: &str, into: &str, with_field: bool) -> GraphNode {
+        let vars = if with_field {
+            serde_json::json!([{ "name": "campaignId", "path": "$.campaignId" }])
+        } else {
+            serde_json::json!([])
+        };
+        GraphNode {
+            id: id.to_string(),
+            node_type: "testCase".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({
+                "config": { "forEachRow": true, "collect": { "into": into }, "outputVars": vars }
+            }),
+            width: None,
+            height: None,
+        }
+    }
+
+    /// A step that walks `list` — a wait, or a request; the rule does not care which.
+    fn walker(id: &str, node_type: &str, list: &str) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: node_type.to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({
+                "config": { "awaitCallback": { "path": "dr/x" }, "forEach": { "list": list } }
+            }),
+            width: None,
+            height: None,
+        }
+    }
+
+    #[test]
+    fn walking_a_list_nothing_fills_is_an_error_on_both_nodes() {
+        // The real failure: "Collect into: launched" with no output variables, and a waiter set to
+        // run once per record. The list is never created, so the waiter fails every run — pointing
+        // at itself, while the fix is on the other node.
+        let issues = unfillable_lists(&[
+            collector("send", "launched", false),
+            walker("wait", "awaitCallback", "launched"),
+        ]);
+        assert_eq!(codes(issues.clone()), vec!["LIST_NEVER_FILLED", "LIST_NEVER_FILLED"]);
+        let marked: std::collections::HashSet<_> =
+            issues.iter().filter_map(|i| i.node_id.clone()).collect();
+        assert_eq!(marked.len(), 2, "the consumer and the producer");
+        assert!(marked.contains("send") && marked.contains("wait"));
+        assert!(issues.iter().all(|i| i.severity == "error"));
+    }
+
+    #[test]
+    fn a_collection_with_a_field_is_fine() {
+        assert!(unfillable_lists(&[
+            collector("send", "launched", true),
+            walker("wait", "awaitCallback", "launched"),
+        ])
+        .is_empty());
+    }
+
+    #[test]
+    fn a_field_with_a_name_and_no_path_does_not_count_as_filling_it() {
+        // A half-typed row collects nothing, and the engine warns about it separately — so it must
+        // not silence this.
+        let mut node = collector("send", "launched", false);
+        node.data = serde_json::json!({
+            "config": {
+                "forEachRow": true,
+                "collect": { "into": "launched" },
+                "outputVars": [{ "name": "campaignId", "path": "" }]
+            }
+        });
+        assert_eq!(
+            codes(unfillable_lists(&[node, walker("wait", "awaitCallback", "launched")])).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn an_empty_collection_nobody_walks_stays_a_warning() {
+        // On its own it is only wasteful — FANOUT_COLLECTION_EMPTY's job. It becomes provable only
+        // when something consumes the list.
+        assert!(unfillable_lists(&[collector("send", "launched", false)]).is_empty());
+    }
+
+    #[test]
+    fn a_walker_over_a_list_no_step_declares_is_left_alone() {
+        // Could be a project variable or a script. Only run time knows, which is why the panel
+        // says it as a doubt and the validator says nothing at all.
+        assert!(unfillable_lists(&[walker("wait", "awaitCallback", "from_a_script")]).is_empty());
+    }
+
+    #[test]
+    fn braces_are_forgiven_on_both_ends() {
+        let mut producer = collector("send", "launched", false);
+        producer.data = serde_json::json!({
+            "config": { "collect": { "into": "{{launched}}" }, "outputVars": [] }
+        });
+        assert_eq!(
+            unfillable_lists(&[producer, walker("wait", "awaitCallback", "{{launched}}")]).len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn the_validator_reports_a_list_nothing_fills() {
+        let repos = NoRepos;
+        let validator = GraphValidator::new(&repos, &repos);
+        let flow = flow_of(
+            vec![
+                plain("start", "start"),
+                collector("send", "launched", false),
+                walker("wait", "awaitCallback", "launched"),
+                plain("end", "end"),
+            ],
+            vec![
+                edge("e1", "start", "send"),
+                edge("e2", "send", "wait"),
+                edge("e3", "wait", "end"),
+            ],
+        );
+        let result = validator.validate(&flow).await.unwrap();
+        assert!(
+            result.errors.iter().any(|e| e.code == "LIST_NEVER_FILLED"),
+            "{:?}",
+            result.errors
+        );
+        assert!(!result.valid, "it cannot run, so the flow is not valid");
     }
 
 }

@@ -464,7 +464,14 @@ fn plan_items(
 
     let Some(value) = ctx.resolve(&spec.list) else {
         return RowPlan::NothingSelected(format!(
-            "No variable named \"{}\" — the step that collects it must run before this one",
+            // Two causes, one symptom. The first version named only the ordering, and a real flow
+            // hit the *other* one: the collecting step ran, upstream, and collected nothing —
+            // because it had "Collect into" set and no output variables, so there were no fields
+            // to put in a record. Being told the step "must run before this one" about a step
+            // that plainly did sends an author looking at the graph instead of at the node.
+            "No variable named \"{}\" — either no earlier step collects into that name, or one \
+             does but produced no records (a step with \"Collect into\" and no output variables \
+             collects nothing)",
             spec.list
         ));
     };
@@ -6740,7 +6747,9 @@ mod tests {
         assert_eq!(node.status, NodeStatus::Failed);
         let msg = node.error_message.unwrap_or_default();
         assert!(msg.contains("launched"), "{msg}");
-        assert!(msg.contains("must run before this one"), "{msg}");
+        // Both causes named, because the symptom is one and the fixes are different places.
+        assert!(msg.contains("no earlier step collects"), "{msg}");
+        assert!(msg.contains("no output variables"), "{msg}");
     }
 
     #[tokio::test]

@@ -445,6 +445,24 @@ context clones that were dropped at the end of each iteration.
   screen says "2/2 rows passed" about a step with no rows. Stored, not derived from the
   flow's current config — a flow can be edited after a run, and history must not be
   re-labelled by today's configuration. Frontend reads it through `iterationNoun`.
+- **`LIST_NEVER_FILLED` is `FANOUT_COLLECTION_EMPTY` promoted once something consumes the list.**
+  "Collect into" with no output variables collects nothing — there are no fields to put in a
+  record — and on its own that is only wasteful, so it stays a warning. The moment a step in the
+  same flow *walks* that name it becomes provable: the list is never created, so the consuming step
+  fails every run, and it fails **pointing at itself** ("No variable named launched") while the fix
+  is on a different node. Reported as an **error on both nodes**: the consumer is where the failure
+  appears, the producer is where the fix goes. A real flow hit exactly this — nineteen rows sent, a
+  waiter set to run once per record, `outputVars: []`, and one amber warning lost among eight
+  `NO_FAILURE_EDGE`s with `valid: true`. A half-typed field row (a name with no path) does not count
+  as filling it. A walked list that *no* step declares is left alone, because a project variable or a
+  script can hold one.
+  - The run-time message names **both** causes now. It used to say only "the step that collects it
+    must run before this one", and the flow that hit this had the step running, upstream — so being
+    told about ordering sent the author to look at the graph instead of at the node.
+  - `collectionSummary` states the **present** before the payoff: "Nothing is collected yet —
+    "launched" will not exist until you add a field below." The old wording described only the
+    future ("Add a field below, and each run will add one record"), so a step in exactly this state
+    read as configured.
 - Warnings: `FANOUT_COLLECTION_UNNAMED`, `FANOUT_COLLECTION_EMPTY`; errors
   `FOREACH_WITHOUT_LIST`, `FOREACH_AND_FANOUT`. `FANOUT_DISCARDS_OUTPUT_VARS` is **gone** —
   it described the opposite of what now happens. Whether the *list* exists is deliberately
