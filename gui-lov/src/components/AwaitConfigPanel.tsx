@@ -205,8 +205,22 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                   something arrives for it.
                 </p>
                 <p>
-                  So if the payload sends <code>{"{{hook_base}}/dr/{{dr_path}}"}</code>, this field
-                  is <code>{"dr/{{dr_path}}"}</code>. Use one variable in both and they cannot drift.
+                  <strong>The same path is written twice</strong> — once in the callback URL you
+                  send, and once here — so hold it in one variable and use that variable in both
+                  places. Change it once and both follow; hardcode it twice and one day they will
+                  not match, and this step waits on an inbox nothing is writing to.
+                </p>
+                <div className="rounded border border-border bg-muted/40 p-2 font-mono text-[11px]">
+                  <div className="text-muted-foreground/70">a pre-test script, or a dataset column</div>
+                  <div>{'SAT.vars.dr_path = "dr/" + uuid();'}</div>
+                  <div className="mt-1.5 text-muted-foreground/70">in the payload you send</div>
+                  <div>{'"drCallback": "{{hook_base}}/{{dr_path}}"'}</div>
+                  <div className="mt-1.5 text-muted-foreground/70">in this field</div>
+                  <div>{"{{dr_path}}"}</div>
+                </div>
+                <p>
+                  Whether the <code>dr/</code> lives inside the variable or is typed in both places
+                  is up to you — what matters is that the part that <em>varies</em> is written once.
                 </p>
                 <p>
                   <code>hook_base</code> is your own project variable holding the address that

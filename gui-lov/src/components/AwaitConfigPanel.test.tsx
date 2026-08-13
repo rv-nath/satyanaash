@@ -212,6 +212,18 @@ describe("configuring a wait", () => {
     expect(await screen.findByText(/is not the number of messages you sent/i)).toBeInTheDocument();
   });
 
+  it("shows the two places the path is written, not just describes them", async () => {
+    // "Use one variable in both" was read as a puzzle: both *what*? The two places are the callback
+    // URL you send and this field, and showing them beside each other says it without the reader
+    // having to reconstruct it.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "About Which inbox to watch" }));
+
+    expect(await screen.findByText(/in the payload you send/i)).toBeInTheDocument();
+    expect(screen.getByText(/in this field/i)).toBeInTheDocument();
+    expect(screen.getByText(/The same path is written twice/i)).toBeInTheDocument();
+  });
+
   it("shows the /hooks/ prefix, so the field reads as a tail", () => {
     // A bare box labelled "path" gave no clue what it was the tail of.
     render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
