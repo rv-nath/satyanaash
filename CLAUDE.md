@@ -559,7 +559,42 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   `closed()`.
 - `AWAIT_WITHOUT_PATH` is a validation **error**, so a wait with no path is reported before the run
   rather than sixty seconds into one. A flow of only await nodes is not `EMPTY_FLOW`.
-- `AWAIT_PATH_SHARED` warns when two steps wait on one inbox. **A wait filters the inbox, it does
+- **`match` says which callback is this wait's own, and it is what makes several messages in
+  flight testable.** Without it a wait takes the first `count` to arrive, which is fine for one
+  message and the wrong question for five: the reports share an inbox and arrive in whatever order
+  the network gives them, so "the next one" is not "mine". The correlation id goes in the callback
+  URL's **query string** — `?cTxnId={{cTxnId}}` — and comes back verbatim, because the URL was
+  ours to hand out; that needs nothing from the sender's payload contract. Matched with an
+  ordinary interpolated expression (`response.query.cTxnId == "{{cTxnId}}"`), so one authored node
+  serves every message.
+  - `response.query` is **parsed** into a map for scripts (`parse_query` in `assertions.rs`, with
+    a hand-rolled percent-decoder because this crate has no URL dependency), so a check reads a
+    field instead of doing string surgery in Rhai. `()` for an ordinary HTTP response, which has
+    no query — the same as a missing JSON key. The body is the fallback when a sender rebuilds the
+    URL and drops the query: `response.json.clientTxnId == "{{cTxnId}}"`, identical machinery.
+  - A **broken** match stops the step at once rather than being read as a non-match. Every
+    candidate fails it identically, so waiting out the budget would only delay a report about a
+    typo — and report it as "no callback arrived", which is a lie about the sender. Same refusal
+    `until` and `collect.when` already make.
+  - The timeout message distinguishes **"nothing came"** from **"nothing that was mine came"**
+    (`N arrived on that path but none matched`). One message for both would send an author to
+    look at the sender when the real fault is a correlation id that did not survive the round trip.
+- **`forEach` on a wait runs one wait per expected report**, which is what turns "3 callbacks
+  arrived" into "the 100-recipient message's report said FAILED". Each iteration gets a clone of
+  the context carrying that item's fields, so the path and the match interpolate to *its* values,
+  and each has its own verdict and its own `_row` label. Reported through the dataset's machinery
+  — one aggregate whose `iterations` holds the per-item results, `iterations_of: "callback"` — so
+  the console, run history and every renderer needed no teaching. `plan_items` now takes the
+  **templates** a step interpolates rather than a `TestCase`, because a step that walks a list need
+  not be a request at all; for a wait those are its path and its match, so "this item cannot fill
+  it" means exactly that and an item with no correlation id is dropped by name rather than waiting
+  out a full budget. The timeout is **per wait**, not shared: three missing reports cost three
+  timeouts, the same rule polling follows — one budget across the set would make the last item's
+  verdict depend on how slow the earlier ones were.
+- `AWAIT_PATH_SHARED` warns when two steps wait on one inbox — **unless every one of them has a
+  `match`**, which is the author saying which callback is theirs and therefore the answer to
+  sharing an inbox rather than a symptom of one. Half-correlated is still a clash: the unmatched
+  wait takes whatever arrives first, including the report the other was going to claim. **A wait filters the inbox, it does
   not consume from it** — nothing is removed or marked when one is satisfied — so two steps with a
   count of 1 each do not take one callback apiece: the second re-reads the same inbox and the same
   callback satisfies it at once. Both go green and the author believes they waited for two. A

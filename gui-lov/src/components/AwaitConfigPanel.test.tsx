@@ -96,6 +96,77 @@ describe("configuring a wait", () => {
     ]);
   });
 
+  it("omits the match when blank, rather than storing an empty condition", async () => {
+    // A dormant condition would read as one in force.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateNodeConfig.mock.calls[0][1].awaitCallback).not.toHaveProperty("match");
+  });
+
+  it("keeps the correlation match when one is written", async () => {
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    // Pasted, not typed: `{{` is userEvent's own escape syntax.
+    await userEvent.click(screen.getByLabelText("Which callback is mine"));
+    await userEvent.paste('response.query.cTxnId == "{{cTxnId}}"');
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateNodeConfig.mock.calls[0][1].awaitCallback.match).toBe(
+      'response.query.cTxnId == "{{cTxnId}}"',
+    );
+  });
+
+  it("shows an existing match", () => {
+    render(
+      <AwaitConfigPanel
+        node={node({ awaitCallback: { path: "dr/x", match: "response.query.id == \"7\"" } })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Which callback is mine")).toHaveValue(
+      'response.query.id == "7"',
+    );
+  });
+
+  it("writes forEach only when set to run per item", async () => {
+    // A dormant `forEach` would read, to the engine and to the next author, as a step that walks
+    // a list — the same rule the request node's run mode follows.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateNodeConfig.mock.calls[0][1]).not.toHaveProperty("forEach");
+  });
+
+  it("walks a collected list, one wait per item", async () => {
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
+    await userEvent.type(screen.getByLabelText("List to walk"), "sent");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateNodeConfig.mock.calls[0][1].forEach).toEqual({ list: "sent" });
+  });
+
+  it("forgives braces on the list name, as the engine does", async () => {
+    // Everyone writes {{sent}}, because that is how a variable is written everywhere else.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
+    await userEvent.click(screen.getByLabelText("List to walk"));
+    await userEvent.paste("{{sent}}");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateNodeConfig.mock.calls[0][1].forEach).toEqual({ list: "sent" });
+  });
+
+  it("opens showing the list it already walks", () => {
+    render(
+      <AwaitConfigPanel
+        node={node({ awaitCallback: { path: "dr/x" }, forEach: { list: "sent" } })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("List to walk")).toHaveValue("sent");
+  });
+
+  it("hides the list box when it runs once", () => {
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.queryByLabelText("List to walk")).not.toBeInTheDocument();
+  });
+
   it("says the step cannot run while it has no path", () => {
     render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
     expect(screen.getByText(/cannot run without one/i)).toBeInTheDocument();

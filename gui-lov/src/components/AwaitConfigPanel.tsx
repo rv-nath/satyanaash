@@ -3,11 +3,14 @@ import { Node } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Hourglass, Plus, Trash2 } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import {
   AWAIT_TIMEOUT_MS,
   awaitSummary,
+  listName,
+  stripBraces,
   type NodeConfig,
   type OutputVariable,
 } from "@/lib/nodeConfig";
@@ -35,6 +38,10 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
   const [path, setPath] = useState("");
   const [count, setCount] = useState("1");
   const [timeoutSec, setTimeoutSec] = useState(toSeconds(AWAIT_TIMEOUT_MS));
+  /** Once, or once per item in a list. A wait has no body to vary, so there is no "per row". */
+  const [perItem, setPerItem] = useState(false);
+  const [forEachList, setForEachList] = useState("");
+  const [matchExpr, setMatchExpr] = useState("");
   const [check, setCheck] = useState("");
   const [outputVars, setOutputVars] = useState<OutputVariable[]>([]);
 
@@ -47,6 +54,9 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
     // than as a 0 the author never typed.
     setCount(String(wait.count && wait.count > 0 ? wait.count : 1));
     setTimeoutSec(toSeconds(wait.timeoutMs && wait.timeoutMs > 0 ? wait.timeoutMs : AWAIT_TIMEOUT_MS));
+    setPerItem(!!listName(config.forEach));
+    setForEachList(listName(config.forEach));
+    setMatchExpr(wait.match || "");
     setCheck(config.check || "");
     setOutputVars(config.outputVars || []);
   }, [node]);
@@ -58,9 +68,21 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
     updateNodeConfig(
       node.id,
       {
-        awaitCallback: { path: path.trim(), count: wantedCount, timeoutMs: wantedMs },
+        awaitCallback: {
+          path: path.trim(),
+          count: wantedCount,
+          timeoutMs: wantedMs,
+          // Omitted when blank, like every other optional key here: a dormant condition reads as
+          // one in force.
+          ...(matchExpr.trim() ? { match: matchExpr.trim() } : {}),
+        },
         check,
         outputVars,
+        // Written only for the mode it belongs to, so switching back to "once" leaves no dormant
+        // block behind — the same rule the request node's `forEach` and `poll` follow.
+        ...(perItem && forEachList.trim()
+          ? { forEach: { list: stripBraces(forEachList) } }
+          : {}),
       },
       alias,
     );
@@ -99,6 +121,42 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               placeholder="Await callback"
               className="h-9 text-[13px]"
             />
+          </Labelled>
+
+          <Labelled
+            label="Runs"
+            htmlFor="await-runs"
+            help={
+              perItem
+                ? "One wait per item, each with its own verdict — so a report that never came is named by the message that asked for it. Give each one a match below, or they all take the first callback that arrives."
+                : "One wait for this step. Right when a flow has a single message in flight."
+            }
+          >
+            <div className="space-y-2">
+              <ToggleGroup
+                id="await-runs"
+                type="single"
+                value={perItem ? "items" : "once"}
+                onValueChange={(v) => v && setPerItem(v === "items")}
+                className="justify-start"
+              >
+                <ToggleGroupItem value="once" className="h-8 px-3 text-[12px]">
+                  Once
+                </ToggleGroupItem>
+                <ToggleGroupItem value="items" className="h-8 px-3 text-[12px]">
+                  Once per item in a list
+                </ToggleGroupItem>
+              </ToggleGroup>
+              {perItem && (
+                <Input
+                  aria-label="List to walk"
+                  value={forEachList}
+                  onChange={(e) => setForEachList(e.target.value)}
+                  placeholder="sent — a list an earlier step collected"
+                  className="h-9 font-mono text-[13px]"
+                />
+              )}
+            </div>
           </Labelled>
 
           <Labelled
@@ -154,6 +212,24 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
           <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
             {awaitSummary({ path, count: wantedCount, timeoutMs: wantedMs })}
           </p>
+
+          <Labelled
+            label="Which callback is mine"
+            htmlFor="await-match"
+            help={
+              "Optional. Leave blank when only one message is in flight. With several, put a " +
+              "correlation id in the callback URL's query — ?cTxnId={{cTxnId}} — and match on it " +
+              "here, so each wait picks out its own report however they arrive."
+            }
+          >
+            <Input
+              id="await-match"
+              value={matchExpr}
+              onChange={(e) => setMatchExpr(e.target.value)}
+              placeholder='response.query.cTxnId == "{{cTxnId}}"'
+              className="h-9 font-mono text-[13px]"
+            />
+          </Labelled>
 
           <Labelled
             label="Expect"

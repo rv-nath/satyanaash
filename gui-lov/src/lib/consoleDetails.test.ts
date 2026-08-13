@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   fanOutDetails,
   pretty,
+  iterationNoun,
   resultDetails,
   resultHeadline,
   rowsSummary,
@@ -337,5 +338,22 @@ describe("a step that waited for a callback", () => {
     expect(labels).toContain("Status");
     expect(labels).toContain("Response");
     expect(labels).not.toContain("Callback received");
+  });
+});
+
+describe("what a step's iterations are called", () => {
+  it("calls a wait's iterations callbacks", () => {
+    // A wait has no data rows, so "3/3 rows passed" is a small lie in the one place an author
+    // looks to find out what ran.
+    expect(iterationNoun({ iterations_of: "callback" } as never)).toEqual({
+      one: "callback",
+      many: "callbacks",
+      One: "Callback",
+    });
+  });
+
+  it("still says items for a step walking a list, and rows for a dataset", () => {
+    expect(iterationNoun({ iterations_of: "item" } as never).many).toBe("items");
+    expect(iterationNoun({} as never).many).toBe("rows");
   });
 });

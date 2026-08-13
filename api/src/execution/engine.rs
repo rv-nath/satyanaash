@@ -315,6 +315,15 @@ struct AwaitConfig {
     /// How many callbacks to wait for. A campaign to two recipients reports twice.
     count: usize,
     timeout_ms: u64,
+    /// Which callback on that path is *this* wait's, when several tests share the inbox.
+    ///
+    /// Absent means the first `count` to arrive, whatever they are — fine for a flow that sends
+    /// one message. With several in flight it is the wrong question: the reports all land in the
+    /// same inbox and arrive in whatever order the network gives them, so "the next one" is not
+    /// "mine". A correlation id carried in the callback URL's query string comes back verbatim
+    /// (`response.query.cTxnId == "{{cTxnId}}"`), because the URL was ours to hand out — which
+    /// needs nothing from the sender's payload contract.
+    matcher: Option<String>,
 }
 
 /// Read straight from the node, with defaults, so a node saved with no config at all still has
@@ -341,6 +350,7 @@ fn await_config(node: &GraphNode) -> AwaitConfig {
         path: str_field("path"),
         count: num("count", 1) as usize,
         timeout_ms: num("timeoutMs", AWAIT_TIMEOUT_MS),
+        matcher: Some(str_field("match")).filter(|m| !m.is_empty()),
     }
 }
 
@@ -353,10 +363,13 @@ fn await_request_log(path: &str, cfg: &AwaitConfig) -> RequestLog {
         method: "AWAIT".to_string(),
         url: format!("callback at {}", path),
         headers: HashMap::new(),
-        body: Some(format!(
-            "waiting for {} callback(s), up to {}ms",
-            cfg.count, cfg.timeout_ms
-        )),
+        body: Some(match &cfg.matcher {
+            Some(m) => format!(
+                "waiting for {} callback(s) matching {}, up to {}ms",
+                cfg.count, m, cfg.timeout_ms
+            ),
+            None => format!("waiting for {} callback(s), up to {}ms", cfg.count, cfg.timeout_ms),
+        }),
     }
 }
 
@@ -369,6 +382,8 @@ fn await_request_log(path: &str, cfg: &AwaitConfig) -> RequestLog {
 /// own, so this is **what satyanaash replied** — 200, always. The console labels the block
 /// "Callback received" so nothing implies the caller sent a status it did not.
 fn callback_as_response(last: &Received) -> ResponseLog {
+    // `query` is not on ResponseLog — it has no meaning for a real response — so it reaches a
+    // check through `AssertionInput.query` instead. See `callback_matches`.
     ResponseLog {
         status: 200,
         headers: last.headers.clone(),
@@ -433,7 +448,11 @@ fn for_each(node: &GraphNode) -> Option<ForEach> {
 /// edge instead of ending the run.
 fn plan_items(
     spec: &ForEach,
-    test_case: &TestCase,
+    // Every authored string this step will interpolate — a request's endpoint, payload and
+    // header values, or a wait's path and match. Taken as templates rather than as a `TestCase`
+    // because a step that walks a list need not be a request at all, and the only thing this
+    // ever wanted from a test case was the strings.
+    templates: &[&str],
     ctx: &ExecutionContext,
     logs: &mut Vec<String>,
 ) -> RowPlan {
@@ -469,20 +488,9 @@ fn plan_items(
         ));
     }
 
-    // The `{{names}}` this request declares, minus the built-ins, which are generated per use.
+    // The `{{names}}` this step declares, minus the built-ins, which are generated per use.
     let mut needed: Vec<String> = Vec::new();
-    let mut templates: Vec<Cow<'_, str>> = vec![Cow::Borrowed(test_case.endpoint.as_str())];
-    if let Some(payload) = &test_case.payload {
-        templates.push(Cow::Borrowed(payload.as_str()));
-    }
-    if let Some(headers) = test_case.headers.as_object() {
-        for value in headers.values() {
-            if let Some(text) = value.as_str() {
-                templates.push(Cow::Borrowed(text));
-            }
-        }
-    }
-    for template in &templates {
+    for template in templates {
         for name in variables::declared_names(template) {
             if !name.starts_with('$') && !needed.contains(&name) {
                 needed.push(name);
@@ -1842,6 +1850,42 @@ impl ExecutionEngine {
         }
     }
 
+    /// Is this the callback *this* wait is waiting for?
+    ///
+    /// Evaluated against the callback exactly as a check would see it, so one expression language
+    /// serves both: `response.query.cTxnId == "tx-003"`, or `response.json.clientTxnId == …` if
+    /// the id rides in the body instead.
+    ///
+    /// `Err` is a broken expression, not a non-match. The difference matters: a non-match means
+    /// keep waiting, while a broken expression means stop and say so, because every candidate will
+    /// fail it identically and the step would report "no callback arrived" about a typo.
+    fn callback_matches(
+        &self,
+        candidate: &Received,
+        expr: &str,
+        ctx: &ExecutionContext,
+    ) -> Result<bool, String> {
+        let response = callback_as_response(candidate);
+        match self.assertions.evaluate(AssertionInput {
+            script: expr,
+            status: response.status,
+            body: &response.body,
+            json: &response.json,
+            headers: &response.headers,
+            query: candidate.query.as_deref(),
+            env: &ctx.environment_snapshot(),
+        }) {
+            Ok(outcome) => match outcome.passed {
+                Some(verdict) => Ok(verdict),
+                None => Err(format!(
+                    "\"match\" must be an expression that is true or false, and {} is not",
+                    expr
+                )),
+            },
+            Err(e) => Err(format!("\"match\" could not be evaluated: {}", plain(&e))),
+        }
+    }
+
     /// An `awaitCallback` node: wait for an inbound callback instead of sending a request.
     ///
     /// A control node — no test case, no method, no URL, no dataset — that nevertheless reports
@@ -1849,7 +1893,179 @@ impl ExecutionEngine {
     /// to be red. Several test cases here put a `drCallbackUrl` in their payload and then assert
     /// on the 202 acknowledgement, so the delivery, the thing actually under test, was never
     /// checked by anything.
+    /// An `awaitCallback` node: wait for an inbound callback instead of sending a request.
+    ///
+    /// Once, or **once per item in a list** — the same three-way question a request node asks,
+    /// minus the dataset (a wait has no body to vary). Per item is what turns "three reports
+    /// arrived" into "the 100-recipient message's report said FAILED": each iteration waits for
+    /// *its own* correlation id, gets its own verdict, and is labelled with the row that produced
+    /// it. It reports through the dataset's machinery — one aggregate whose `iterations` holds the
+    /// per-item results — so the console, run history and every renderer needed no teaching.
+    ///
+    /// The timeout is **per wait**, not shared: three missing reports cost three timeouts. That is
+    /// the same rule polling follows, and the alternative — one budget across the set — would make
+    /// the last item's verdict depend on how slow the earlier ones were.
     async fn execute_await_node(
+        &self,
+        node: &GraphNode,
+        ctx: &mut ExecutionContext,
+        event_tx: &Option<mpsc::Sender<ExecutionEvent>>,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> NodeResult {
+        let start = std::time::Instant::now();
+        let node_label = node
+            .data
+            .get("alias")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        // Announce the step before waiting, which `execute_test_case_node` does at its own top and
+        // this did not. Without it the canvas never learns the step began: no pulse on the node,
+        // and no "▶ …" line in the console. That gap matters more here than anywhere else, because
+        // this is the only step that can sit for a minute — and a minute of a canvas showing
+        // nothing reads as a hung run rather than a wait. Said once for the step, not per item.
+        if let Some(tx) = event_tx {
+            let _ = tx
+                .send(ExecutionEvent::NodeStarted {
+                    node_id: node.id.clone(),
+                    node_type: "awaitCallback".to_string(),
+                    node_label: node_label.clone(),
+                    // No test case behind a control node, so the name is the step's own.
+                    test_case_id: None,
+                    test_case_name: Some(AWAIT_STEP_NAME.to_string()),
+                })
+                .await;
+        }
+
+        let Some(spec) = for_each(node) else {
+            return self.wait_once(node, ctx, event_tx, since, None, None).await;
+        };
+
+        // Planned against the strings this step actually interpolates — its path and its match —
+        // so "this item cannot fill it" means exactly that, and an item missing the correlation id
+        // is dropped by name instead of waiting out a full timeout on an inbox it can never
+        // identify its own report in.
+        let cfg = await_config(node);
+        let mut logs = Vec::new();
+        let templates: Vec<&str> = match &cfg.matcher {
+            Some(m) => vec![cfg.path.as_str(), m.as_str()],
+            None => vec![cfg.path.as_str()],
+        };
+        let plan = plan_items(&spec, &templates, ctx, &mut logs);
+
+        let items = match plan {
+            RowPlan::Items(items) => items,
+            RowPlan::NothingSelected(reason) => {
+                logs.push(reason.clone());
+                return NodeResult {
+                    node_label,
+                    node_id: node.id.clone(),
+                    teardown: None,
+                    expected: None,
+                    test_case_id: None,
+                    test_case_name: Some(AWAIT_STEP_NAME.to_string()),
+                    // Failed, not Error: nothing broke. The list this step was told to walk was
+                    // not there, was not a list, or was empty — and *nothing ran is not a pass*.
+                    status: NodeStatus::Failed,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    request: None,
+                    response: None,
+                    exports: None,
+                    env: None,
+                    error_message: Some(reason),
+                    logs,
+                    row_index: None,
+                    row_label: None,
+                    attempts: None,
+                    iterations_of: None,
+                    iterations: None,
+                };
+            }
+            // A wait has no dataset of its own, so the other plans cannot arise: `for_each` was
+            // Some to get here, and `plan_items` returns only these two.
+            RowPlan::Once | RowPlan::Rows(_) => unreachable!("a wait plans items or nothing"),
+        };
+
+        let mut iterations: Vec<NodeResult> = Vec::with_capacity(items.len());
+        for (index, row) in &items {
+            // A clone per item, so one item's captures cannot reach the next — the same isolation
+            // `run_rows` gives a data row, and for the same reason.
+            let mut item_ctx = ctx.clone();
+            item_ctx.set_row_vars(
+                row.vars
+                    .iter()
+                    .filter(|(name, value)| !name.trim().is_empty() && !value.trim().is_empty())
+                    .map(|(name, value)| (name.clone(), Value::String(value.clone())))
+                    .collect(),
+            );
+            let label = crate::db::models::Dataset::label_for(*index, row);
+            let result = self
+                .wait_once(
+                    node,
+                    &mut item_ctx,
+                    event_tx,
+                    since,
+                    Some(*index),
+                    Some(label),
+                )
+                .await;
+            iterations.push(result);
+        }
+
+        // Worst-of, like every other step that runs more than once.
+        let status = if iterations.iter().any(|r| r.status == NodeStatus::Error) {
+            NodeStatus::Error
+        } else if iterations.iter().any(|r| r.status == NodeStatus::Failed) {
+            NodeStatus::Failed
+        } else {
+            NodeStatus::Passed
+        };
+        let failed = iterations.iter().filter(|r| r.status != NodeStatus::Passed).count();
+        let error_message = (failed > 0).then(|| {
+            format!("{} of {} callback(s) did not arrive or did not pass", failed, iterations.len())
+        });
+
+        // Prefixed by item, the way a fan-out's are, so one step's worth of waiting reads as a
+        // set rather than as interleaved noise.
+        logs.extend(iterations.iter().flat_map(|r| {
+            let label = r.row_label.clone().unwrap_or_default();
+            r.logs.iter().map(move |l| format!("[{}] {}", label, l))
+        }));
+
+        NodeResult {
+            node_label,
+            node_id: node.id.clone(),
+            teardown: None,
+            expected: None,
+            test_case_id: None,
+            test_case_name: Some(AWAIT_STEP_NAME.to_string()),
+            status,
+            duration_ms: start.elapsed().as_millis() as u64,
+            // An aggregate has no single callback; the UI branches on `iterations`.
+            request: None,
+            response: None,
+            exports: None,
+            env: None,
+            error_message,
+            logs,
+            row_index: None,
+            row_label: None,
+            attempts: None,
+            // So no screen says "3/3 rows passed" about a step with no rows.
+            iterations_of: Some("callback".to_string()),
+            iterations: Some(iterations),
+        }
+    }
+
+    /// One wait: watch one inbox until `count` callbacks that are *this* wait's have arrived.
+    ///
+    /// Takes its context by `&mut` and expects the caller to have already narrowed it — for a
+    /// per-item step that is a clone carrying the item's fields as row vars, so the path and the
+    /// match interpolate to that item's own values.
+    #[allow(clippy::too_many_arguments)]
+    async fn wait_once(
         &self,
         node: &GraphNode,
         ctx: &mut ExecutionContext,
@@ -1857,6 +2073,8 @@ impl ExecutionEngine {
         // When this run began. Passed in rather than stamped here — see `RunState::started_at`
         // for why the step's own start is the wrong boundary.
         since: chrono::DateTime<chrono::Utc>,
+        row_index: Option<usize>,
+        row_label: Option<String>,
     ) -> NodeResult {
         let start = std::time::Instant::now();
         let mut logs = Vec::new();
@@ -1891,31 +2109,13 @@ impl ExecutionEngine {
                     env: None,
                     error_message: $err,
                     logs,
-                    row_index: None,
-                    row_label: None,
+                    row_index,
+                    row_label: row_label.clone(),
                     attempts: None,
                     iterations_of: None,
                     iterations: None,
                 }
             };
-        }
-
-        // Announce the step before waiting, which `execute_test_case_node` does at its own top
-        // and this did not. Without it the canvas never learns the step began: no pulse on the
-        // node, and no "▶ …" line in the console. That gap matters more here than anywhere else,
-        // because this is the only step that can sit for a minute — and a minute of a canvas
-        // showing nothing reads as a hung run rather than a wait.
-        if let Some(tx) = event_tx {
-            let _ = tx
-                .send(ExecutionEvent::NodeStarted {
-                    node_id: node.id.clone(),
-                    node_type: "awaitCallback".to_string(),
-                    node_label: node_label.clone(),
-                    // No test case behind a control node, so the name is the step's own.
-                    test_case_id: None,
-                    test_case_name: Some(AWAIT_STEP_NAME.to_string()),
-                })
-                .await;
         }
 
         let cfg = await_config(node);
@@ -1975,8 +2175,42 @@ impl ExecutionEngine {
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_millis(cfg.timeout_ms);
 
+        // Interpolated like every other authored string, so a per-item wait can name that item's
+        // own correlation id.
+        let matcher = cfg
+            .matcher
+            .as_deref()
+            .map(|m| ctx.interpolate(m).unwrap_or_else(|_| m.to_string()));
+
         let received = loop {
-            let got = self.hooks.since(&path, since);
+            let got = match &matcher {
+                None => self.hooks.since(&path, since),
+                Some(expr) => {
+                    let mut mine = Vec::new();
+                    for candidate in self.hooks.since(&path, since) {
+                        match self.callback_matches(&candidate, expr, ctx) {
+                            Ok(true) => mine.push(candidate),
+                            Ok(false) => {}
+                            // The author's expression is broken and will not fix itself, so
+                            // waiting out the budget would only delay a report about it — and
+                            // "no callback arrived" would name the wrong problem entirely. The
+                            // same refusal `until` and `collect.when` already make.
+                            Err(reason) => {
+                                logs.push(reason.clone());
+                                done!(
+                                    NodeStatus::Failed,
+                                    Some(reason),
+                                    Some(await_request_log(&path, &cfg)),
+                                    None,
+                                    None,
+                                    None
+                                );
+                            }
+                        }
+                    }
+                    mine
+                }
+            };
             if got.len() >= cfg.count {
                 logs.push(format!(
                     "{} callback(s) arrived after {}ms",
@@ -1994,11 +2228,24 @@ impl ExecutionEngine {
                 _ = ticks.changed() => {}
 
                 _ = tokio::time::sleep_until(deadline) => {
-                    let arrived = self.hooks.since(&path, since).len();
-                    let reason = format!(
-                        "no callback at {} within {}ms ({} of {} arrived)",
-                        path, cfg.timeout_ms, arrived, cfg.count
-                    );
+                    let all = self.hooks.since(&path, since).len();
+                    let mine = got.len();
+                    // Two different failures wearing one message otherwise. "0 of 1, and nothing
+                    // else arrived either" means the sender never called; "0 of 1, but 3 others
+                    // arrived" means it called and the match is wrong — usually a correlation id
+                    // that did not survive the round trip. Sending the author to look at the
+                    // sender in the second case wastes their afternoon.
+                    let reason = match (&matcher, all > mine) {
+                        (Some(expr), true) => format!(
+                            "no callback matching {} at {} within {}ms — {} arrived on that path \
+                             but none matched",
+                            expr, path, cfg.timeout_ms, all
+                        ),
+                        _ => format!(
+                            "no callback at {} within {}ms ({} of {} arrived)",
+                            path, cfg.timeout_ms, mine, cfg.count
+                        ),
+                    };
                     logs.push(reason.clone());
                     // Failed, never Error. Nothing broke — the callback did not come. `Error`
                     // aborts the flow and claims something systemic went wrong, which is a
@@ -2110,6 +2357,9 @@ impl ExecutionEngine {
                 body: &response.body,
                 json: &response.json,
                 headers: &response.headers,
+                // The Expect sees the query as well, so `response.query.attempt == "2"` is a
+                // thing an author can assert rather than only correlate on.
+                query: last.query.as_deref(),
                 env: &ctx.environment_snapshot(),
             }) {
                 Ok(outcome) => {
@@ -2353,7 +2603,23 @@ impl ExecutionEngine {
             (Some(_), true) => RowPlan::NothingSelected(
                 "This step is set to run both once per data row and once per item in a list. Open the node and pick one".to_string(),
             ),
-            (Some(spec), false) => plan_items(&spec, &test_case, ctx, &mut logs),
+            (Some(spec), false) => {
+                // What a request interpolates: its endpoint, its body, and each header value.
+                let mut templates: Vec<Cow<'_, str>> =
+                    vec![Cow::Borrowed(test_case.endpoint.as_str())];
+                if let Some(payload) = &test_case.payload {
+                    templates.push(Cow::Borrowed(payload.as_str()));
+                }
+                if let Some(headers) = test_case.headers.as_object() {
+                    for value in headers.values() {
+                        if let Some(text) = value.as_str() {
+                            templates.push(Cow::Borrowed(text));
+                        }
+                    }
+                }
+                let refs: Vec<&str> = templates.iter().map(|t| t.as_ref()).collect();
+                plan_items(&spec, &refs, ctx, &mut logs)
+            }
             (None, _) => plan_rows(node, &test_case, &mut logs),
         };
         let walking_a_list = matches!(plan, RowPlan::Items(_));
@@ -2930,6 +3196,7 @@ impl ExecutionEngine {
                 body: &sent.response.body,
                 json: &sent.response.json,
                 headers: &sent.response.headers,
+                query: None,
                 env: &ctx.environment_snapshot(),
             }) {
                 Ok(outcome) => match outcome.passed {
@@ -3090,6 +3357,7 @@ impl ExecutionEngine {
                             body: &http_result.response.body,
                             json: &http_result.response.json,
                             headers: &http_result.response.headers,
+                            query: None,
                             env: &ctx.environment_snapshot(),
                         }) {
                             Ok(outcome) => {
@@ -3157,6 +3425,7 @@ impl ExecutionEngine {
                             body: &http_result.response.body,
                             json: &http_result.response.json,
                             headers: &http_result.response.headers,
+                            query: None,
                             env: &ctx.environment_snapshot(),
                         }) {
                             Ok(outcome) => {
@@ -3448,6 +3717,7 @@ impl ExecutionEngine {
                                 body: &response.body,
                                 json: &response.json,
                                 headers: &response.headers,
+                                query: None,
                                 env: &base_ctx.environment_snapshot(),
                             }) {
                                 Ok(outcome) => match outcome.passed {
@@ -7556,10 +7826,15 @@ mod tests {
     }
 
     fn arrived(path: &str, body: &str) -> Received {
+        arrived_with(path, body, None)
+    }
+
+    /// A callback carrying a query string, which is where a correlation id rides.
+    fn arrived_with(path: &str, body: &str, query: Option<&str>) -> Received {
         Received {
             method: "POST".into(),
             path: path.into(),
-            query: None,
+            query: query.map(str::to_string),
             headers: HashMap::new(),
             body: body.into(),
             json: serde_json::from_str(body).ok(),
@@ -8015,6 +8290,366 @@ mod tests {
             started.elapsed() < std::time::Duration::from_secs(5),
             "it kept waiting for {:?}",
             started.elapsed()
+        );
+    }
+
+    // ---- correlating one message's report out of a shared inbox -------------------------
+
+    #[tokio::test]
+    async fn a_callback_for_another_message_does_not_satisfy_this_wait() {
+        // The whole point. Several messages in flight share one inbox and their reports arrive in
+        // whatever order the network gives them, so "the next callback" is not "mine". Without a
+        // match this step would go green off somebody else's delivery report.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": {
+                "path": "dr/shared",
+                "timeoutMs": 400,
+                "match": "response.query.cTxnId == \"tx-003\""
+            }
+        }));
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED"}"#, Some("cTxnId=tx-001")));
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED"}"#, Some("cTxnId=tx-002")));
+        });
+        let result = wait_on(&hooks, &node).await;
+
+        assert_eq!(result.status, NodeStatus::Failed, "two arrived, neither was mine");
+        // And says so in a way that does not send the author to look at the sender.
+        let why = result.error_message.unwrap();
+        assert!(why.contains("none matched"), "{}", why);
+        assert!(why.contains("2 arrived"), "{}", why);
+    }
+
+    #[tokio::test]
+    async fn the_matching_callback_is_the_one_reported() {
+        // Not merely "a wait ended" — the *right* report has to be the one the Expect and the
+        // output variables see, or correlation buys nothing.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": {
+                "path": "dr/shared",
+                "timeoutMs": 2_000,
+                "match": "response.query.cTxnId == \"tx-003\""
+            }
+        }));
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", r#"{"who":"first"}"#, Some("cTxnId=tx-001")));
+            writer.record(arrived_with("dr/shared", r#"{"who":"mine"}"#, Some("cTxnId=tx-003")));
+            writer.record(arrived_with("dr/shared", r#"{"who":"third"}"#, Some("cTxnId=tx-002")));
+        });
+        let result = wait_on(&hooks, &node).await;
+
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+        assert_eq!(
+            result.response.as_ref().unwrap().json.as_ref().unwrap()["who"],
+            serde_json::json!("mine"),
+            "the matching one, not the last to arrive"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_match_can_correlate_on_the_body_instead_of_the_query() {
+        // For a sender that rebuilds the URL and drops the query — the fallback that needs the
+        // report to echo the id, rather than needing the URL to survive.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": {
+                "path": "dr/shared",
+                "timeoutMs": 2_000,
+                "match": "response.json.clientTxnId == \"tx-009\""
+            }
+        }));
+        let result = wait_for(&hooks, &node, "dr/shared", r#"{"clientTxnId":"tx-009"}"#).await;
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+    }
+
+    #[tokio::test]
+    async fn a_match_is_interpolated_so_each_item_can_name_its_own_id() {
+        // What makes one authored node serve every message: the id comes from the context, not
+        // from the config.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set("cTxnId", serde_json::json!("tx-042"));
+        let node = await_node(serde_json::json!({
+            "awaitCallback": {
+                "path": "dr/shared",
+                "timeoutMs": 2_000,
+                "match": "response.query.cTxnId == \"{{cTxnId}}\""
+            }
+        }));
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", r#"{"n":1}"#, Some("cTxnId=tx-999")));
+            writer.record(arrived_with("dr/shared", r#"{"n":2}"#, Some("cTxnId=tx-042")));
+        });
+        let result = engine
+            .execute_await_node(&node, &mut ctx, &None, chrono::Utc::now())
+            .await;
+
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+        assert_eq!(
+            result.response.as_ref().unwrap().json.as_ref().unwrap()["n"],
+            serde_json::json!(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_broken_match_stops_at_once_rather_than_waiting_out_the_budget() {
+        // Every candidate fails a broken expression identically, so waiting would only delay a
+        // report about a typo — and report it as "no callback arrived", which is a lie about the
+        // sender.
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": {
+                "path": "dr/shared",
+                "timeoutMs": 30_000,
+                "match": "response.query.cTxnId =="
+            }
+        }));
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", "{}", Some("cTxnId=tx-1")));
+        });
+        let started = std::time::Instant::now();
+        let result = wait_on(&hooks, &node).await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(
+            result.error_message.as_deref().unwrap().contains("\"match\""),
+            "{:?}",
+            result.error_message
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "it waited anyway");
+    }
+
+    #[tokio::test]
+    async fn a_match_that_is_not_a_condition_is_refused() {
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/shared", "timeoutMs": 30_000, "match": "42" }
+        }));
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", "{}", Some("cTxnId=tx-1")));
+        });
+        let result = wait_on(&hooks, &node).await;
+        assert!(
+            result.error_message.as_deref().unwrap().contains("true or false"),
+            "{:?}",
+            result.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expect_can_read_the_query_too() {
+        let hooks = Hooks::new();
+        let node = await_node(serde_json::json!({
+            "awaitCallback": { "path": "dr/q", "timeoutMs": 2_000 },
+            "check": "response.query.attempt == \"2\""
+        }));
+        let hooks2 = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            hooks2.record(arrived_with("dr/q", "{}", Some("attempt=2")));
+        });
+        assert_eq!(wait_on(&hooks, &node).await.status, NodeStatus::Passed);
+    }
+
+    // ---- one wait per expected report ---------------------------------------------------
+
+    /// A waiter set to run once per item of a collected list.
+    fn per_item_waiter(list: &str, match_expr: &str, timeout_ms: u64) -> GraphNode {
+        make_node(
+            "w1",
+            "awaitCallback",
+            serde_json::json!({
+                "alias": "Chk drCallback fires",
+                "config": {
+                    "awaitCallback": { "path": "dr/shared", "timeoutMs": timeout_ms, "match": match_expr },
+                    "forEach": { "list": list },
+                    "check": "response.json.status == \"DELIVERED\""
+                }
+            }),
+        )
+    }
+
+    /// The shape a fan-out leaves behind: one record per message that asked for a report.
+    fn sent(ids: &[(&str, &str)]) -> Value {
+        serde_json::Value::Array(
+            ids.iter()
+                .map(|(row, id)| serde_json::json!({ "_row": row, "cTxnId": id }))
+                .collect(),
+        )
+    }
+
+    #[tokio::test]
+    async fn one_wait_per_message_each_finding_its_own_report() {
+        // The case this exists for. Three messages sent, three reports landing in one inbox in
+        // whatever order, and each wait has to pick out its own — then say which message failed,
+        // not "one of three".
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set(
+            "sent",
+            sent(&[("promo", "tx-1"), ("100 recipients", "tx-2"), ("unicode", "tx-3")]),
+        );
+
+        // Out of order, and the middle message's report says FAILED.
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED"}"#, Some("cTxnId=tx-3")));
+            writer.record(arrived_with("dr/shared", r#"{"status":"FAILED"}"#, Some("cTxnId=tx-2")));
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED"}"#, Some("cTxnId=tx-1")));
+        });
+
+        let node = per_item_waiter("sent", "response.query.cTxnId == \"{{cTxnId}}\"", 3_000);
+        let result = engine.execute_await_node(&node, &mut ctx, &None, chrono::Utc::now()).await;
+
+        // The aggregate fails because one did, and the *label* says which message.
+        assert_eq!(result.status, NodeStatus::Failed, "{:?}", result.error_message);
+        let iterations = result.iterations.as_ref().expect("one result per message");
+        assert_eq!(iterations.len(), 3);
+        let failed: Vec<&str> = iterations
+            .iter()
+            .filter(|r| r.status == NodeStatus::Failed)
+            .map(|r| r.row_label.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(failed, vec!["100 recipients"], "named by the row that sent it");
+
+        // Each iteration holds *its* report, not whichever arrived last.
+        let by_label = |label: &str| {
+            iterations
+                .iter()
+                .find(|r| r.row_label.as_deref() == Some(label))
+                .and_then(|r| r.response.as_ref())
+                .and_then(|resp| resp.json.as_ref())
+                .map(|j| j["status"].clone())
+        };
+        assert_eq!(by_label("promo"), Some(serde_json::json!("DELIVERED")));
+        assert_eq!(by_label("100 recipients"), Some(serde_json::json!("FAILED")));
+        assert_eq!(by_label("unicode"), Some(serde_json::json!("DELIVERED")));
+    }
+
+    #[tokio::test]
+    async fn the_iterations_are_called_callbacks_not_rows() {
+        // A wait has no data rows, so without this every screen says "3/3 rows passed" about a
+        // step with none — a small lie in the one place an author looks to find out what ran.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set("sent", sent(&[("promo", "tx-1")]));
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED"}"#, Some("cTxnId=tx-1")));
+        });
+        let node = per_item_waiter("sent", "response.query.cTxnId == \"{{cTxnId}}\"", 2_000);
+        let result = engine.execute_await_node(&node, &mut ctx, &None, chrono::Utc::now()).await;
+
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+        assert_eq!(result.iterations_of.as_deref(), Some("callback"));
+    }
+
+    #[tokio::test]
+    async fn a_message_whose_report_never_comes_is_named() {
+        // Two of three arrive. The point is that the report says which one is missing, rather
+        // than the step failing with a count.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set("sent", sent(&[("promo", "tx-1"), ("silent one", "tx-2")]));
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED"}"#, Some("cTxnId=tx-1")));
+        });
+        let node = per_item_waiter("sent", "response.query.cTxnId == \"{{cTxnId}}\"", 350);
+        let result = engine.execute_await_node(&node, &mut ctx, &None, chrono::Utc::now()).await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        let missing = result
+            .iterations
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|r| r.status == NodeStatus::Failed)
+            .unwrap();
+        assert_eq!(missing.row_label.as_deref(), Some("silent one"));
+        // And its own message distinguishes "nothing came" from "something came that was not mine".
+        assert!(
+            missing.error_message.as_deref().unwrap().contains("none matched"),
+            "{:?}",
+            missing.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_over_a_list_that_does_not_exist_is_failed_and_says_so() {
+        // Nothing ran is not a pass — the same rule the dataset path follows.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        let node = per_item_waiter("nobody_collects_this", "true", 200);
+        let result = engine.execute_await_node(&node, &mut ctx, &None, chrono::Utc::now()).await;
+
+        assert_eq!(result.status, NodeStatus::Failed);
+        assert!(result.iterations.is_none(), "no iterations means no false 0/0 pass");
+        assert!(
+            result.error_message.as_deref().unwrap().contains("nobody_collects_this"),
+            "{:?}",
+            result.error_message
+        );
+    }
+
+    #[tokio::test]
+    async fn an_item_missing_the_correlation_id_is_dropped_rather_than_waited_out() {
+        // Its match would interpolate to a literal {{cTxnId}} and could never identify a report,
+        // so waiting the full budget on it would report the wrong problem — the same guard the
+        // fan-out applies to an item that cannot fill a request.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set(
+            "sent",
+            serde_json::json!([
+                { "_row": "good", "cTxnId": "tx-1" },
+                { "_row": "no id at all", "somethingElse": "x" }
+            ]),
+        );
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED"}"#, Some("cTxnId=tx-1")));
+        });
+        let node = per_item_waiter("sent", "response.query.cTxnId == \"{{cTxnId}}\"", 2_000);
+        let started = std::time::Instant::now();
+        let result = engine.execute_await_node(&node, &mut ctx, &None, chrono::Utc::now()).await;
+
+        assert_eq!(result.iterations.as_ref().unwrap().len(), 1, "the unfillable item was dropped");
+        assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "it waited on the dropped item");
+        assert!(
+            result.logs.iter().any(|l| l.contains("no id at all")),
+            "the dropped item is named: {:?}",
+            result.logs
         );
     }
 

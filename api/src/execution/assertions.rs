@@ -37,6 +37,16 @@ pub struct AssertionInput<'a> {
     pub body: &'a str,
     pub json: &'a Option<Value>,
     pub headers: &'a HashMap<String, String>,
+    /// The raw query string, for the one kind of "response" that has one: a callback.
+    ///
+    /// A callback is a *request* we received, so it can carry `?cTxnId=tx-003` — and since the
+    /// URL was ours to hand out, whatever we put there comes back verbatim. That makes it the
+    /// natural place to correlate a delivery report with the message that asked for it, needing
+    /// nothing from the sender's payload contract.
+    ///
+    /// `None` for an ordinary HTTP response, which has no query. The script then sees an empty
+    /// map, so `response.query.anything` is `()` — the same as a missing JSON key.
+    pub query: Option<&'a str>,
     /// Current environment, readable and writable as `SAT.env.*`.
     pub env: &'a HashMap<String, Value>,
 }
@@ -44,6 +54,55 @@ pub struct AssertionInput<'a> {
 /// Assertion engine using Rhai for script evaluation
 pub struct AssertionEngine {
     engine: Engine,
+}
+
+/// `a=1&b=hello+world&c=%2F` into pairs.
+///
+/// Hand-rolled because this crate has no URL dependency and one decoder for one field does not
+/// earn one. Deliberately lenient: a bare `flag` with no `=` becomes `flag = ""`, and a stray `%`
+/// or a bad escape is kept literally rather than dropping the pair. A malformed query is somebody
+/// else's request, and losing the correlation id over a bad escape would be worse than keeping it
+/// slightly wrong.
+fn parse_query(raw: &str) -> Vec<(String, String)> {
+    raw.split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| match pair.split_once('=') {
+            Some((k, v)) => (percent_decode(k), percent_decode(v)),
+            None => (percent_decode(pair), String::new()),
+        })
+        .collect()
+}
+
+/// `+` to space and `%XX` to its byte. Invalid escapes are left as written.
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                match u8::from_str_radix(&raw[i + 1..i + 3], 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 impl AssertionEngine {
@@ -72,7 +131,7 @@ impl AssertionEngine {
     /// The last expression is the pass/fail boolean; `SAT.env.x = …` writes are
     /// captured as side-effects (applied even when the assertion returns false).
     pub fn evaluate(&self, input: AssertionInput<'_>) -> Result<AssertionOutcome, AppError> {
-        let AssertionInput { script, status, body, json, headers, env: env_in } = input;
+        let AssertionInput { script, status, body, json, headers, query, env: env_in } = input;
         let mut scope = Scope::new();
 
         // Build response object
@@ -92,6 +151,14 @@ impl AssertionEngine {
             headers_map.insert(k.clone().into(), Dynamic::from(v.clone()));
         }
         response.insert("headers".into(), Dynamic::from(headers_map));
+
+        // Parsed rather than handed over as a string, so a check reads `response.query.cTxnId`
+        // instead of doing its own string surgery on `a=1&b=2` in Rhai.
+        let mut query_map = rhai::Map::new();
+        for (key, value) in parse_query(query.unwrap_or("")) {
+            query_map.insert(key.into(), Dynamic::from(value));
+        }
+        response.insert("query".into(), Dynamic::from(query_map));
 
         scope.push("response", response);
 
@@ -240,6 +307,7 @@ mod tests {
             body: "",
             json: &None,
             headers: &headers,
+            query: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -250,6 +318,7 @@ mod tests {
             body: "",
             json: &None,
             headers: &headers,
+            query: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(!result);
@@ -267,6 +336,7 @@ mod tests {
             body: "",
             json: &json,
             headers: &headers,
+            query: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -277,6 +347,7 @@ mod tests {
             body: "",
             json: &json,
             headers: &headers,
+            query: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -294,6 +365,7 @@ mod tests {
             body: "",
             json: &json,
             headers: &headers,
+            query: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -311,6 +383,7 @@ mod tests {
             body: "",
             json: &json,
             headers: &headers,
+            query: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -328,6 +401,7 @@ mod tests {
             body: "",
             json: &json,
             headers: &headers,
+            query: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -346,6 +420,7 @@ mod tests {
                 body: "",
                 json: &None,
                 headers: &HashMap::new(),
+                query: None,
                 env: &HashMap::new(),
             })
             .unwrap();
@@ -365,6 +440,7 @@ mod tests {
                 body: "",
                 json: &None,
                 headers: &HashMap::new(),
+                query: None,
                 env: &HashMap::new(),
             })
             .unwrap();
@@ -381,4 +457,73 @@ mod tests {
         assert!(!AssertionEngine::default_assertion(400));
         assert!(!AssertionEngine::default_assertion(500));
     }
+
+    #[test]
+    fn a_query_string_is_readable_field_by_field() {
+        // A callback carries its correlation id in the query, because the URL was ours to hand
+        // out. Parsed here rather than in Rhai so a check reads a field instead of doing string
+        // surgery on "a=1&b=2".
+        let engine = AssertionEngine::new();
+        let outcome = engine
+            .evaluate(AssertionInput {
+                script: r#"response.query.cTxnId == "tx-003""#,
+                status: 200,
+                body: "{}",
+                json: &None,
+                headers: &HashMap::new(),
+                query: Some("cTxnId=tx-003&attempt=2"),
+                env: &HashMap::new(),
+            })
+            .unwrap();
+        assert_eq!(outcome.passed, Some(true));
+    }
+
+    #[test]
+    fn a_missing_query_field_reads_like_a_missing_json_key() {
+        // `()`, not an error — so an author can test for absence, and a response with no query at
+        // all behaves the same as one whose query lacks the field.
+        let engine = AssertionEngine::new();
+        for query in [Some("other=1"), None] {
+            let outcome = engine
+                .evaluate(AssertionInput {
+                    script: r#"response.query.cTxnId == ()"#,
+                    status: 200,
+                    body: "",
+                    json: &None,
+                    headers: &HashMap::new(),
+                    query,
+                    env: &HashMap::new(),
+                })
+                .unwrap();
+            assert_eq!(outcome.passed, Some(true), "query was {:?}", query);
+        }
+    }
+
+    #[test]
+    fn query_values_are_percent_decoded() {
+        // A correlation id with a slash or a space in it must compare equal to what was sent, or
+        // correlation fails on exactly the ids an author is most likely to hand-write.
+        assert_eq!(
+            parse_query("a=hello+world&b=%2Fslash&c=tx%2D1"),
+            vec![
+                ("a".to_string(), "hello world".to_string()),
+                ("b".to_string(), "/slash".to_string()),
+                ("c".to_string(), "tx-1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_malformed_query_keeps_what_it_can() {
+        // Somebody else's request. Dropping a pair over a bad escape would lose the correlation
+        // id, which is worse than keeping it slightly wrong.
+        assert_eq!(parse_query("flag&a=%zz&b=%"), vec![
+            ("flag".to_string(), String::new()),
+            ("a".to_string(), "%zz".to_string()),
+            ("b".to_string(), "%".to_string()),
+        ]);
+        assert_eq!(parse_query(""), Vec::<(String, String)>::new());
+        assert_eq!(parse_query("&&"), Vec::<(String, String)>::new());
+    }
+
 }

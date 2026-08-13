@@ -52,6 +52,15 @@ export interface AwaitCallbackConfig {
   /** How many to wait for. A campaign to two recipients reports twice. */
   count?: number;
   timeoutMs?: number;
+  /**
+   * Which callback on that path is this wait's own.
+   *
+   * Absent means the first to arrive, whatever it is — fine for a flow sending one message.
+   * With several in flight the reports share one inbox and arrive in whatever order the network
+   * gives them, so "the next one" is not "mine". The correlation id goes in the callback URL's
+   * query string and comes back verbatim, because the URL was ours to hand out.
+   */
+  match?: string;
 }
 
 /** Mirrors `AWAIT_TIMEOUT_MS` in the engine, so the panel shows what will actually happen. */
@@ -210,7 +219,10 @@ export function awaitSummary(cfg: AwaitCallbackConfig | undefined): string {
     return "Give this step the path your test puts in its callback URL — it cannot run without one.";
   }
   const many = count === 1 ? "one callback" : `${count} callbacks`;
-  return `Waits up to ${secs}s for ${many} at ${path}. Nothing arrives in time — the step fails, and the flow takes its failure edge.`;
+  const mine = cfg?.match?.trim()
+    ? " Only callbacks matching your condition count, so several messages can share this path."
+    : "";
+  return `Waits up to ${secs}s for ${many} at ${path}.${mine} Nothing arrives in time — the step fails, and the flow takes its failure edge.`;
 }
 
 /** The badge a waiting node wears on the canvas: how many, and for how long. */

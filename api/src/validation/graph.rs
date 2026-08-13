@@ -576,6 +576,19 @@ fn await_path_clashes(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
         if sharing.len() < 2 {
             continue;
         }
+        // A `match` is the author saying which callback is theirs, which is the whole answer to
+        // sharing an inbox — several tests in flight, reports arriving in any order, each wait
+        // picking out its own by correlation id. Warning then would be warning about the fix.
+        if sharing.iter().all(|n| {
+            n.data
+                .get("config")
+                .and_then(|c| c.get("awaitCallback"))
+                .and_then(|c| c.get("match"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|m| !m.trim().is_empty())
+        }) {
+            continue;
+        }
         // One issue per node, so every node involved is marked on the canvas rather than
         // whichever one happened to be first.
         for node in &sharing {
@@ -1231,6 +1244,46 @@ mod tests {
             !result.warnings.iter().any(|w| w.code == "EMPTY_FLOW"),
             "{:?}",
             result.warnings
+        );
+    }
+
+
+    #[test]
+    fn sharing_an_inbox_is_fine_when_every_wait_says_which_callback_is_its_own() {
+        // Correlation is the answer to a shared inbox, not a symptom of one. Warning here would
+        // be warning about the fix — and it is the shape the tool now recommends: one path, one
+        // match per message.
+        let correlated = |id: &str, tx: &str| GraphNode {
+            id: id.to_string(),
+            node_type: "awaitCallback".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({
+                "config": { "awaitCallback": { "path": "dr/shared", "match": tx } }
+            }),
+            width: None,
+            height: None,
+        };
+        let issues = await_path_clashes(&[
+            correlated("w1", "response.query.cTxnId == \"tx-1\""),
+            correlated("w2", "response.query.cTxnId == \"tx-2\""),
+        ]);
+        assert!(issues.is_empty(), "{:?}", codes(issues.clone()));
+    }
+
+    #[test]
+    fn one_wait_without_a_match_still_makes_a_shared_inbox_a_clash() {
+        // Half-correlated is not correlated: the unmatched wait takes whatever arrives first,
+        // including the report the other wait was going to identify as its own.
+        let bare = waiter("w1", "dr/shared");
+        let matched = GraphNode {
+            data: serde_json::json!({
+                "config": { "awaitCallback": { "path": "dr/shared", "match": "true" } }
+            }),
+            ..waiter("w2", "dr/shared")
+        };
+        assert_eq!(
+            codes(await_path_clashes(&[bare, matched])),
+            vec!["AWAIT_PATH_SHARED", "AWAIT_PATH_SHARED"]
         );
     }
 

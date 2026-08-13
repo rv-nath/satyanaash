@@ -218,6 +218,9 @@ export function iterationNoun(result: Pick<TestCaseExecutionResult, "iterations_
   /** Capitalised, for a fallback label like "Item 3" where a name is missing. */
   One: string;
 } {
+  if (result.iterations_of === "callback") {
+    return { one: "callback", many: "callbacks", One: "Callback" };
+  }
   return result.iterations_of === "item"
     ? { one: "item", many: "items", One: "Item" }
     : { one: "row", many: "rows", One: "Row" };
