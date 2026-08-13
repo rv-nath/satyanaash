@@ -29,7 +29,7 @@ describe("configuring a wait", () => {
 
     // Pasted, not typed: `{{` is userEvent's own escape syntax and would arrive as a single
     // brace — which is the one thing this test is checking survives.
-    await userEvent.click(screen.getByLabelText("Path"));
+    await userEvent.click(screen.getByLabelText("Which inbox to watch"));
     await userEvent.paste("dr/{{dr_path}}");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -61,8 +61,8 @@ describe("configuring a wait", () => {
       />,
     );
     expect(screen.getByLabelText("Give up after")).toHaveValue(45);
-    expect(screen.getByLabelText("How many")).toHaveValue(2);
-    expect(screen.getByLabelText("Path")).toHaveValue("dr/x");
+    expect(screen.getByLabelText("Callbacks to wait for")).toHaveValue(2);
+    expect(screen.getByLabelText("Which inbox to watch")).toHaveValue("dr/x");
   });
 
   it("opens a cleared 0 as the default it will behave as", () => {
@@ -73,7 +73,7 @@ describe("configuring a wait", () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByLabelText("How many")).toHaveValue(1);
+    expect(screen.getByLabelText("Callbacks to wait for")).toHaveValue(1);
     expect(screen.getByLabelText("Give up after")).toHaveValue(60);
   });
 
@@ -126,12 +126,47 @@ describe("configuring a wait", () => {
     );
   });
 
-  it("writes forEach only when set to run per item", async () => {
+  it("writes no forEach when it runs once", async () => {
     // A dormant `forEach` would read, to the engine and to the next author, as a step that walks
     // a list — the same rule the request node's run mode follows.
     render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(updateNodeConfig.mock.calls[0][1]).not.toHaveProperty("forEach");
+  });
+
+  it("writes forEach as soon as the toggle is on, even with no list yet", async () => {
+    // The trap this closes. Writing it only once a list was filled in meant the panel said "per
+    // item" and the config said "once": the step waited for a single callback while the author
+    // believed it waited for one per message, and nothing warned because nothing could see the
+    // disagreement. The config now says what the toggle says, and the validator refuses it.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(updateNodeConfig.mock.calls[0][1].forEach).toEqual({ list: "" });
+  });
+
+  it("says so in the panel while the list is empty", async () => {
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
+    // Specific, because the no-path summary also contains "cannot run".
+    expect(screen.getByText(/Name the list/i)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("List to walk"), "sent");
+    expect(screen.queryByText(/Name the list/i)).not.toBeInTheDocument();
+  });
+
+  it("opens per-item when the saved block names no list, rather than reading as once", async () => {
+    // The mode is the presence of the block, not whether it names a list — or reopening a
+    // half-configured node would silently flip it back to "once".
+    render(
+      <AwaitConfigPanel
+        node={node({ awaitCallback: { path: "dr/x" }, forEach: { list: "" } })}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: /once per item/i })).toHaveAttribute(
+      "data-state",
+      "on",
+    );
   });
 
   it("walks a collected list, one wait per item", async () => {
@@ -167,6 +202,22 @@ describe("configuring a wait", () => {
     expect(screen.queryByLabelText("List to walk")).not.toBeInTheDocument();
   });
 
+  it("puts the long explanation behind an info button, not under the field", async () => {
+    // Three paragraphs of 11px grey above every box reads as a wall and gets skipped, and a
+    // skipped explanation is the same as an unwritten one.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.queryByText(/is not the number of messages you sent/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "About Callbacks to wait for" }));
+    expect(await screen.findByText(/is not the number of messages you sent/i)).toBeInTheDocument();
+  });
+
+  it("shows the /hooks/ prefix, so the field reads as a tail", () => {
+    // A bare box labelled "path" gave no clue what it was the tail of.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.getByText("/hooks/")).toBeInTheDocument();
+  });
+
   it("says the step cannot run while it has no path", () => {
     render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
     expect(screen.getByText(/cannot run without one/i)).toBeInTheDocument();
@@ -175,7 +226,7 @@ describe("configuring a wait", () => {
   it("abandons the edit on Cancel without touching the node", async () => {
     const onClose = vi.fn();
     render(<AwaitConfigPanel node={node()} onClose={onClose} />);
-    await userEvent.type(screen.getByLabelText("Path"), "dr/half-typed");
+    await userEvent.type(screen.getByLabelText("Which inbox to watch"), "dr/half-typed");
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(updateNodeConfig).not.toHaveBeenCalled();

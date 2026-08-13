@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Hourglass, Plus, Trash2 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Hourglass, Info, Plus, Trash2 } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import {
   AWAIT_TIMEOUT_MS,
@@ -19,10 +20,14 @@ import {
  * The panel for a step that waits for a callback.
  *
  * Its own component rather than a branch inside `NodeConfigPanel`, because almost nothing there
- * applies: an await node has no request, so it has no dataset rows to pick, no polling, no run
- * mode, and no endpoint to show in the header. What it shares — a name, an Expect, output
- * variables — is a handful of fields, and a second panel is cheaper to read than a big one
- * hiding two thirds of itself.
+ * applies: an await node has no request, so it has no dataset rows to pick, no polling, and no
+ * endpoint to show in the header.
+ *
+ * **Every field says one short thing, with the long version behind an ⓘ.** The first version put
+ * the whole explanation under each field in 11px grey — three paragraphs of small print above the
+ * box you came to fill in, which reads as a wall and gets skipped, and a skipped explanation is
+ * the same as an unwritten one. The short line answers "what do I type here"; the popover answers
+ * "why", for the fields where an author actually wants to know.
  */
 interface AwaitConfigPanelProps {
   node: Node;
@@ -54,7 +59,9 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
     // than as a 0 the author never typed.
     setCount(String(wait.count && wait.count > 0 ? wait.count : 1));
     setTimeoutSec(toSeconds(wait.timeoutMs && wait.timeoutMs > 0 ? wait.timeoutMs : AWAIT_TIMEOUT_MS));
-    setPerItem(!!listName(config.forEach));
+    // The *presence* of the block is the mode, not whether it names a list — so a node saved with
+    // the toggle on and the list empty opens showing that, rather than quietly reading as "once".
+    setPerItem(!!config.forEach);
     setForEachList(listName(config.forEach));
     setMatchExpr(wait.match || "");
     setCheck(config.check || "");
@@ -63,6 +70,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
 
   const wantedCount = Math.max(1, Math.round(Number(count) || 1));
   const wantedMs = Math.max(1, Math.round((Number(timeoutSec) || 0) * 1000)) || AWAIT_TIMEOUT_MS;
+  const listMissing = perItem && !forEachList.trim();
 
   const handleSave = () => {
     updateNodeConfig(
@@ -78,11 +86,13 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
         },
         check,
         outputVars,
-        // Written only for the mode it belongs to, so switching back to "once" leaves no dormant
-        // block behind — the same rule the request node's `forEach` and `poll` follow.
-        ...(perItem && forEachList.trim()
-          ? { forEach: { list: stripBraces(forEachList) } }
-          : {}),
+        // Written whenever the toggle is on, **even with no list named**. Writing it only once a
+        // list had been filled in meant the panel said "per item" and the saved config said
+        // "once": the step then waited for a single callback while the author believed it waited
+        // for one per message, and nothing warned because nothing could see the disagreement. Now
+        // the config says what the toggle says, and the validator reports the missing list before
+        // the run rather than after a puzzling one.
+        ...(perItem ? { forEach: { list: stripBraces(forEachList) } } : {}),
       },
       alias,
     );
@@ -109,11 +119,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
         </header>
 
         <div className="scrollbar-hairline min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-          <Labelled
-            label="Name"
-            htmlFor="await-name"
-            help="Shown on the canvas and in results."
-          >
+          <Field label="Step name" htmlFor="await-name" hint="Shown on the canvas and in results.">
             <Input
               id="await-name"
               value={alias}
@@ -121,15 +127,34 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               placeholder="Await callback"
               className="h-9 text-[13px]"
             />
-          </Labelled>
+          </Field>
 
-          <Labelled
+          <Field
             label="Runs"
             htmlFor="await-runs"
-            help={
+            hint={
               perItem
-                ? "One wait per item, each with its own verdict — so a report that never came is named by the message that asked for it. Give each one a match below, or they all take the first callback that arrives."
-                : "One wait for this step. Right when a flow has a single message in flight."
+                ? "One wait per item, each with its own verdict."
+                : "One wait. Right when a single message is in flight."
+            }
+            more={
+              <>
+                <p>
+                  <strong>Once</strong> waits for one callback — or as many as “Callbacks to wait
+                  for” says — and gives the step a single verdict.
+                </p>
+                <p>
+                  <strong>Once per item in a list</strong> is how you make this step run several
+                  times. It walks a list an earlier step collected, one wait per element, so a
+                  report that never came is named by the <em>message</em> that asked for it instead
+                  of the step failing with a count. Each item gets its own verdict and its own line
+                  in the console.
+                </p>
+                <p>
+                  Per item you almost always want “Which callback is mine” filled in as well, or
+                  every wait takes whichever callback happens to arrive first.
+                </p>
+              </>
             }
           >
             <div className="space-y-2">
@@ -148,41 +173,86 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                 </ToggleGroupItem>
               </ToggleGroup>
               {perItem && (
-                <Input
-                  aria-label="List to walk"
-                  value={forEachList}
-                  onChange={(e) => setForEachList(e.target.value)}
-                  placeholder="sent — a list an earlier step collected"
-                  className="h-9 font-mono text-[13px]"
-                />
+                <>
+                  <Input
+                    aria-label="List to walk"
+                    value={forEachList}
+                    onChange={(e) => setForEachList(e.target.value)}
+                    placeholder="sent"
+                    className="h-9 font-mono text-[13px]"
+                  />
+                  {listMissing && (
+                    <p className="text-[11px] text-destructive">
+                      Name the list or this step cannot run — it is whatever an earlier step typed
+                      into its “Collect into”.
+                    </p>
+                  )}
+                </>
               )}
             </div>
-          </Labelled>
+          </Field>
 
-          <Labelled
-            label="Path"
+          <Field
+            label="Which inbox to watch"
             htmlFor="await-path"
-            help={
-              "The tail of the URL your test puts in its payload — the part after /hooks/. " +
-              "Use one variable in both so they cannot drift: dr/{{dr_path}} here, and " +
-              "{{hook_base}}/{{dr_path}} in the payload, with hook_base a project variable " +
-              "holding the address that reaches this machine from the sender."
+            hint="The part of your callback URL after /hooks/."
+            more={
+              <>
+                <p>
+                  Your test tells the sender where to call back. Satyanaash listens on{" "}
+                  <code>http://&lt;this machine&gt;:3002/hooks/…</code> and everything after{" "}
+                  <code>/hooks/</code> is a name you invent — one inbox per name, created the moment
+                  something arrives for it.
+                </p>
+                <p>
+                  So if the payload sends <code>{"{{hook_base}}/dr/{{dr_path}}"}</code>, this field
+                  is <code>{"dr/{{dr_path}}"}</code>. Use one variable in both and they cannot drift.
+                </p>
+                <p>
+                  <code>hook_base</code> is your own project variable holding the address that
+                  reaches this machine <em>from the sender</em> — for a pod in minikube that is the
+                  cluster gateway, not <code>localhost</code>.
+                </p>
+              </>
             }
           >
-            <Input
-              id="await-path"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              placeholder="dr/{{dr_path}}"
-              className="h-9 font-mono text-[13px]"
-            />
-          </Labelled>
+            {/* The prefix is shown rather than described. A bare box labelled "path" gave no clue
+                what it was the tail of, which was the whole complaint. */}
+            <div className="flex items-center rounded-md border border-input bg-background focus-within:ring-1 focus-within:ring-ring">
+              <span className="shrink-0 border-r border-input px-2.5 py-2 font-mono text-[12px] text-muted-foreground">
+                /hooks/
+              </span>
+              <Input
+                id="await-path"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="dr/{{dr_path}}"
+                className="h-9 border-0 font-mono text-[13px] shadow-none focus-visible:ring-0"
+              />
+            </div>
+          </Field>
 
           <div className="grid grid-cols-2 gap-4">
-            <Labelled
-              label="How many"
+            <Field
+              label="Callbacks to wait for"
               htmlFor="await-count"
-              help="A campaign to two recipients reports twice."
+              hint={perItem ? "Per item. Usually 1." : "Usually 1."}
+              more={
+                <>
+                  <p>
+                    How many callbacks must arrive before this wait is satisfied. One message
+                    normally produces one delivery report, so 1 is almost always right.
+                  </p>
+                  <p>
+                    Raise it when a <em>single</em> request produces several reports — a campaign to
+                    two recipients reporting twice, say.
+                  </p>
+                  <p>
+                    <strong>It is not the number of messages you sent.</strong> For one wait per
+                    message, use “Once per item in a list” above and leave this at 1.
+                  </p>
+                </>
+              }
             >
               <Input
                 id="await-count"
@@ -192,11 +262,24 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                 onChange={(e) => setCount(e.target.value)}
                 className="h-9 text-[13px]"
               />
-            </Labelled>
-            <Labelled
+            </Field>
+            <Field
               label="Give up after"
               htmlFor="await-timeout"
-              help="Seconds. Then the step fails."
+              hint="Seconds. Then the step fails."
+              more={
+                <>
+                  <p>
+                    Timing out is a <strong>failure, not an error</strong> — nothing broke, the
+                    callback did not come — so the flow takes its failure edge and the rest of the
+                    run still happens.
+                  </p>
+                  <p>
+                    The budget is <em>per wait</em>. Running per item, three missing reports cost
+                    three timeouts, so keep this low while the sender does not post callbacks yet.
+                  </p>
+                </>
+              }
             >
               <Input
                 id="await-timeout"
@@ -206,20 +289,40 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                 onChange={(e) => setTimeoutSec(e.target.value)}
                 className="h-9 text-[13px]"
               />
-            </Labelled>
+            </Field>
           </div>
 
           <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-            {awaitSummary({ path, count: wantedCount, timeoutMs: wantedMs })}
+            {awaitSummary({
+              path,
+              count: wantedCount,
+              timeoutMs: wantedMs,
+              ...(matchExpr.trim() ? { match: matchExpr.trim() } : {}),
+            })}
           </p>
 
-          <Labelled
+          <Field
             label="Which callback is mine"
             htmlFor="await-match"
-            help={
-              "Optional. Leave blank when only one message is in flight. With several, put a " +
-              "correlation id in the callback URL's query — ?cTxnId={{cTxnId}} — and match on it " +
-              "here, so each wait picks out its own report however they arrive."
+            hint="Optional. Needed once several messages are in flight."
+            more={
+              <>
+                <p>
+                  Every report for one inbox lands in the same place, and they arrive in whatever
+                  order the network gives them — so with several messages in flight, “the next
+                  callback” is not “mine”.
+                </p>
+                <p>
+                  Put a correlation id in the callback URL’s query —{" "}
+                  <code>?cTxnId={"{{cTxnId}}"}</code> — and match on it here. The URL was yours to
+                  hand out, so the query comes back exactly as you sent it; this needs nothing from
+                  the sender’s payload.
+                </p>
+                <p>
+                  If a sender rebuilds the URL and drops the query, match on the body instead:{" "}
+                  <code>{'response.json.clientTxnId == "{{cTxnId}}"'}</code>.
+                </p>
+              </>
             }
           >
             <Input
@@ -229,15 +332,25 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               placeholder='response.query.cTxnId == "{{cTxnId}}"'
               className="h-9 font-mono text-[13px]"
             />
-          </Labelled>
+          </Field>
 
-          <Labelled
+          <Field
             label="Expect"
             htmlFor="await-check"
-            help={
-              "An expression about what arrived, e.g. response.json.status == \"DELIVERED\". " +
-              "Leave it blank and arrival alone is the assertion. Not a status code — a callback " +
-              "is a request and carries none of its own."
+            hint="Optional. Blank means arrival alone is the assertion."
+            more={
+              <>
+                <p>
+                  An expression about what arrived, e.g.{" "}
+                  <code>{'response.json.status == "DELIVERED"'}</code>. Leave it blank and the step
+                  passes as soon as a callback turns up, whatever it says.
+                </p>
+                <p>
+                  <strong>Not a status code.</strong> A callback is a request, so it carries no
+                  status of its own — the 200 on the report is what satyanaash replied to the
+                  sender. A status code here is refused rather than passing on that 200.
+                </p>
+              </>
             }
           >
             <Input
@@ -247,7 +360,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               placeholder='response.json.status == "DELIVERED"'
               className="h-9 font-mono text-[13px]"
             />
-          </Labelled>
+          </Field>
 
           <section>
             <div className="mb-3 flex items-start justify-between gap-3">
@@ -317,27 +430,59 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
   );
 };
 
-function Labelled({
+/**
+ * A labelled field: one short hint, and the long explanation behind an ⓘ.
+ *
+ * The ⓘ appears only where there is more to say, so its presence means "there is depth here"
+ * rather than being furniture on every row.
+ */
+function Field({
   label,
   htmlFor,
-  help,
+  hint,
+  more,
   children,
 }: {
   label: string;
   htmlFor: string;
-  help: string;
+  hint: string;
+  more?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <label
-        htmlFor={htmlFor}
-        className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
-      >
-        {label}
-      </label>
+      <div className="flex items-center gap-1.5">
+        <label
+          htmlFor={htmlFor}
+          className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+        >
+          {label}
+        </label>
+        {more && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label={`About ${label}`}
+                className="rounded text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <Info className="h-3.5 w-3.5" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              className="w-[420px] space-y-2.5 text-[12px] leading-relaxed text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[11px] [&_strong]:text-foreground"
+            >
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-foreground">
+                {label}
+              </p>
+              {more}
+            </PopoverContent>
+          </Popover>
+        )}
+      </div>
       <div className="mt-1.5">{children}</div>
-      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{help}</p>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>
     </div>
   );
 }

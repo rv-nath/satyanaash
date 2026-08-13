@@ -619,16 +619,39 @@ fn await_errors(node: &GraphNode) -> Vec<ValidationIssue> {
         .unwrap_or("")
         .trim();
 
+    let mut issues = Vec::new();
     if path.is_empty() {
-        return vec![ValidationIssue::error_with_node(
+        issues.push(ValidationIssue::error_with_node(
             "AWAIT_WITHOUT_PATH",
             "This step waits for a callback but no path is set — give it the path your test \
              puts in its callback URL"
                 .to_string(),
             &node.id,
-        )];
+        ));
     }
-    Vec::new()
+
+    // Set to run once per item, with no list to walk. Checked here as well as for a request node
+    // because the panel can be left in exactly that state — the toggle flipped and the list box
+    // never filled — and the *silent* outcome is the dangerous one: the step then runs once,
+    // waiting for a single callback while the author believes it is waiting for one per message.
+    if let Some(spec) = node.data.get("config").and_then(|c| c.get("forEach")) {
+        let list = spec
+            .get("list")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().trim_start_matches("{{").trim_end_matches("}}").trim())
+            .unwrap_or("");
+        if list.is_empty() {
+            issues.push(ValidationIssue::error_with_node(
+                "FOREACH_WITHOUT_LIST",
+                "This step is set to wait once per item, but no list is named — it cannot run. \
+                 Open the node and pick the list to walk"
+                    .to_string(),
+                &node.id,
+            ));
+        }
+    }
+
+    issues
 }
 
 /// all otherwise discovered from a puzzling result. `test_case` is None when the
@@ -1285,6 +1308,32 @@ mod tests {
             codes(await_path_clashes(&[bare, matched])),
             vec!["AWAIT_PATH_SHARED", "AWAIT_PATH_SHARED"]
         );
+    }
+
+
+    #[test]
+    fn a_wait_set_to_run_per_item_with_no_list_is_an_error() {
+        // The state the panel can be left in: the toggle flipped, the list box never filled. The
+        // silent outcome is the dangerous one — the step runs *once*, waiting for a single
+        // callback while the author believes it waits for one per message.
+        let node = GraphNode {
+            data: serde_json::json!({
+                "config": { "awaitCallback": { "path": "dr/x" }, "forEach": { "list": "  " } }
+            }),
+            ..waiter("w1", "dr/x")
+        };
+        assert_eq!(codes(await_errors(&node)), vec!["FOREACH_WITHOUT_LIST"]);
+    }
+
+    #[test]
+    fn a_wait_per_item_with_a_list_is_fine_braces_and_all() {
+        let node = GraphNode {
+            data: serde_json::json!({
+                "config": { "awaitCallback": { "path": "dr/x" }, "forEach": { "list": "{{sent}}" } }
+            }),
+            ..waiter("w1", "dr/x")
+        };
+        assert!(await_errors(&node).is_empty());
     }
 
 }

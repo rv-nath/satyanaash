@@ -631,6 +631,23 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   nor why the run appeared to stop). `handleEvent` is exported so each branch can be tested against
   a fake sink: `activeNodeId` is cleared when the stream closes, so "the node was marked active
   while it ran" is invisible from outside the hook.
+- **The panel says one short line per field, with the long version behind an ⓘ.** The first
+  version put the whole explanation under each field in 11px grey — three paragraphs of small print
+  above the box you came to fill in, which reads as a wall and gets skipped, and a skipped
+  explanation is the same as an unwritten one. The ⓘ appears only where there is more to say, so its
+  presence means "there is depth here" rather than being furniture on every row. Labels earn their
+  own keep too: **Path** became **Which inbox to watch** with a shown `/hooks/` prefix (a bare box
+  labelled "path" gave no clue what it was the tail of), and **How many** became **Callbacks to
+  wait for**, whose popover says the thing it kept being misread as — *it is not the number of
+  messages you sent*.
+- **A per-item wait with no list is an error, not a silent "once".** The panel used to write the
+  `forEach` block only once a list had been typed, so the toggle could say "Once per item in a
+  list" while the saved config said "once": the step waited for a single callback while the author
+  believed it waited for one per message, and nothing warned because nothing could see the
+  disagreement. The block is now written whenever the toggle is on, the mode is read back from the
+  block's **presence** rather than from whether it names a list, and `await_errors` reports
+  `FOREACH_WITHOUT_LIST` before the run. Found by an author's screenshot of the panel in exactly
+  that state.
 - Dropped onto the canvas from a new **Steps** palette in the left rail, which rides the
   `application/json` `{type, data}` channel the test-case and flow drags already use — so
   `handleDrop`, `addNodeToCanvas` and the undo history took it unchanged. Double-click opens its
