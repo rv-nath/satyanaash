@@ -263,3 +263,40 @@ export function rootPathWarning(
       : `Each record would hold one field containing everything, and a step walking the list could not reach inside it.`;
   return `$ matches the whole response, so ${label} holds the entire body. It also always succeeds, so nothing will warn you it was wrong. ${reach} Point the path at the field you want, like $.campaignId.`;
 }
+
+/**
+ * Whether the list a wait is told to walk is one an earlier step in this flow collects.
+ *
+ * Three states rather than valid/invalid, because **absence is a doubt, not an error**: a list can
+ * also come from a project variable, a flow variable, or a `SAT.vars` write in a script, and only
+ * run time knows. Saying "wrong" about a name that turns out to be right teaches an author to
+ * ignore the panel, which costs more than the typo it caught.
+ *
+ * The confirmed state earns its keep too — a tick beside the name is the difference between "I
+ * typed something" and "this will resolve", which is otherwise only knowable by running the flow
+ * and reading a failure.
+ */
+export type ListCheck =
+  | { state: "missing"; text: string }
+  | { state: "collected"; text: string }
+  | { state: "unknown"; text: string };
+
+export function awaitListCheck(list: string, upstream: string[]): ListCheck {
+  const name = stripBraces(list);
+  if (!name) {
+    return {
+      state: "missing",
+      text: 'Name the list or this step cannot run — it is whatever an earlier step typed into its "Collect into".',
+    };
+  }
+  if (upstream.includes(name)) {
+    return {
+      state: "collected",
+      text: `An earlier step in this flow collects into "${name}". One wait per record.`,
+    };
+  }
+  return {
+    state: "unknown",
+    text: `No earlier step in this flow collects "${name}". That can still be right — a project variable or a script can hold a list — but check it exists by the time this step runs.`,
+  };
+}

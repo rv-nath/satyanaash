@@ -5,10 +5,13 @@ import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Hourglass, Info, Plus, Trash2 } from "lucide-react";
+import { SuggestInput } from "@/components/SuggestInput";
+import { Check, Hourglass, Info, Plus, Trash2 } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
+import { getUpstreamCollections } from "@/lib/variableUtils";
 import {
   AWAIT_TIMEOUT_MS,
+  awaitListCheck,
   awaitSummary,
   listName,
   stripBraces,
@@ -38,7 +41,7 @@ interface AwaitConfigPanelProps {
 const toSeconds = (ms: number) => String(Math.round(ms / 100) / 10);
 
 export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
-  const { updateNodeConfig } = useTestProject();
+  const { updateNodeConfig, nodes, edges } = useTestProject();
   const [alias, setAlias] = useState("");
   const [path, setPath] = useState("");
   const [count, setCount] = useState("1");
@@ -68,9 +71,18 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
     setOutputVars(config.outputVars || []);
   }, [node]);
 
+  // What earlier steps in this flow collect into. Guarded rather than assumed: the graph arrives
+  // with the flow, so a panel opened before it lands — or rendered against a context with no
+  // canvas — would otherwise take the whole sheet down inside the traversal.
+  const upstreamLists =
+    node && nodes?.length && edges?.length ? getUpstreamCollections(node.id, nodes, edges) : [];
+  const listCheck = awaitListCheck(forEachList, upstreamLists);
+  // Offered only when there is exactly one candidate, where it is the answer rather than a guess
+  // between several.
+  const listSuggestion = upstreamLists.length === 1 ? upstreamLists[0] : undefined;
+
   const wantedCount = Math.max(1, Math.round(Number(count) || 1));
   const wantedMs = Math.max(1, Math.round((Number(timeoutSec) || 0) * 1000)) || AWAIT_TIMEOUT_MS;
-  const listMissing = perItem && !forEachList.trim();
 
   const handleSave = () => {
     updateNodeConfig(
@@ -174,19 +186,32 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               </ToggleGroup>
               {perItem && (
                 <>
-                  <Input
+                  <SuggestInput
                     aria-label="List to walk"
+                    suggestion={listSuggestion}
+                    placeholder="sent"
                     value={forEachList}
                     onChange={(e) => setForEachList(e.target.value)}
-                    placeholder="sent"
+                    onAccept={setForEachList}
                     className="h-9 font-mono text-[13px]"
                   />
-                  {listMissing && (
-                    <p className="text-[11px] text-destructive">
-                      Name the list or this step cannot run — it is whatever an earlier step typed
-                      into its “Collect into”.
-                    </p>
-                  )}
+                  {/* Checked against the graph as it is typed, in three states. Absence is a doubt
+                      rather than an error — a project variable or a script can hold a list too, and
+                      calling a right name wrong teaches an author to ignore the panel. */}
+                  <p
+                    className={`flex items-start gap-1 text-[11px] leading-relaxed ${
+                      listCheck.state === "missing"
+                        ? "text-destructive"
+                        : listCheck.state === "collected"
+                          ? "text-success"
+                          : "text-warning"
+                    }`}
+                  >
+                    {listCheck.state === "collected" && (
+                      <Check className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+                    )}
+                    {listCheck.text}
+                  </p>
                 </>
               )}
             </div>

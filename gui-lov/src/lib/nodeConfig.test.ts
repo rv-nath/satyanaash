@@ -7,6 +7,7 @@ import {
   stripBraces,
   walkBadge,
   walkSummary,
+  awaitListCheck,
   rootPathWarning,
   AWAIT_TIMEOUT_MS,
   awaitBadge,
@@ -235,5 +236,35 @@ describe("a path that takes the whole response", () => {
   it("copes with an unnamed row, which is how one is added", () => {
     // The + button adds a blank row, so the path can be typed before the name.
     expect(rootPathWarning("$", "", "once")).toContain("this variable");
+  });
+});
+
+describe("checking the list a wait is told to walk", () => {
+  it("confirms a name an earlier step collects", () => {
+    const check = awaitListCheck("sent", ["sent", "launched"]);
+    expect(check.state).toBe("collected");
+    expect(check.text).toContain('"sent"');
+  });
+
+  it("forgives braces, as the engine does", () => {
+    expect(awaitListCheck("{{sent}}", ["sent"]).state).toBe("collected");
+  });
+
+  it("doubts an unknown name rather than calling it wrong", () => {
+    // A project variable, a flow variable or a SAT.vars write can hold a list, and only run time
+    // knows. Saying "wrong" about a name that turns out to be right teaches an author to ignore
+    // the panel, which costs more than the typo it caught.
+    const check = awaitListCheck("typo", ["sent"]);
+    expect(check.state).toBe("unknown");
+    expect(check.text).toMatch(/can still be right/i);
+  });
+
+  it("asks for a name when there is none, which is the one hard error", () => {
+    expect(awaitListCheck("", ["sent"]).state).toBe("missing");
+    expect(awaitListCheck("  {{}}  ", ["sent"]).state).toBe("missing");
+  });
+
+  it("doubts everything when nothing upstream collects at all", () => {
+    expect(awaitListCheck("sent", []).state).toBe("unknown");
   });
 });

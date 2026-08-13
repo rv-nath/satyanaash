@@ -640,6 +640,15 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   labelled "path" gave no clue what it was the tail of), and **How many** became **Callbacks to
   wait for**, whose popover says the thing it kept being misread as — *it is not the number of
   messages you sent*.
+- **The list name is checked against the graph as it is typed**, by the same
+  `getUpstreamCollections` the request node's panel already used — it walks backwards for
+  `collect.into` names. Three states, not valid/invalid (`awaitListCheck`): **missing** is the one
+  hard error; **collected** earns a tick, which is the difference between "I typed something" and
+  "this will resolve"; **unknown** is a *doubt*, because a project variable, a flow variable or a
+  `SAT.vars` write can hold a list too and only run time knows. Calling a right name wrong teaches
+  an author to ignore the panel, which costs more than the typo it caught. When exactly one upstream
+  collection exists it is offered as a `SuggestInput` default — a name accepted with one keystroke
+  cannot be a typo, which beats verifying one after the fact.
 - **A per-item wait with no list is an error, not a silent "once".** The panel used to write the
   `forEach` block only once a list had been typed, so the toggle could say "Once per item in a
   list" while the saved config said "once": the step waited for a single callback while the author

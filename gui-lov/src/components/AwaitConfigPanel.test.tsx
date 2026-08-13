@@ -11,8 +11,15 @@ import userEvent from "@testing-library/user-event";
  */
 
 const updateNodeConfig = vi.fn();
+// A graph with one upstream step collecting into "sent", so the panel has something real to check
+// the list name against.
+const graphNodes = [
+  { id: "up", type: "testCase", data: { config: { forEachRow: true, collect: { into: "sent" } } } },
+  { id: "w1", type: "awaitCallback", data: {} },
+];
+const graphEdges = [{ id: "e1", source: "up", target: "w1" }];
 vi.mock("@/contexts/TestProjectContext", () => ({
-  useTestProject: () => ({ updateNodeConfig }),
+  useTestProject: () => ({ updateNodeConfig, nodes: graphNodes, edges: graphEdges }),
 }));
 
 import { AwaitConfigPanel } from "@/components/AwaitConfigPanel";
@@ -143,6 +150,34 @@ describe("configuring a wait", () => {
     await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(updateNodeConfig.mock.calls[0][1].forEach).toEqual({ list: "" });
+  });
+
+  it("confirms a list an earlier step actually collects", async () => {
+    // The difference between "I typed something" and "this will resolve" — otherwise knowable only
+    // by running the flow and reading a failure.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
+    await userEvent.type(screen.getByLabelText("List to walk"), "sent");
+    expect(screen.getByText(/An earlier step in this flow collects into "sent"/i)).toBeInTheDocument();
+  });
+
+  it("doubts a name nothing collects, without calling it wrong", async () => {
+    // A list can come from a project variable or a script, and only run time knows. Saying "wrong"
+    // about a name that turns out to be right teaches an author to ignore the panel.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
+    await userEvent.type(screen.getByLabelText("List to walk"), "typo");
+    const note = screen.getByText(/No earlier step in this flow collects "typo"/i);
+    expect(note).toBeInTheDocument();
+    expect(note.textContent).toMatch(/can still be right/i);
+  });
+
+  it("offers the one name an earlier step collects, so it need not be typed", async () => {
+    // A suggestion the author accepts cannot be a typo. Offered only when there is exactly one
+    // candidate, where it is the answer rather than a guess between several.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /once per item/i }));
+    expect(screen.getByLabelText("List to walk")).toHaveAttribute("placeholder", "sent");
   });
 
   it("says so in the panel while the list is empty", async () => {
