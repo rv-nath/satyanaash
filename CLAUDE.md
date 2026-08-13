@@ -456,6 +456,12 @@ context clones that were dropped at the end of each iteration.
   `NO_FAILURE_EDGE`s with `valid: true`. A half-typed field row (a name with no path) does not count
   as filling it. A walked list that *no* step declares is left alone, because a project variable or a
   script can hold one.
+  - **The message states the relationship, and names the steps.** "…has no output variables" said
+    the fault and assumed the reader already knew that a record is *made of* them — the author who
+    hit it asked, reasonably, whether naming the list was not enough on its own. It now says
+    `Collect into` is only the name of the list, that each record is made from that step's output
+    variables, names the step to open (alias → label → "the step above", because a node id in a
+    sentence is not something anyone can find on a canvas), and shows the shape of the thing to add.
   - The run-time message names **both** causes now. It used to say only "the step that collects it
     must run before this one", and the flow that hit this had the step running, upstream — so being
     told about ordering sent the author to look at the graph instead of at the node.

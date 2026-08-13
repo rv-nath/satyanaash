@@ -566,6 +566,21 @@ fn unfillable_lists(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
     };
 
     // Lists a step promises but collects nothing into.
+    // What a node is called, for a message an author has to act on: two node ids in a sentence
+    // are two things they then have to find on the canvas.
+    let display = |node: &GraphNode| {
+        node.data
+            .get("alias")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                node.data.get("label").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
+            })
+            .unwrap_or("the step above")
+            .to_string()
+    };
+
     let mut hollow: HashMap<String, &GraphNode> = HashMap::new();
     for node in nodes {
         let cfg = cfg_of(node);
@@ -598,13 +613,22 @@ fn unfillable_lists(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
         };
         let Some(producer) = hollow.get(&list) else { continue };
 
+        // Says the *relationship*, not just the fault. "No output variables" assumes the author
+        // already knows that a record is made of them — and the one who hit this asked, reasonably,
+        // whether naming the list was not enough on its own.
         issues.push(ValidationIssue::error_with_node(
             "LIST_NEVER_FILLED",
             format!(
-                "This step runs once per item of \"{}\", but the step collecting into that name \
-                 has no output variables — so \"{}\" is never created and this step cannot run. \
-                 Add the field(s) you want from each response to that step",
-                list, list
+                "This step runs once per item of \"{}\", and \"{}\" will never exist. \"{}\" is \
+                 only the *name* of the list — each record in it is made from the output variables \
+                 of \"{}\", and that step has none, so there is nothing to put in a record. Open \
+                 \"{}\" and add the field(s) you want from each response, like \
+                 campaignId ← $.campaignId",
+                list,
+                list,
+                list,
+                display(producer),
+                display(producer)
             ),
             &node.id,
         ));
@@ -612,9 +636,12 @@ fn unfillable_lists(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
         issues.push(ValidationIssue::error_with_node(
             "LIST_NEVER_FILLED",
             format!(
-                "\"{}\" is collected here but has no fields, and a later step runs once per item \
-                 of it — add output variable(s) naming what to take from each response",
-                list
+                "\"{}\" is named here but nothing goes into it: a record is made from this step's \
+                 output variables, and there are none. \"{}\" will never exist, and \"{}\" runs \
+                 once per item of it. Add the field(s) you want from each response",
+                list,
+                list,
+                display(node)
             ),
             &producer.id,
         ));
@@ -1548,6 +1575,57 @@ mod tests {
             result.errors
         );
         assert!(!result.valid, "it cannot run, so the flow is not valid");
+    }
+
+
+    #[test]
+    fn the_message_explains_that_a_record_is_made_of_output_variables() {
+        // The author who hit this asked whether naming the list was not enough on its own — which
+        // is exactly what "has no output variables" left unsaid. The relationship is the thing to
+        // state: `Collect into` is the container, the output variables are its contents.
+        let mut producer = collector("send", "launched", false);
+        producer.data = serde_json::json!({
+            "alias": "Send sms nb message",
+            "config": { "collect": { "into": "launched" }, "outputVars": [] }
+        });
+        let mut consumer = walker("wait", "awaitCallback", "launched");
+        consumer.data = serde_json::json!({
+            "alias": "Chk drCallback fires",
+            "config": { "awaitCallback": { "path": "dr/x" }, "forEach": { "list": "launched" } }
+        });
+
+        let issues = unfillable_lists(&[producer, consumer]);
+        let on = |id: &str| {
+            issues.iter().find(|i| i.node_id.as_deref() == Some(id)).unwrap().message.clone()
+        };
+
+        let consumer_msg = on("wait");
+        assert!(consumer_msg.contains("only the *name* of the list"), "{consumer_msg}");
+        assert!(consumer_msg.contains("made from the output variables"), "{consumer_msg}");
+        // Names the step to open, because "that step" is something an author then has to find.
+        assert!(consumer_msg.contains("Send sms nb message"), "{consumer_msg}");
+        // And shows the shape of the thing to add.
+        assert!(consumer_msg.contains("$.campaignId"), "{consumer_msg}");
+
+        let producer_msg = on("send");
+        assert!(producer_msg.contains("a record is made from this step's"), "{producer_msg}");
+        // Names the step that will fail, so the consequence is visible from the fixable end.
+        assert!(producer_msg.contains("Chk drCallback fires"), "{producer_msg}");
+    }
+
+    #[test]
+    fn an_unnamed_step_is_described_rather_than_given_an_id() {
+        // A node id in a sentence is not something an author can look for on a canvas.
+        let issues = unfillable_lists(&[
+            collector("send", "launched", false),
+            walker("wait", "awaitCallback", "launched"),
+        ]);
+        assert!(
+            issues.iter().all(|i| !i.message.contains("send") && !i.message.contains("wait")),
+            "{:?}",
+            issues.iter().map(|i| &i.message).collect::<Vec<_>>()
+        );
+        assert!(issues[0].message.contains("the step above"), "{}", issues[0].message);
     }
 
 }
