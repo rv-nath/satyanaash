@@ -25,13 +25,18 @@ const run = (over: Partial<SuiteRun> = {}): SuiteRun => ({
   ...over,
 });
 
-const renderRail = () => {
+const renderRail = (activeRunId: string | null = null) => {
   const onOpenRun = vi.fn();
   const onOpenFullHistory = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <RunsRail projectId="p1" onOpenRun={onOpenRun} onOpenFullHistory={onOpenFullHistory} />
+      <RunsRail
+        projectId="p1"
+        activeRunId={activeRunId}
+        onOpenRun={onOpenRun}
+        onOpenFullHistory={onOpenFullHistory}
+      />
     </QueryClientProvider>,
   );
   return { onOpenRun, onOpenFullHistory };
@@ -95,5 +100,31 @@ describe("the runs rail", () => {
     list.mockResolvedValue({ runs: [], adhoc_hidden: 0 });
     renderRail();
     expect(await screen.findByText(/Run a suite and it appears here/)).toBeInTheDocument();
+  });
+});
+
+describe("which run you are reading", () => {
+  it("marks the run the main pane is showing", async () => {
+    // Runs of one suite are a column of near-identical rows — same name, same shape — so without
+    // this the report on the right belongs to none of them in particular, which is the one thing
+    // this rail is for.
+    list.mockResolvedValue({
+      runs: [run({ id: "r1" }), run({ id: "r2" })],
+      adhoc_hidden: 0,
+    });
+    renderRail("r2");
+
+    const rows = await screen.findAllByRole("button", { name: /Nightly regression/i });
+    const marked = rows.filter((b) => b.getAttribute("aria-current") === "true");
+    expect(marked).toHaveLength(1);
+    expect(marked[0].className).toContain("bg-primary/10");
+  });
+
+  it("marks nothing when the main pane is showing something else", async () => {
+    list.mockResolvedValue({ runs: [run({ id: "r1" })], adhoc_hidden: 0 });
+    renderRail(null);
+
+    const rows = await screen.findAllByRole("button", { name: /Nightly regression/i });
+    expect(rows.every((b) => b.getAttribute("aria-current") === null)).toBe(true);
   });
 });

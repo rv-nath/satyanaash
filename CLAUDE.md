@@ -174,6 +174,13 @@ coerced any value other than `flows` to `tests`, so `?tab=runs` would silently h
 fallback so a bare `/project/:id` still lands where you left it, and an unrecognised value falls
 through to storage rather than wedging the sidebar on a view with nothing in it.
 
+**The runs rail marks the run the main pane is showing** (`activeRunId`, `aria-current`, and the
+tests rail's own border-and-tint rather than a third idiom). Runs of one suite are a column of
+near-identical rows — same name, same shape, minutes apart — so without it the report on the right
+belongs to none of them in particular, which is the one thing that rail is for. The derivation is a
+named function in `workspaceTabs` rather than a ternary in the page, because inline it typechecks
+whatever it returns: replacing it with a bare `null` broke the selection and nothing failed.
+
 **The main pane renders from `workspace.tabs`, not from `activeFlowId`**, and that is the whole
 subtlety. `?flow=` used to restore the *selection* only, so a shared link arrived with the project
 loaded — header, sidebar, everything — and an empty workspace showing the "Build a request" welcome

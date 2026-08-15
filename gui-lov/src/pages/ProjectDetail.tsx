@@ -65,7 +65,7 @@ import { useQuery } from "@tanstack/react-query";
 import { suitesApi } from "@/lib/api";
 import { consoleTabsFor, shownConsole } from "@/lib/consoleTabs";
 import { suiteLogKey } from "@/lib/runHistory";
-import { tabKey, atCap, MAX_TABS, activeSurface } from "@/lib/workspaceTabs";
+import { tabKey, atCap, MAX_TABS, activeSurface, activeRunId } from "@/lib/workspaceTabs";
 import { ApiClientError } from "@/lib/api/client";
 import { FlowVariablesDialog } from "@/components/FlowVariablesDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -178,6 +178,10 @@ const ProjectDetailContent = () => {
   const activeIsSettings = surface.kind === 'settings';
   const activeTestId = surface.kind === 'test' ? surface.id : null;
   const activeSuiteId = surface.kind === 'suite' ? surface.id : null;
+  // Which run the main pane is showing, so the runs rail can mark it. Without this a column of
+  // runs from one suite is a column of identical rows and the report on the right belongs to
+  // none of them in particular.
+  const openRunId = activeRunId(workspace);
 
   // Tab-bar render models
   // Per-tab editor state kept outside the editors, so it survives close/reopen:
@@ -758,7 +762,12 @@ const ProjectDetailContent = () => {
   ) : null;
 
   const runsList = projectId ? (
-    <RunsRail projectId={projectId} onOpenRun={openRunTab} onOpenFullHistory={openRunsTab} />
+    <RunsRail
+      projectId={projectId}
+      activeRunId={openRunId}
+      onOpenRun={openRunTab}
+      onOpenFullHistory={openRunsTab}
+    />
   ) : null;
 
   // Storages are named and project-scoped rather than per-environment: uploading happens while

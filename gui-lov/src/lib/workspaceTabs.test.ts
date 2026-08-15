@@ -3,8 +3,7 @@ import {
   MAX_TABS, tabKey, initialWorkspaceState, openTest, openFlow, openSettings, openSuite,
   openFiles,
   openRuns, openRun, togglePinned, closeTab, setActive, tabCount, atCap, isSingleton,
-  nothingOpen, activeSurface,
-} from "@/lib/workspaceTabs";
+  nothingOpen, activeSurface, activeRunId } from "@/lib/workspaceTabs";
 
 describe("workspaceTabs", () => {
   it("starts empty (no active tab)", () => {
@@ -358,5 +357,28 @@ describe("the runs tab", () => {
     s = closeTab(s, "runs");
     expect(s.settingsOpen).toBe(true);
     expect(s.active).toBe("settings");
+  });
+});
+
+describe("which run the main pane is showing", () => {
+  it("names it when a run tab is active", () => {
+    // The runs rail marks that row. Inline in the page this was a ternary that typechecks
+    // whatever it returns — replacing it with `null` broke the selection and nothing failed.
+    const state = openRun(initialWorkspaceState(), "r7").state;
+    expect(activeRunId(state)).toBe("r7");
+  });
+
+  it("is null when something else is active", () => {
+    expect(activeRunId(openFlow(initialWorkspaceState(), "f1").state)).toBeNull();
+    expect(activeRunId(openRuns(initialWorkspaceState()))).toBeNull();
+    expect(activeRunId(initialWorkspaceState())).toBeNull();
+  });
+
+  it("follows the active tab rather than the newest one", () => {
+    // Two runs open, the first one selected: the mark has to follow what you are reading.
+    let state = openRun(initialWorkspaceState(), "r1").state;
+    state = openRun(state, "r2").state;
+    state = setActive(state, tabKey("run", "r1"));
+    expect(activeRunId(state)).toBe("r1");
   });
 });

@@ -277,3 +277,15 @@ export function closeTab(state: WorkspaceState, key: string): WorkspaceState {
   }
   return { ...state, tabs, active };
 }
+
+/**
+ * The run the main pane is showing, or `null`.
+ *
+ * A named derivation rather than an inline `surface.kind === "run" ? surface.id : null` in the
+ * page, because that line typechecks whatever it returns: replacing it with a bare `null` breaks
+ * the runs rail's selection and nothing fails. Here it can be pinned.
+ */
+export function activeRunId(state: WorkspaceState): string | null {
+  const surface = activeSurface(state);
+  return surface.kind === "run" ? surface.id : null;
+}

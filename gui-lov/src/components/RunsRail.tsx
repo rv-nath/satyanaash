@@ -36,12 +36,14 @@ const verdictClass: Record<RunVerdict, string> = {
 
 interface Props {
   projectId: string;
+  /** The run the main pane is showing, so the list can say which one you are reading. */
+  activeRunId: string | null;
   onOpenRun: (runId: string) => void;
   /** Opens the full-width history tab, for comparing across runs. */
   onOpenFullHistory: () => void;
 }
 
-export const RunsRail = ({ projectId, onOpenRun, onOpenFullHistory }: Props) => {
+export const RunsRail = ({ projectId, activeRunId, onOpenRun, onOpenFullHistory }: Props) => {
   // Ad-hoc runs stay hidden here with no way to show them: the toggle belongs on the full
   // view, where there is room to say what is hidden and why. The count still says so.
   const [includeAdhoc] = useState(false);
@@ -96,7 +98,14 @@ export const RunsRail = ({ projectId, onOpenRun, onOpenFullHistory }: Props) => 
                 : "No runs yet. Run a suite and it appears here."}
             </p>
           ) : (
-            runs.map((run) => <RunRow key={run.id} run={run} onOpen={() => onOpenRun(run.id)} />)
+            runs.map((run) => (
+              <RunRow
+                key={run.id}
+                run={run}
+                isOpen={run.id === activeRunId}
+                onOpen={() => onOpenRun(run.id)}
+              />
+            ))
           )}
 
           {/* Counted out loud, never silently omitted — the same rule the full view keeps. */}
@@ -123,7 +132,16 @@ export const RunsRail = ({ projectId, onOpenRun, onOpenFullHistory }: Props) => 
  * when. The failure breakdown is in the tooltip and in the full history — one click away,
  * and this list is for finding a run rather than for reading one.
  */
-const RunRow = ({ run, onOpen }: { run: SuiteRun; onOpen: () => void }) => {
+const RunRow = ({
+  run,
+  isOpen,
+  onOpen,
+}: {
+  run: SuiteRun;
+  /** This run is the one the main pane is showing. */
+  isOpen: boolean;
+  onOpen: () => void;
+}) => {
   const v = verdict(run);
   const ran = run.total - run.skipped;
   return (
@@ -131,7 +149,16 @@ const RunRow = ({ run, onOpen }: { run: SuiteRun; onOpen: () => void }) => {
       type="button"
       onClick={onOpen}
       title={`${run.suite_name} — ${countsLine(run)}${run.suite_id ? "" : " (ad-hoc flow run)"}`}
-      className="flex w-full items-start gap-1.5 rounded px-1.5 py-1 text-left hover:bg-sidebar-accent"
+      // The run the main pane is showing, marked the way the tests rail marks its selection —
+      // a border and a tint rather than a third idiom. Without it a list of runs from the same
+      // suite is a column of identical rows, and the results on the right belong to none of them
+      // in particular: the one thing this rail is for is knowing *which* run you are reading.
+      aria-current={isOpen ? "true" : undefined}
+      className={`flex w-full items-start gap-1.5 rounded border px-1.5 py-1 text-left ${
+        isOpen
+          ? "border-primary/40 bg-primary/10"
+          : "border-transparent hover:bg-sidebar-accent"
+      }`}
     >
       <span className={`mt-[2px] w-3 shrink-0 text-center font-mono text-xs ${verdictClass[v]}`}>
         {verdictIcon(v)}
