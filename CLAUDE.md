@@ -162,8 +162,17 @@ npm run dev        # Starts on http://localhost:8081 (8080 is a krakend port-for
 
 ## Deep links
 
-`/project/:id` and `/project/:id/test/:testId` are real routes, and `?flow=` / `?tab=` restore
+`/project/:id` and `/project/:id/test/:testId` are real routes, and `?flow=` / `?rail=` restore
 canvas and sidebar state — so a link to a flow can be pasted or bookmarked.
+
+**`?tab=` is gone**, with the `sidebarTab` state behind it. The activity rail replaced that
+two-value toggle and kept its view in `localStorage` only, so the sidebar stopped travelling in the
+link while `?flow=` still did — a link showed the sender's flow beside the receiver's sidebar. The
+old machinery survived as dead code nothing outside the context referenced, including a reader that
+coerced any value other than `flows` to `tests`, so `?tab=runs` would silently have meant `tests`.
+`?rail=` replaces it: the **URL wins when it names a view this build knows**, `localStorage` is the
+fallback so a bare `/project/:id` still lands where you left it, and an unrecognised value falls
+through to storage rather than wedging the sidebar on a view with nothing in it.
 
 **The main pane renders from `workspace.tabs`, not from `activeFlowId`**, and that is the whole
 subtlety. `?flow=` used to restore the *selection* only, so a shared link arrived with the project

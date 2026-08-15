@@ -70,7 +70,6 @@ export interface Flow {
 export type NodeType = 'start' | 'end' | 'testCase' | 'group' | 'awaitCallback';
 
 export type ActiveTab = 'canvas' | 'tests';
-export type SidebarTab = 'tests' | 'flows';
 
 interface TestProjectContextType {
   project: Project | null;
@@ -115,8 +114,6 @@ interface TestProjectContextType {
   setEditingTestCaseId: (id: string | null) => void;
   activeTab: ActiveTab;
   setActiveTab: (tab: ActiveTab) => void;
-  sidebarTab: SidebarTab;
-  setSidebarTab: (tab: SidebarTab) => void;
   openTestCaseEditor: (testCaseId?: string) => void; // No arg = create mode
   closeTestCaseEditor: () => void;
   // Auto-save status
@@ -407,31 +404,6 @@ export const TestProjectProvider = ({
   const [selectedTestCaseId, setSelectedTestCaseId] = useState<string | null>(null);
   const [editingTestCaseId, setEditingTestCaseId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>('canvas');
-
-  // Sidebar tab from URL, default to 'tests'
-  const urlTab = searchParams.get('tab') as SidebarTab | null;
-  const [sidebarTab, setSidebarTabState] = useState<SidebarTab>(
-    urlTab === 'flows' ? 'flows' : 'tests'
-  );
-
-  // Wrapper to update URL when sidebar tab changes
-  const setSidebarTab = useCallback((tab: SidebarTab) => {
-    setSidebarTabState(tab);
-    setSearchParams(prev => {
-      const newParams = new URLSearchParams(prev);
-      newParams.set('tab', tab);
-      return newParams;
-    }, { replace: true });
-  }, [setSearchParams]);
-
-  // Sync sidebarTab with URL when URL changes
-  useEffect(() => {
-    const urlTabCurrent = searchParams.get('tab') as SidebarTab | null;
-    const newTab = urlTabCurrent === 'flows' ? 'flows' : 'tests';
-    if (newTab !== sidebarTab) {
-      setSidebarTabState(newTab);
-    }
-  }, [searchParams]);
 
   const history = useHistory<Flow[]>(50);
   const [flows, setFlows] = useState<Flow[]>(initialFlowState);
@@ -971,8 +943,6 @@ export const TestProjectProvider = ({
         setEditingTestCaseId,
         activeTab,
         setActiveTab,
-        sidebarTab,
-        setSidebarTab,
         openTestCaseEditor,
         closeTestCaseEditor,
         saveStatus,
