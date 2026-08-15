@@ -8,6 +8,7 @@ import {
   walkBadge,
   walkSummary,
   awaitListCheck,
+  callbackUrlToSend,
   rootPathWarning,
   AWAIT_TIMEOUT_MS,
   awaitBadge,
@@ -271,5 +272,23 @@ describe("checking the list a wait is told to walk", () => {
 
   it("doubts everything when nothing upstream collects at all", () => {
     expect(awaitListCheck("sent", []).state).toBe("unknown");
+  });
+});
+
+describe("the URL a payload has to send", () => {
+  it("states it, rather than asking the author to restate it", () => {
+    // The field used to ask for "the tail of the URL your test puts in its payload", which is
+    // circular: you cannot fill it *from* the payload before the payload exists, and you cannot
+    // write the payload before choosing a name. Inverted, there is no puzzle.
+    expect(callbackUrlToSend("dr/{{dr_path}}")).toBe("{{hook_base}}/dr/{{dr_path}}");
+  });
+
+  it("says nothing while there is no name yet", () => {
+    expect(callbackUrlToSend("")).toBe("");
+    expect(callbackUrlToSend("   ")).toBe("");
+  });
+
+  it("does not double the slash when the name starts with one", () => {
+    expect(callbackUrlToSend("/dr/x")).toBe("{{hook_base}}/dr/x");
   });
 });

@@ -687,6 +687,21 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   labelled "path" gave no clue what it was the tail of), and **How many** became **Callbacks to
   wait for**, whose popover says the thing it kept being misread as — *it is not the number of
   messages you sent*.
+- **The inbox field states the URL to paste rather than asking for it back.** "The part of your
+  callback URL after /hooks/" is circular: you cannot fill it *from* the payload before the payload
+  exists, and you cannot write the payload before choosing a name. So the hint is now "a name you
+  invent", and under the field the panel prints `{{hook_base}}/<name>` with "send this from the
+  request that should provoke the callback" — the panel becomes the source of the URL instead of
+  asking the author to restate one.
+- **A placeholder has to look like an example, not an answer.** The default
+  `placeholder:text-muted-foreground` in a 13px mono field is indistinguishable from a value — an
+  author read this panel and thought two fields were already filled in. Faded and italic
+  (`placeholder:italic placeholder:text-muted-foreground/60`), so the difference survives a glance.
+- **The correlation guidance leads with the body**, because that is where the design landed: the
+  send response carries a platform-generated id, so an output variable on that step plus
+  `response.json.messageId == "{{messageId}}"` needs nothing authored per message. The query-string
+  form is documented as the *fallback* for a platform whose report carries nothing that ties back.
+  The placeholder had kept advertising the query long after the body became the recommendation.
 - **The list name is checked against the graph as it is typed**, by the same
   `getUpstreamCollections` the request node's panel already used — it walks backwards for
   `collect.into` names. Three states, not valid/invalid (`awaitListCheck`): **missing** is the one

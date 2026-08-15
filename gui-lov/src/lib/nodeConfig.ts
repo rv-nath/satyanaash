@@ -302,3 +302,17 @@ export function awaitListCheck(list: string, upstream: string[]): ListCheck {
     text: `No earlier step in this flow collects "${name}". That can still be right — a project variable or a script can hold a list — but check it exists by the time this step runs.`,
   };
 }
+
+/**
+ * The URL the payload has to send, given the inbox name.
+ *
+ * The panel used to ask an author to restate the tail of a URL they write somewhere else, which
+ * is circular if you do not already know the answer: you cannot fill this field *from* the
+ * payload until you have written the payload, and you cannot write the payload until you have
+ * chosen a name. Inverting it removes the puzzle — invent a name here, and be told exactly what
+ * to paste over there.
+ */
+export function callbackUrlToSend(path: string): string {
+  const tail = path.trim().replace(/^\/+/, "");
+  return tail ? `{{hook_base}}/${tail}` : "";
+}

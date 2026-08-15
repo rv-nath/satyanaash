@@ -13,6 +13,7 @@ import {
   AWAIT_TIMEOUT_MS,
   awaitListCheck,
   awaitSummary,
+  callbackUrlToSend,
   listName,
   stripBraces,
   type NodeConfig,
@@ -36,6 +37,17 @@ interface AwaitConfigPanelProps {
   node: Node;
   onClose: () => void;
 }
+
+/**
+ * A placeholder has to look like an example, not like a value.
+ *
+ * The default `placeholder:text-muted-foreground` is close enough to real text that in a 13px
+ * mono field it reads as filled in — an author looked at this panel and thought two fields were
+ * already answered. Faded and italic, so the difference survives a glance.
+ */
+const HINT = "placeholder:italic placeholder:text-muted-foreground/60";
+const FIELD = `h-9 font-mono text-[13px] ${HINT}`;
+const PLAIN = `h-9 text-[13px] ${HINT}`;
 
 /** Seconds in the boxes, milliseconds on the wire — the same split the poll fields use. */
 const toSeconds = (ms: number) => String(Math.round(ms / 100) / 10);
@@ -137,7 +149,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
               placeholder="Await callback"
-              className="h-9 text-[13px]"
+              className={PLAIN}
             />
           </Field>
 
@@ -193,7 +205,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                     value={forEachList}
                     onChange={(e) => setForEachList(e.target.value)}
                     onAccept={setForEachList}
-                    className="h-9 font-mono text-[13px]"
+                    className={FIELD}
                   />
                   {/* Checked against the graph as it is typed, in three states. Absence is a doubt
                       rather than an error — a project variable or a script can hold a list too, and
@@ -220,14 +232,18 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
           <Field
             label="Which inbox to watch"
             htmlFor="await-path"
-            hint="The part of your callback URL after /hooks/."
+            hint="A name you invent — anything unique to this test."
             more={
               <>
                 <p>
-                  Your test tells the sender where to call back. Satyanaash listens on{" "}
-                  <code>http://&lt;this machine&gt;:3002/hooks/…</code> and everything after{" "}
-                  <code>/hooks/</code> is a name you invent — one inbox per name, created the moment
-                  something arrives for it.
+                  <strong>You invent this.</strong> Satyanaash listens on{" "}
+                  <code>http://&lt;this machine&gt;:3002/hooks/…</code> and anything after{" "}
+                  <code>/hooks/</code> is a name — one inbox per name, created the moment something
+                  arrives for it. There is nothing to register and no list to pick from.
+                </p>
+                <p>
+                  Then put the URL below into the callback field of the request that should provoke
+                  the callback. That is the only place the two have to agree.
                 </p>
                 <p>
                   <strong>The same path is written twice</strong> — once in the callback URL you
@@ -266,9 +282,21 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                 value={path}
                 onChange={(e) => setPath(e.target.value)}
                 placeholder="dr/{{dr_path}}"
-                className="h-9 border-0 font-mono text-[13px] shadow-none focus-visible:ring-0"
+                className={`h-9 border-0 font-mono text-[13px] shadow-none focus-visible:ring-0 ${HINT}`}
               />
             </div>
+            {/* The answer to "and then what?", stated rather than left to be worked out. Asking an
+                author to restate the tail of a URL they write elsewhere is circular: you cannot
+                fill this field *from* the payload before the payload exists, and you cannot write
+                the payload before choosing a name. */}
+            {callbackUrlToSend(path) && (
+              <p className="mt-1.5 rounded border border-border bg-muted/40 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                Send this from the request that should provoke the callback:
+                <span className="mt-1 block break-all font-mono text-foreground">
+                  {callbackUrlToSend(path)}
+                </span>
+              </p>
+            )}
           </Field>
 
           <div className="grid grid-cols-2 gap-4">
@@ -299,7 +327,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                 min={1}
                 value={count}
                 onChange={(e) => setCount(e.target.value)}
-                className="h-9 text-[13px]"
+                className={PLAIN}
               />
             </Field>
             <Field
@@ -326,7 +354,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                 min={1}
                 value={timeoutSec}
                 onChange={(e) => setTimeoutSec(e.target.value)}
-                className="h-9 text-[13px]"
+                className={PLAIN}
               />
             </Field>
           </div>
@@ -349,17 +377,29 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                 <p>
                   Every report for one inbox lands in the same place, and they arrive in whatever
                   order the network gives them — so with several messages in flight, “the next
-                  callback” is not “mine”.
+                  callback” is not “mine”. This says which one is.
                 </p>
                 <p>
-                  Put a correlation id in the callback URL’s query —{" "}
-                  <code>?cTxnId={"{{cTxnId}}"}</code> — and match on it here. The URL was yours to
-                  hand out, so the query comes back exactly as you sent it; this needs nothing from
-                  the sender’s payload.
+                  <strong>Correlate on an id both ends already share.</strong> The send response
+                  gives you one — the platform generates it per message — so take it as an output
+                  variable on that step and match on the same field in the report:
+                </p>
+                <div className="rounded border border-border bg-muted/40 p-2 font-mono text-[11px]">
+                  <div className="text-muted-foreground/70">on the sending step</div>
+                  <div>{"messageId  ←  $.messageId"}</div>
+                  <div className="mt-1.5 text-muted-foreground/70">here</div>
+                  <div>{'response.json.messageId == "{{messageId}}"'}</div>
+                </div>
+                <p>
+                  Nothing to author per message: the id is already unique, and the record the
+                  earlier step collected carries it.
                 </p>
                 <p>
-                  If a sender rebuilds the URL and drops the query, match on the body instead:{" "}
-                  <code>{'response.json.clientTxnId == "{{cTxnId}}"'}</code>.
+                  If a platform’s report carries nothing that ties back, the fallback is to put an
+                  id of your own in the callback URL’s query —{" "}
+                  <code>?cTxnId={"{{cTxnId}}"}</code> — and match{" "}
+                  <code>response.query.cTxnId</code>. The URL is yours to hand out, so the query
+                  comes back verbatim; it just needs the sender to preserve it.
                 </p>
               </>
             }
@@ -368,8 +408,8 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               id="await-match"
               value={matchExpr}
               onChange={(e) => setMatchExpr(e.target.value)}
-              placeholder='response.query.cTxnId == "{{cTxnId}}"'
-              className="h-9 font-mono text-[13px]"
+              placeholder='response.json.messageId == "{{messageId}}"'
+              className={FIELD}
             />
           </Field>
 
@@ -397,7 +437,7 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
               value={check}
               onChange={(e) => setCheck(e.target.value)}
               placeholder='response.json.status == "DELIVERED"'
-              className="h-9 font-mono text-[13px]"
+              className={FIELD}
             />
           </Field>
 
@@ -433,14 +473,14 @@ export const AwaitConfigPanel = ({ node, onClose }: AwaitConfigPanelProps) => {
                       onChange={(e) => updateVar(i, "name", e.target.value)}
                       placeholder="delivered_id"
                       aria-label={`Output variable ${i + 1} name`}
-                      className="h-9 text-[13px]"
+                      className={PLAIN}
                     />
                     <Input
                       value={row.path}
                       onChange={(e) => updateVar(i, "path", e.target.value)}
                       placeholder="$.messageId"
                       aria-label={`Output variable ${i + 1} path`}
-                      className="h-9 font-mono text-[13px]"
+                      className={FIELD}
                     />
                     <Button
                       variant="ghost"

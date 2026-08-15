@@ -265,6 +265,44 @@ describe("configuring a wait", () => {
     expect(screen.getByText("/hooks/")).toBeInTheDocument();
   });
 
+  it("tells the author what to paste into the payload", async () => {
+    // The field asks you to invent a name; this says what to do with it. Without it the two ends
+    // have to be reconciled in the author's head.
+    render(
+      <AwaitConfigPanel node={node({ awaitCallback: { path: "dr/{{dr_path}}" } })} onClose={vi.fn()} />,
+    );
+    expect(screen.getByText("{{hook_base}}/dr/{{dr_path}}")).toBeInTheDocument();
+    expect(screen.getByText(/Send this from the request/i)).toBeInTheDocument();
+  });
+
+  it("says nothing about a URL while the inbox has no name", () => {
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.queryByText(/Send this from the request/i)).not.toBeInTheDocument();
+  });
+
+  it("shows placeholders as examples, not as values", async () => {
+    // An author read this panel and thought two fields were already filled in. A placeholder in a
+    // 13px mono field at the default muted colour is indistinguishable from an answer.
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    for (const label of ["Which callback is mine", "Expect", "Which inbox to watch"]) {
+      expect(screen.getByLabelText(label).className).toContain("placeholder:italic");
+    }
+  });
+
+  it("suggests correlating on the body, which is what the design settled on", async () => {
+    render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
+    expect(screen.getByLabelText("Which callback is mine")).toHaveAttribute(
+      "placeholder",
+      'response.json.messageId == "{{messageId}}"',
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "About Which callback is mine" }));
+    // The id both ends already share, taken from the send response — not a string smuggled
+    // through a query string, which is now only the fallback.
+    expect(await screen.findByText(/id both ends already share/i)).toBeInTheDocument();
+    expect(screen.getByText(/fallback/i)).toBeInTheDocument();
+  });
+
   it("says the step cannot run while it has no path", () => {
     render(<AwaitConfigPanel node={node()} onClose={vi.fn()} />);
     expect(screen.getByText(/cannot run without one/i)).toBeInTheDocument();
