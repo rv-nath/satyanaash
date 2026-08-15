@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::error::AppError;
+use crate::execution::http::RequestLog;
 
 /// Result of a post-test/assertion script: its verdict plus any SAT.vars
 /// (transient) and SAT.env (persisted) writes it performed — side effects apply
@@ -47,6 +48,17 @@ pub struct AssertionInput<'a> {
     /// `None` for an ordinary HTTP response, which has no query. The script then sees an empty
     /// map, so `response.query.anything` is `()` — the same as a missing JSON key.
     pub query: Option<&'a str>,
+    /// What was sent, for a condition that has to reason about the request rather than the answer.
+    ///
+    /// Some questions simply are not in the response. "Did this row ask for a delivery report?"
+    /// is decided by the callback URL in the body, and an API that does not echo it back leaves a
+    /// condition with nothing to test — the author's only recourse being a dataset column
+    /// restating a fact the body already carries, which then drifts.
+    ///
+    /// `None` where there is no request to speak of: an await step sends nothing, and its
+    /// `AWAIT …` request log describes a wait rather than a call. The script then sees an empty
+    /// map, so `request.body` is `()` — the same as a missing JSON key.
+    pub request: Option<&'a RequestLog>,
     /// Current environment, readable and writable as `SAT.env.*`.
     pub env: &'a HashMap<String, Value>,
 }
@@ -131,7 +143,8 @@ impl AssertionEngine {
     /// The last expression is the pass/fail boolean; `SAT.env.x = …` writes are
     /// captured as side-effects (applied even when the assertion returns false).
     pub fn evaluate(&self, input: AssertionInput<'_>) -> Result<AssertionOutcome, AppError> {
-        let AssertionInput { script, status, body, json, headers, query, env: env_in } = input;
+        let AssertionInput { script, status, body, json, headers, query, request, env: env_in } =
+            input;
         let mut scope = Scope::new();
 
         // Build response object
@@ -160,7 +173,27 @@ impl AssertionEngine {
         }
         response.insert("query".into(), Dynamic::from(query_map));
 
+        // What was sent, alongside what came back. Parsed too, so a condition reads
+        // `request.json.drCallbackUrl` rather than doing string surgery on the body.
+        let mut request_map = rhai::Map::new();
+        if let Some(sent) = request {
+            request_map.insert("method".into(), Dynamic::from(sent.method.clone()));
+            request_map.insert("url".into(), Dynamic::from(sent.url.clone()));
+            request_map.insert("body".into(), Dynamic::from(sent.body.clone().unwrap_or_default()));
+            let mut sent_headers = rhai::Map::new();
+            for (k, v) in &sent.headers {
+                sent_headers.insert(k.into(), Dynamic::from(v.clone()));
+            }
+            request_map.insert("headers".into(), Dynamic::from(sent_headers));
+            match sent.body.as_deref().and_then(|b| serde_json::from_str::<Value>(b).ok()) {
+                Some(parsed) => request_map.insert("json".into(), json_to_rhai(&parsed)),
+                // A body that is not JSON, or no body at all — the same `()` a missing key gives.
+                None => request_map.insert("json".into(), Dynamic::UNIT),
+            };
+        }
+
         scope.push("response", response);
+        scope.push("request", request_map);
 
         // Expose `env`, seeded with the current environment so scripts can read + write
         let mut env_map = Map::new();
@@ -308,6 +341,7 @@ mod tests {
             json: &None,
             headers: &headers,
             query: None,
+            request: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -319,6 +353,7 @@ mod tests {
             json: &None,
             headers: &headers,
             query: None,
+            request: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(!result);
@@ -337,6 +372,7 @@ mod tests {
             json: &json,
             headers: &headers,
             query: None,
+            request: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -348,6 +384,7 @@ mod tests {
             json: &json,
             headers: &headers,
             query: None,
+            request: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -366,6 +403,7 @@ mod tests {
             json: &json,
             headers: &headers,
             query: None,
+            request: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -384,6 +422,7 @@ mod tests {
             json: &json,
             headers: &headers,
             query: None,
+            request: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -402,6 +441,7 @@ mod tests {
             json: &json,
             headers: &headers,
             query: None,
+            request: None,
             env: &HashMap::new(),
         }).unwrap().passed.unwrap();
         assert!(result);
@@ -421,6 +461,7 @@ mod tests {
                 json: &None,
                 headers: &HashMap::new(),
                 query: None,
+                request: None,
                 env: &HashMap::new(),
             })
             .unwrap();
@@ -441,6 +482,7 @@ mod tests {
                 json: &None,
                 headers: &HashMap::new(),
                 query: None,
+                request: None,
                 env: &HashMap::new(),
             })
             .unwrap();
@@ -472,6 +514,7 @@ mod tests {
                 json: &None,
                 headers: &HashMap::new(),
                 query: Some("cTxnId=tx-003&attempt=2"),
+                request: None,
                 env: &HashMap::new(),
             })
             .unwrap();
@@ -492,6 +535,7 @@ mod tests {
                     json: &None,
                     headers: &HashMap::new(),
                     query,
+                    request: None,
                     env: &HashMap::new(),
                 })
                 .unwrap();
@@ -524,6 +568,83 @@ mod tests {
         ]);
         assert_eq!(parse_query(""), Vec::<(String, String)>::new());
         assert_eq!(parse_query("&&"), Vec::<(String, String)>::new());
+    }
+
+
+    fn sent(body: &str) -> RequestLog {
+        RequestLog {
+            method: "POST".into(),
+            url: "http://api/api/v3/msgs/sms/nb/_submit".into(),
+            headers: HashMap::from([("content-type".to_string(), "application/json".to_string())]),
+            body: Some(body.to_string()),
+        }
+    }
+
+    fn with_request(script: &str, request: Option<&RequestLog>) -> Option<bool> {
+        AssertionEngine::new()
+            .evaluate(AssertionInput {
+                script,
+                status: 202,
+                body: r#"{"txnId":"t-1","statusMsg":"SUCCESS"}"#,
+                json: &serde_json::from_str(r#"{"txnId":"t-1","statusMsg":"SUCCESS"}"#).ok(),
+                headers: &HashMap::new(),
+                query: None,
+                request,
+                env: &HashMap::new(),
+            })
+            .unwrap()
+            .passed
+    }
+
+    #[test]
+    fn a_condition_can_ask_what_was_sent() {
+        // Some questions are simply not in the response. "Did this row ask for a delivery report?"
+        // is decided by the callback URL in the body, and this API does not echo it back — so the
+        // author's only recourse was a dataset column restating a fact the body already carries.
+        let asked = sent(r#"{"msg":"hi","drCallbackUrl":"http://host:3002/hooks/dr/abc"}"#);
+        let did_not = sent(r#"{"msg":"hi"}"#);
+
+        assert_eq!(with_request("request.json.drCallbackUrl != ()", Some(&asked)), Some(true));
+        assert_eq!(with_request("request.json.drCallbackUrl != ()", Some(&did_not)), Some(false));
+    }
+
+    #[test]
+    fn it_can_ask_whether_the_callback_was_pointed_at_us() {
+        // Stricter than "has a callback": a row testing an empty, malformed or unreachable URL is
+        // still a row with a `drCallbackUrl`, and none of them will ever call this receiver.
+        let ours = sent(r#"{"drCallbackUrl":"http://host:3002/hooks/dr/abc-123"}"#);
+        let theirs = sent(r#"{"drCallbackUrl":"http://somewhere-else/nope"}"#);
+        let script = r#"request.body.contains("dr/abc-123")"#;
+
+        assert_eq!(with_request(script, Some(&ours)), Some(true));
+        assert_eq!(with_request(script, Some(&theirs)), Some(false));
+    }
+
+    #[test]
+    fn the_whole_request_is_readable_not_just_the_body() {
+        let r = sent(r#"{"a":1}"#);
+        assert_eq!(with_request(r#"request.method == "POST""#, Some(&r)), Some(true));
+        assert_eq!(with_request(r#"request.url.contains("_submit")"#, Some(&r)), Some(true));
+        assert_eq!(
+            with_request(r#"request.headers["content-type"] == "application/json""#, Some(&r)),
+            Some(true)
+        );
+        assert_eq!(with_request(r#"request.body.contains("\"a\"")"#, Some(&r)), Some(true));
+    }
+
+    #[test]
+    fn a_step_that_sent_nothing_reads_as_absent_rather_than_erroring() {
+        // An await step sends nothing, and its `AWAIT …` log describes a wait rather than a call.
+        // `()` is the same answer a missing JSON key gives, so a condition can test for it.
+        assert_eq!(with_request("request.body == ()", None), Some(true));
+        assert_eq!(with_request("request.json == ()", None), Some(true));
+    }
+
+    #[test]
+    fn a_non_json_body_parses_to_absent_and_keeps_its_text() {
+        let form = sent("a=1&b=2");
+        assert_eq!(with_request("request.json == ()", Some(&form)), Some(true));
+        assert_eq!(with_request(r#"request.body == "a=1&b=2""#, Some(&form)), Some(true));
     }
 
 }

@@ -1880,6 +1880,7 @@ impl ExecutionEngine {
             json: &response.json,
             headers: &response.headers,
             query: candidate.query.as_deref(),
+            request: None,
             env: &ctx.environment_snapshot(),
         }) {
             Ok(outcome) => match outcome.passed {
@@ -2374,6 +2375,7 @@ impl ExecutionEngine {
                 // The Expect sees the query as well, so `response.query.attempt == "2"` is a
                 // thing an author can assert rather than only correlate on.
                 query: last.query.as_deref(),
+                request: None,
                 env: &ctx.environment_snapshot(),
             }) {
                 Ok(outcome) => {
@@ -3211,6 +3213,7 @@ impl ExecutionEngine {
                 json: &sent.response.json,
                 headers: &sent.response.headers,
                 query: None,
+                request: Some(&request_log),
                 env: &ctx.environment_snapshot(),
             }) {
                 Ok(outcome) => match outcome.passed {
@@ -3372,6 +3375,7 @@ impl ExecutionEngine {
                             json: &http_result.response.json,
                             headers: &http_result.response.headers,
                             query: None,
+                            request: Some(&request_log),
                             env: &ctx.environment_snapshot(),
                         }) {
                             Ok(outcome) => {
@@ -3440,6 +3444,7 @@ impl ExecutionEngine {
                             json: &http_result.response.json,
                             headers: &http_result.response.headers,
                             query: None,
+                            request: Some(&request_log),
                             env: &ctx.environment_snapshot(),
                         }) {
                             Ok(outcome) => {
@@ -3732,6 +3737,7 @@ impl ExecutionEngine {
                                 json: &response.json,
                                 headers: &response.headers,
                                 query: None,
+                                request: result.request.as_ref(),
                                 env: &base_ctx.environment_snapshot(),
                             }) {
                                 Ok(outcome) => match outcome.passed {
@@ -6386,6 +6392,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_collect_condition_can_ask_what_the_row_sent() {
+        // The author's case, and the one a response cannot answer. Fifteen rows were accepted with
+        // a 202 and only one of them asked for a delivery report — the rest either carried no
+        // callback field at all, or deliberately carried an empty, malformed or unreachable one.
+        // `response.status == 202` collected all fifteen and the waiter then sat out a full budget
+        // on fourteen messages that were never going to call back.
+        //
+        // The deciding fact is in the *request*, and this API does not echo it: without
+        // `request.*` the only recourse was a dataset column restating what the body already says.
+        let (node, _) = collected(
+            vec![
+                (202, r#"{"txnId":"t-1"}"#),
+                (202, r#"{"txnId":"t-2"}"#),
+                (202, r#"{"txnId":"t-3"}"#),
+            ],
+            vec![
+                ("asks for a report", Some(r#"{"msg":"hi","drCallbackUrl":"http://me/hooks/dr/x"}"#), None),
+                ("no callback field", Some(r#"{"msg":"hi"}"#), None),
+                ("noop empty callback", Some(r#"{"msg":"hi","drCallbackUrl":""}"#), None),
+            ],
+            serde_json::json!({
+                "forEachRow": true,
+                "collect": {
+                    "into": "launched",
+                    "when": "response.status == 202 && request.json.drCallbackUrl != () && request.json.drCallbackUrl != \"\"",
+                },
+                "outputVars": [{"name": "txnId", "path": "$.txnId"}],
+            }),
+        )
+        .await;
+
+        assert_eq!(node.status, NodeStatus::Passed, "all three were accepted");
+        let records = records_of(&node, "launched");
+        assert_eq!(records.len(), 1, "only the row that asked for a report: {records:?}");
+        assert_eq!(records[0]["txnId"], serde_json::json!("t-1"));
+        assert_eq!(records[0][RECORD_ROW_KEY], serde_json::json!("asks for a report"));
+    }
+
+    #[tokio::test]
+    async fn a_check_can_assert_on_what_was_actually_sent() {
+        // The other half of the same capability: an interpolated URL or body is only knowable
+        // after interpolation, so "did this send what I meant" had no way to be asserted.
+        let (node, _) = collected(
+            vec![(202, r#"{"ok":true}"#)],
+            vec![("one", Some(r#"{"to":"919900000002"}"#), Some(r#"request.json.to == "919900000002""#))],
+            serde_json::json!({ "forEachRow": true }),
+        )
+        .await;
+        assert_eq!(node.status, NodeStatus::Passed, "{:?}", node.error_message);
+    }
+
+    #[tokio::test]
     async fn a_collect_condition_keeps_out_runs_that_passed_without_producing_anything() {
         // The author's point, exactly: "a 400 on a campaign launch means no campaign was
         // created, but the test case assertion passed." Passing is the floor, not the bar.
@@ -8210,11 +8268,19 @@ mod tests {
 
     #[tokio::test]
     async fn with_no_expect_at_all_arrival_is_the_assertion() {
+        // Recorded *before* the wait, with a boundary older still, so nothing here depends on a
+        // spawned task being scheduled in time. The arrival's timing is incidental to what this
+        // checks — and it flaked once on a loaded machine, which is a race worth deleting rather
+        // than widening.
         let hooks = Hooks::new();
+        let boundary = chrono::Utc::now();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        hooks.record(arrived("dr/s", r#"{"anything":true}"#));
+
         let node = await_node(serde_json::json!({
             "awaitCallback": { "path": "dr/s", "timeoutMs": 2_000 }
         }));
-        let result = wait_for(&hooks, &node, "dr/s", r#"{"anything":true}"#).await;
+        let result = wait_since(&hooks, &node, boundary).await;
         assert_eq!(result.status, NodeStatus::Passed, "{:?}", result.error_message);
     }
 

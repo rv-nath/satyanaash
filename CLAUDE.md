@@ -408,6 +408,20 @@ context clones that were dropped at the end of each iteration.
   (`Collected into "launched": 2 record(s) from 2 row(s)`) — a short list must be visible,
   not inferred. A path matching nothing **leaves its field out** rather than writing `null`,
   which would interpolate downstream as the four characters `null`.
+- **A condition can read the `request`, not only the response** — `request.{method, url, body,
+  headers, json}`, parsed when the body is JSON. Some questions are simply not in the answer: *"did
+  this row ask for a delivery report?"* is decided by the callback URL in the body, and an API that
+  does not echo it back leaves a condition with nothing to test. A real dataset made that concrete
+  — 23 rows, 15 accepted with a 202, and exactly **one** of those carrying a callback URL pointing
+  at this receiver (the rest had no callback field, or deliberately carried an empty, malformed or
+  unreachable one, because that is what they were testing). `response.status == 202` collected all
+  fifteen and the waiter then sat out a full budget on fourteen messages that were never going to
+  call back. `when: response.status == 202 && request.json.drCallbackUrl != ()` says what the
+  author meant. Without it the only recourse was a dataset column restating a fact the body already
+  carries, which then drifts. `None` for a step that sent nothing — an await node's `AWAIT …` log
+  describes a wait rather than a call — and the script sees `()`, the same as a missing JSON key.
+  Available to `check`, `until`, `collect.when` and a wait's `match` alike, since they are one
+  expression language.
 - **`collect.when` is the bar; passing is only the floor.** A negative case expecting a 400
   *passes*, and no campaign was created — so "did the run pass" is the wrong question for whether
   it produced anything. Without a condition it works only by accident: whether a rejected launch
