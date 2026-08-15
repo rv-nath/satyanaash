@@ -2,7 +2,7 @@ import { memo, useEffect, useState } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { Hourglass, Loader2 } from "lucide-react";
 import { useTestProject } from "@/contexts/TestProjectContext";
-import { awaitBadge, awaitTimeoutMs, type NodeConfig } from "@/lib/nodeConfig";
+import { awaitBadge, awaitProgress, awaitTimeoutMs, type NodeConfig } from "@/lib/nodeConfig";
 
 /**
  * A step that waits for an inbound callback instead of sending a request.
@@ -41,6 +41,9 @@ export const AwaitCallbackNode = memo(({ id, data }: AwaitCallbackNodeProps) => 
   const waiting = executingFlowId === activeFlowId && activeNodeId === id;
 
   const path = data.config?.awaitCallback?.path?.trim();
+  // Once per item means one budget *each*, so the step's own elapsed time has no single total to
+  // be measured against.
+  const perItem = !!data.config?.forEach;
   const budgetMs = awaitTimeoutMs(data.config?.awaitCallback);
   // The alias wins, as everywhere else: an author who named this step meant the name to show.
   const title = data.alias?.trim() || data.label?.trim() || "Await callback";
@@ -79,17 +82,21 @@ export const AwaitCallbackNode = memo(({ id, data }: AwaitCallbackNodeProps) => 
           }`}
           title={
             waiting
-              ? "Elapsed, against the timeout"
+              ? perItem
+                ? `Elapsed. This step waits up to ${Math.round(budgetMs / 1000)}s for each item, so the total is that times the number of items`
+                : "Elapsed, against the timeout"
               : "How many callbacks it waits for, and for how long"
           }
           aria-label={
             waiting
-              ? `Waiting ${elapsed} of ${Math.round(budgetMs / 1000)} seconds`
+              ? perItem
+                ? `Waiting ${elapsed} seconds, up to ${Math.round(budgetMs / 1000)} per item`
+                : `Waiting ${elapsed} of ${Math.round(budgetMs / 1000)} seconds`
               : undefined
           }
         >
           {waiting
-            ? `${elapsed}s / ${Math.round(budgetMs / 1000)}s`
+            ? awaitProgress(elapsed, budgetMs, perItem)
             : awaitBadge(data.config?.awaitCallback)}
         </span>
       </div>

@@ -144,4 +144,33 @@ describe("while a step is waiting for a callback", () => {
     expect(container.querySelector(".motion-reduce\\:animate-none")).not.toBeNull();
     expect(screen.getByText("0s / 60s")).toBeInTheDocument();
   });
+
+  it("shows no denominator when it waits once per item", () => {
+    // "70s / 60s" read as an overrun. It was the second item's wait, and the budget is per wait.
+    waiting();
+    render(node({ awaitCallback: { path: "dr/x", timeoutMs: 60000 }, forEach: { list: "launched" } }));
+    act(() => void vi.advanceTimersByTime(70000));
+
+    expect(screen.getByText("70s")).toBeInTheDocument();
+    expect(screen.queryByText(/70s \/ 60s/)).not.toBeInTheDocument();
+  });
+
+  it("says in the tooltip why the count can pass the budget", () => {
+    waiting();
+    const { container } = render(
+      node({ awaitCallback: { path: "dr/x", timeoutMs: 60000 }, forEach: { list: "launched" } }),
+    );
+    const slot = [...container.querySelectorAll("span")].find((e) =>
+      /^\d+s$/.test((e.textContent || "").trim()),
+    )!;
+    expect(slot.getAttribute("title")).toMatch(/for each item/i);
+  });
+
+  it("keeps the denominator for a step that waits once", () => {
+    waiting();
+    render(node({ awaitCallback: { path: "dr/x", timeoutMs: 60000 } }));
+    act(() => void vi.advanceTimersByTime(70000));
+    expect(screen.getByText("70s / 60s")).toBeInTheDocument();
+  });
+
 });

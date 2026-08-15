@@ -666,7 +666,12 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   header row read as a different kind of node rather than as the same node running. Outside the
   flex row for the reason `TestCaseNode` already records: **nothing about a run may change a
   node's size**, or a column the author lined up comes out staggered the moment it runs. The count
-  sits in a fixed-width slot for the same reason. The counting is the part no other node does,
+  sits in a fixed-width slot for the same reason. **A denominator is shown only when it is real**:
+  the budget is per *wait*, so a step set to run once per item waits that long for each one, and
+  counting the whole step against a single wait's budget produced `70s / 60s` — which reads as a
+  run that overran its limit and kept going. It had not; it was on its second item, exactly as
+  configured. The honest total is items × budget and the list is a runtime value, so per item the
+  count stands alone and the tooltip carries the budget. The counting is the part no other node does,
   because no other node is slow enough to need it: over a minute a static ring answers neither
   "is this alive?" nor "how much longer?". The count is also what survives
   `prefers-reduced-motion` — the spinner stops, the number does not.

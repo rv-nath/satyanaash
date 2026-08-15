@@ -316,3 +316,20 @@ export function callbackUrlToSend(path: string): string {
   const tail = path.trim().replace(/^\/+/, "");
   return tail ? `{{hook_base}}/${tail}` : "";
 }
+
+/**
+ * What a waiting step shows while it waits.
+ *
+ * **A denominator is only shown when it is real.** The budget is per *wait*, and a step set to run
+ * once per item waits that long for each one — so counting the whole step against a single wait's
+ * budget produced "70s / 60s", which reads as a run that has overrun its limit and kept going. It
+ * had not: it was on its second item, exactly as configured. The lie was in the units.
+ *
+ * The honest total (items × budget) is not knowable here — the list is a runtime value — so per
+ * item the count stands alone and the tooltip carries the budget.
+ */
+export function awaitProgress(elapsedSeconds: number, budgetMs: number, perItem: boolean): string {
+  return perItem
+    ? `${elapsedSeconds}s`
+    : `${elapsedSeconds}s / ${Math.round(budgetMs / 1000)}s`;
+}
