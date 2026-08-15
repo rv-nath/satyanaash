@@ -320,16 +320,11 @@ export function callbackUrlToSend(path: string): string {
 /**
  * What a waiting step shows while it waits.
  *
- * **A denominator is only shown when it is real.** The budget is per *wait*, and a step set to run
- * once per item waits that long for each one — so counting the whole step against a single wait's
- * budget produced "70s / 60s", which reads as a run that has overrun its limit and kept going. It
- * had not: it was on its second item, exactly as configured. The lie was in the units.
- *
- * The honest total (items × budget) is not knowable here — the list is a runtime value — so per
- * item the count stands alone and the tooltip carries the budget.
+ * The denominator is real for every step, because per-item waits run **together**: whatever the
+ * list holds, the whole step is bounded by one budget. It briefly was not — waiting item by item
+ * made the total items × budget, which produced "70s / 60s" on a step doing exactly what it was
+ * told. The fix was the engine's, not the label's.
  */
-export function awaitProgress(elapsedSeconds: number, budgetMs: number, perItem: boolean): string {
-  return perItem
-    ? `${elapsedSeconds}s`
-    : `${elapsedSeconds}s / ${Math.round(budgetMs / 1000)}s`;
+export function awaitProgress(elapsedSeconds: number, budgetMs: number): string {
+  return `${elapsedSeconds}s / ${Math.round(budgetMs / 1000)}s`;
 }

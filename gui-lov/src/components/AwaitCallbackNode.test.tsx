@@ -145,14 +145,13 @@ describe("while a step is waiting for a callback", () => {
     expect(screen.getByText("0s / 60s")).toBeInTheDocument();
   });
 
-  it("shows no denominator when it waits once per item", () => {
-    // "70s / 60s" read as an overrun. It was the second item's wait, and the budget is per wait.
+  it("keeps the denominator for a per-item step, because the waits run together", () => {
+    // Item-by-item waiting made the real total items × budget, and the label said otherwise.
+    // Concurrent waits bound the whole step at one budget, so the denominator means something.
     waiting();
     render(node({ awaitCallback: { path: "dr/x", timeoutMs: 60000 }, forEach: { list: "launched" } }));
-    act(() => void vi.advanceTimersByTime(70000));
-
-    expect(screen.getByText("70s")).toBeInTheDocument();
-    expect(screen.queryByText(/70s \/ 60s/)).not.toBeInTheDocument();
+    act(() => void vi.advanceTimersByTime(30000));
+    expect(screen.getByText("30s / 60s")).toBeInTheDocument();
   });
 
   it("says in the tooltip why the count can pass the budget", () => {
@@ -161,9 +160,9 @@ describe("while a step is waiting for a callback", () => {
       node({ awaitCallback: { path: "dr/x", timeoutMs: 60000 }, forEach: { list: "launched" } }),
     );
     const slot = [...container.querySelectorAll("span")].find((e) =>
-      /^\d+s$/.test((e.textContent || "").trim()),
+      /^\d+s \/ \d+s$/.test((e.textContent || "").trim()),
     )!;
-    expect(slot.getAttribute("title")).toMatch(/for each item/i);
+    expect(slot.getAttribute("title")).toMatch(/wait together/i);
   });
 
   it("keeps the denominator for a step that waits once", () => {

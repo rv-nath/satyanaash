@@ -1995,10 +1995,22 @@ impl ExecutionEngine {
             RowPlan::Once | RowPlan::Rows(_) => unreachable!("a wait plans items or nothing"),
         };
 
-        let mut iterations: Vec<NodeResult> = Vec::with_capacity(items.len());
+        // **Concurrently, not one after another.** The messages are all in flight before this step
+        // begins and the platform delivers them in parallel, so their reports arrive together —
+        // waiting for them in turn models a queue that does not exist. In the happy path the
+        // difference is invisible, because a report that lands during item 1's wait is already in
+        // the inbox when item 2 reads it. It is the *failing* path that mattered: with nothing
+        // arriving, sequential waits cost one full budget each, so twelve messages and a 60s
+        // timeout meant twelve minutes before the flow went red. Concurrent, the whole step is
+        // bounded by one budget however many items there are.
+        //
+        // Safe because each wait owns a clone of the context — the same isolation `run_rows` gives
+        // a data row — and because a Rhai evaluation is synchronous with no await inside it, so
+        // two of them cannot interleave over the thread-local `print()` sink. `run_rows` stays
+        // sequential for the reason this is not: it folds `SAT.env` writes forward between rows,
+        // and that fold is order-dependent. Nothing here writes to the shared context.
+        let mut waits = Vec::with_capacity(items.len());
         for (index, row) in &items {
-            // A clone per item, so one item's captures cannot reach the next — the same isolation
-            // `run_rows` gives a data row, and for the same reason.
             let mut item_ctx = ctx.clone();
             item_ctx.set_row_vars(
                 row.vars
@@ -2008,18 +2020,13 @@ impl ExecutionEngine {
                     .collect(),
             );
             let label = crate::db::models::Dataset::label_for(*index, row);
-            let result = self
-                .wait_once(
-                    node,
-                    &mut item_ctx,
-                    event_tx,
-                    since,
-                    Some(*index),
-                    Some(label),
-                )
-                .await;
-            iterations.push(result);
+            waits.push(async move {
+                self.wait_once(node, &mut item_ctx, event_tx, since, Some(*index), Some(label))
+                    .await
+            });
         }
+        // Order preserved, so the report reads in the order the list did.
+        let iterations: Vec<NodeResult> = futures::future::join_all(waits).await;
 
         // Worst-of, like every other step that runs more than once.
         let status = if iterations.iter().any(|r| r.status == NodeStatus::Error) {
@@ -8607,6 +8614,75 @@ mod tests {
             "{:?}",
             missing.error_message
         );
+    }
+
+    #[tokio::test]
+    async fn per_item_waits_run_together_not_one_after_another() {
+        // The reports are all in flight before this step begins and arrive in parallel, so waiting
+        // for them in turn models a queue that does not exist. It shows up on the *failing* path:
+        // sequentially, nothing arriving costs one full budget per item — twelve messages and a
+        // 60s timeout meant twelve minutes before the flow went red.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set(
+            "sent",
+            sent(&[("a", "tx-1"), ("b", "tx-2"), ("c", "tx-3"), ("d", "tx-4")]),
+        );
+
+        let node = per_item_waiter("sent", "response.query.cTxnId == \"{{cTxnId}}\"", 600);
+        let started = std::time::Instant::now();
+        let result = engine.execute_await_node(&node, &mut ctx, &None, chrono::Utc::now()).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(result.status, NodeStatus::Failed, "nothing arrived, so all four fail");
+        assert_eq!(result.iterations.as_ref().unwrap().len(), 4);
+        // Four waits of 600ms. Sequential is 2.4s; together it is one budget plus overhead.
+        assert!(
+            elapsed < std::time::Duration::from_millis(1_500),
+            "took {:?} — four 600ms waits ran in turn rather than together",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn running_together_still_gives_each_item_its_own_report() {
+        // Concurrency must not blur which report belongs to which message — the whole point of
+        // per-item waiting. Reports arrive out of order and two of the four never come.
+        let hooks = Hooks::new();
+        let engine = ExecutionEngine::new(true, None).with_hooks(hooks.clone());
+        let mut ctx = ExecutionContext::new(HashMap::new(), HashMap::new(), HashMap::new());
+        ctx.set(
+            "sent",
+            sent(&[("first", "tx-1"), ("silent", "tx-2"), ("third", "tx-3"), ("mute", "tx-4")]),
+        );
+
+        let writer = hooks.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED","n":3}"#, Some("cTxnId=tx-3")));
+            writer.record(arrived_with("dr/shared", r#"{"status":"DELIVERED","n":1}"#, Some("cTxnId=tx-1")));
+        });
+
+        let node = per_item_waiter("sent", "response.query.cTxnId == \"{{cTxnId}}\"", 700);
+        let result = engine.execute_await_node(&node, &mut ctx, &None, chrono::Utc::now()).await;
+
+        let iterations = result.iterations.as_ref().unwrap();
+        // Order follows the list, not the order the reports landed in.
+        assert_eq!(
+            iterations.iter().map(|r| r.row_label.as_deref().unwrap()).collect::<Vec<_>>(),
+            vec!["first", "silent", "third", "mute"]
+        );
+        let by = |label: &str| {
+            iterations.iter().find(|r| r.row_label.as_deref() == Some(label)).unwrap()
+        };
+        assert_eq!(by("first").status, NodeStatus::Passed);
+        assert_eq!(by("third").status, NodeStatus::Passed);
+        assert_eq!(by("silent").status, NodeStatus::Failed);
+        assert_eq!(by("mute").status, NodeStatus::Failed);
+        // Each holds *its* report, not whichever arrived first.
+        assert_eq!(by("first").response.as_ref().unwrap().json.as_ref().unwrap()["n"], serde_json::json!(1));
+        assert_eq!(by("third").response.as_ref().unwrap().json.as_ref().unwrap()["n"], serde_json::json!(3));
     }
 
     #[tokio::test]

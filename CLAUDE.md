@@ -635,9 +635,18 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   **templates** a step interpolates rather than a `TestCase`, because a step that walks a list need
   not be a request at all; for a wait those are its path and its match, so "this item cannot fill
   it" means exactly that and an item with no correlation id is dropped by name rather than waiting
-  out a full budget. The timeout is **per wait**, not shared: three missing reports cost three
-  timeouts, the same rule polling follows — one budget across the set would make the last item's
-  verdict depend on how slow the earlier ones were.
+  out a full budget. The waits run **concurrently**, and that is the domain rather than an
+  optimisation: the messages are all in flight before the step begins and the platform delivers
+  them in parallel, so their reports arrive together — waiting for them in turn models a queue that
+  does not exist. In the happy path the difference is invisible (a report landing during item 1's
+  wait is already in the inbox when item 2 reads it); it was the **failing** path that mattered,
+  where sequential waits cost one full budget *each* and twelve messages with a 60s timeout meant
+  twelve minutes before the flow went red. Concurrent, each item keeps its own budget *and* the
+  whole step is bounded by one — which is also what makes the canvas's `12s / 60s` honest again.
+  Safe because each wait owns a context clone and a Rhai evaluation is synchronous with no await
+  inside it, so two cannot interleave over the thread-local `print()` sink. `run_rows` stays
+  sequential for the reason this is not: it folds `SAT.env` writes forward between rows, and that
+  fold is order-dependent.
 - `AWAIT_PATH_SHARED` warns when two steps wait on one inbox — **unless every one of them has a
   `match`**, which is the author saying which callback is theirs and therefore the answer to
   sharing an inbox rather than a symptom of one. Half-correlated is still a clash: the unmatched
@@ -666,12 +675,10 @@ it, and calls the body **"Callback received"**. A row reading "Status 200" besid
   header row read as a different kind of node rather than as the same node running. Outside the
   flex row for the reason `TestCaseNode` already records: **nothing about a run may change a
   node's size**, or a column the author lined up comes out staggered the moment it runs. The count
-  sits in a fixed-width slot for the same reason. **A denominator is shown only when it is real**:
-  the budget is per *wait*, so a step set to run once per item waits that long for each one, and
-  counting the whole step against a single wait's budget produced `70s / 60s` — which reads as a
-  run that overran its limit and kept going. It had not; it was on its second item, exactly as
-  configured. The honest total is items × budget and the list is a runtime value, so per item the
-  count stands alone and the tooltip carries the budget. The counting is the part no other node does,
+  sits in a fixed-width slot for the same reason. It once read `70s / 60s` on a step doing exactly
+  what it was told — the waits ran item by item, so the real total was items × budget. Wording it
+  around would have been the wrong fix; the waits are concurrent now, so the step is bounded by one
+  budget and the denominator means what it says. The counting is the part no other node does,
   because no other node is slow enough to need it: over a minute a static ring answers neither
   "is this alive?" nor "how much longer?". The count is also what survives
   `prefers-reduced-motion` — the spinner stops, the number does not.

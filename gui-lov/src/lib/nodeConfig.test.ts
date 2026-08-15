@@ -295,15 +295,14 @@ describe("the URL a payload has to send", () => {
 });
 
 describe("what a waiting step counts", () => {
-  it("counts against the budget when there is one wait", () => {
-    expect(awaitProgress(12, 60000, false)).toBe("12s / 60s");
+  it("counts against the budget", () => {
+    expect(awaitProgress(12, 60000)).toBe("12s / 60s");
   });
 
-  it("drops the denominator when the step waits once per item", () => {
-    // The budget is per wait, so counting the whole step against it produced "70s / 60s" — which
-    // reads as a run that overran its limit and kept going. It had not: it was on its second item,
-    // exactly as configured. The honest total is items × budget, and the list is a runtime value,
-    // so there is no number to put there.
-    expect(awaitProgress(70, 60000, true)).toBe("70s");
+  it("keeps the denominator true by bounding the step at one budget", () => {
+    // This briefly showed "70s / 60s" on a step doing exactly what it was told: waits ran item by
+    // item, so the real total was items × budget. Running them together made the label honest
+    // again — the fix belonged in the engine, not in the wording.
+    expect(awaitProgress(70, 60000)).toBe("70s / 60s");
   });
 });

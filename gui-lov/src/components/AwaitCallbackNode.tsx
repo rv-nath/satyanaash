@@ -83,20 +83,18 @@ export const AwaitCallbackNode = memo(({ id, data }: AwaitCallbackNodeProps) => 
           title={
             waiting
               ? perItem
-                ? `Elapsed. This step waits up to ${Math.round(budgetMs / 1000)}s for each item, so the total is that times the number of items`
+                ? `Elapsed. Each item waits up to ${Math.round(budgetMs / 1000)}s, and they wait together`
                 : "Elapsed, against the timeout"
               : "How many callbacks it waits for, and for how long"
           }
           aria-label={
             waiting
-              ? perItem
-                ? `Waiting ${elapsed} seconds, up to ${Math.round(budgetMs / 1000)} per item`
-                : `Waiting ${elapsed} of ${Math.round(budgetMs / 1000)} seconds`
+              ? `Waiting ${elapsed} of ${Math.round(budgetMs / 1000)} seconds`
               : undefined
           }
         >
           {waiting
-            ? awaitProgress(elapsed, budgetMs, perItem)
+            ? awaitProgress(elapsed, budgetMs)
             : awaitBadge(data.config?.awaitCallback)}
         </span>
       </div>
