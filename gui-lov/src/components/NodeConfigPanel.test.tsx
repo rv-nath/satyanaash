@@ -11,12 +11,21 @@ const graphNodes = [
   { id: "n1", type: "testCase", data: {} },
 ];
 const graphEdges = [{ id: "e1", source: "up", target: "n1" }];
+const openFlowTab = vi.fn();
 vi.mock("@/contexts/TestProjectContext", () => ({
   useTestProject: () => ({
     updateNodeConfig,
     projectId: "p1",
     nodes: graphNodes,
     edges: graphEdges,
+    openFlowTab,
+    flows: [
+      {
+        id: "sub",
+        name: "Onboard an enterprise",
+        internalNodes: [{ type: "start" }, { type: "testCase" }, { type: "end" }],
+      },
+    ],
   }),
 }));
 const rows = [
@@ -436,5 +445,52 @@ describe("adding an output variable", () => {
     render(<NodeConfigPanel node={node({})} onClose={vi.fn()} />);
     await userEvent.click(screen.getByText(/take a value/i));
     expect(screen.getByPlaceholderText("$.campaignId")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Which panel a node gets.
+ *
+ * The request panel opened on a sub-flow node — endpoint, data rows, polling, assertions, every
+ * field of it inert against a node that runs another flow. The branch that stops it was written
+ * once, lost to a failed edit, and only found by opening the panel in a browser. Hence a test.
+ */
+describe("a sub-flow node", () => {
+  const groupNode = (): Node => ({
+    id: "g1",
+    type: "group",
+    position: { x: 0, y: 0 },
+    data: { flowId: "sub", label: "Onboard an enterprise" },
+  });
+
+  it("gets the sub-flow panel, not the request panel", () => {
+    render(<NodeConfigPanel node={groupNode()} onClose={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: /sub-flow/i })).toBeInTheDocument();
+    // The request panel's own fields, which have no meaning here.
+    expect(screen.queryByText(/HOW MANY TIMES/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/once per data row/i)).not.toBeInTheDocument();
+  });
+
+  it("names the flow it runs and what it will contribute", () => {
+    render(<NodeConfigPanel node={groupNode()} onClose={vi.fn()} />);
+    expect(screen.getByText("Onboard an enterprise")).toBeInTheDocument();
+    expect(screen.getByText(/1 step\./)).toBeInTheDocument();
+  });
+
+  it("saves only what this node has", async () => {
+    // Writing the request panel's config here would put `outputVars` and `check` on a node
+    // that can never produce either.
+    const onClose = vi.fn();
+    render(<NodeConfigPanel node={groupNode()} onClose={onClose} />);
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+    expect(updateNodeConfig).toHaveBeenCalledWith("g1", { teardown: false }, "");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("can run the whole sub-flow as cleanup, which the splice honours", async () => {
+    render(<NodeConfigPanel node={groupNode()} onClose={vi.fn()} />);
+    await userEvent.click(screen.getByRole("radio", { name: /at the end/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+    expect(updateNodeConfig).toHaveBeenCalledWith("g1", { teardown: true }, "");
   });
 });

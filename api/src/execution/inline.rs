@@ -178,10 +178,26 @@ pub struct Inlined {
 
 impl Inlined {
     /// One entry per group node on the root canvas, for the client.
+    ///
+    /// Only the steps that will **report** — the boundary nodes a sub-flow was spliced through
+    /// are inert pass-throughs that emit nothing. Counting them made the canvas read "2 of 5
+    /// steps" about a sub-flow with three, which is the one number this exists to get right.
     pub fn groups(&self) -> Vec<InlinedGroup> {
+        let reports: HashSet<&str> = self
+            .flow
+            .graph_data
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.node_type.as_str(), "testCase" | "awaitCallback"))
+            .map(|n| n.id.as_str())
+            .collect();
+
         let mut order: Vec<&str> = Vec::new();
         let mut by_group: HashMap<&str, InlinedGroup> = HashMap::new();
         for origin in &self.origins {
+            if !reports.contains(origin.node_id.as_str()) {
+                continue;
+            }
             let entry = by_group.entry(&origin.group_node_id).or_insert_with(|| {
                 order.push(&origin.group_node_id);
                 InlinedGroup {
@@ -999,9 +1015,13 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].group_node_id, "g");
         assert_eq!(groups[0].flow_name, "Onboarding");
-        assert!(groups[0].node_ids.contains(&format!("g{}signup", SEP)));
-        // Including the boundary pass-throughs, so a roll-up covers everything the node became.
-        assert!(groups[0].node_ids.len() >= 4);
+        // Only the steps that report. The boundary nodes a sub-flow is spliced through emit
+        // nothing at all, and counting them made the canvas say "2 of 5 steps" about a sub-flow
+        // with two — found by running one, not by reading this.
+        assert_eq!(
+            groups[0].node_ids,
+            vec![format!("g{}signup", SEP), format!("g{}login", SEP)],
+        );
     }
 
     #[test]

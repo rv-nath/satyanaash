@@ -184,6 +184,13 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
     return <AwaitConfigPanel node={node} onClose={onClose} />;
   }
 
+  // Nor does a sub-flow node: it runs another flow, so it has no endpoint, no data rows, no
+  // polling and no assertion. Without this branch the whole request panel opened on one, every
+  // field of it inert.
+  if (node.type === "group") {
+    return <SubFlowConfigPanel node={node} onClose={onClose} />;
+  }
+
   const testCase = node.data.testCaseId
     ? testCases?.find((tc) => tc.id === node.data.testCaseId)
     : undefined;

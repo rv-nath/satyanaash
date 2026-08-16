@@ -371,7 +371,8 @@ const TestCanvasContent = () => {
       setShowConfigPanel(true);
       return;
     }
-    // Group nodes open their own editor, and start/end have nothing behind them.
+    // A sub-flow node handles its own double-click — it opens the flow it runs — and
+    // start/end have nothing behind them.
     if (node.type !== 'testCase') return;
     const testCaseId = (node.data as { testCaseId?: string } | undefined)?.testCaseId;
     if (!testCaseId) {
