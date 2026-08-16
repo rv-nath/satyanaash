@@ -271,6 +271,16 @@ impl SuiteRun<'_> {
                     .await?
                     .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", member.id)))?;
 
+                // Same resolution the single-flow endpoints do: a member with a sub-flow node
+                // has to arrive at the engine flat, or the engine refuses it. The suite
+                // swallows this member's `Started`, so there is nowhere to hand the group map
+                // — the notes go to the log, and the run itself is what matters here.
+                let (flow, _groups, notes) =
+                    crate::execution::resolve_for_run(flow, self.flow_repo).await?;
+                for note in &notes {
+                    tracing::warn!(flow = %member.id, "{}", note);
+                }
+
                 // The inner run gets its own channel so its Started/Completed can be
                 // swallowed on the way out.
                 let (inner_tx, mut inner_rx) = mpsc::channel::<ExecutionEvent>(100);
@@ -576,6 +586,130 @@ mod tests {
         .await
         .unwrap();
         Arc::new(crate::db::repositories::SqlxRunRepository::new(pool))
+    }
+
+    /// A flow whose only step is a sub-flow node, and the flow it points at.
+    ///
+    /// Built here rather than in `inline`'s tests because the point is not the splice — that is
+    /// covered there, purely — but that *this* caller performs it. Cut the `resolve_for_run` call
+    /// from `run_member` and the engine's group arm refuses the run.
+    fn flow_calling_a_sub_flow() -> (crate::db::models::Flow, crate::db::models::Flow) {
+        let mut parent = empty_flow("f1", "Parent");
+        parent.graph_data.nodes.insert(
+            1,
+            crate::db::models::GraphNode {
+                id: "g1".into(),
+                node_type: "group".into(),
+                position: crate::db::models::Position { x: 50.0, y: 0.0 },
+                data: serde_json::json!({ "flowId": "sub", "label": "Onboarding" }),
+                width: None,
+                height: None,
+            },
+        );
+        parent.graph_data.edges = vec![
+            crate::db::models::GraphEdge {
+                id: "e1".into(),
+                source: "start".into(),
+                target: "g1".into(),
+                edge_type: None,
+                data: serde_json::json!({}),
+            },
+            crate::db::models::GraphEdge {
+                id: "e2".into(),
+                source: "g1".into(),
+                target: "end".into(),
+                edge_type: None,
+                data: serde_json::json!({}),
+            },
+        ];
+
+        let mut sub = empty_flow("sub", "Onboarding");
+        sub.graph_data.nodes.insert(
+            1,
+            crate::db::models::GraphNode {
+                id: "step".into(),
+                node_type: "testCase".into(),
+                position: crate::db::models::Position { x: 50.0, y: 0.0 },
+                data: serde_json::json!({ "testCaseId": "t1" }),
+                width: None,
+                height: None,
+            },
+        );
+        sub.graph_data.edges = vec![
+            crate::db::models::GraphEdge {
+                id: "s1".into(),
+                source: "start".into(),
+                target: "step".into(),
+                edge_type: None,
+                data: serde_json::json!({}),
+            },
+            crate::db::models::GraphEdge {
+                id: "s2".into(),
+                source: "step".into(),
+                target: "end".into(),
+                edge_type: None,
+                data: serde_json::json!({}),
+            },
+        ];
+        (parent, sub)
+    }
+
+    /// The suite is the third caller, and the one with no `Started` event to carry the group
+    /// map — so nothing but the inner step actually running proves it resolved.
+    ///
+    /// Before this, a flow containing a sub-flow node ran green having executed nothing.
+    #[tokio::test]
+    async fn a_member_flows_sub_flow_steps_actually_run() {
+        let (parent, sub) = flow_calling_a_sub_flow();
+        let repos = Repos { flows: vec![parent, sub], tests: vec![a_test_case("t1", "Sign up")] };
+        let runs = run_repo().await;
+        let (tx, mut rx) = mpsc::channel::<ExecutionEvent>(64);
+
+        let runner = SuiteRun {
+            execution_id: "exec-sub".into(),
+            project_id: "p1".into(),
+            suite_id: Some("s1".into()),
+            suite_name: "Regression".into(),
+            environment_name: None,
+            debug_mode: false,
+            base_url: None,
+            hooks: crate::hooks::Hooks::new(),
+            flow_repo: &repos,
+            tc_repo: &repos,
+            run_repo: runs.clone(),
+        };
+
+        runner
+            .execute(
+                vec![ResolvedMember { kind: MemberKind::Flow, id: "f1".into(), name: "Parent".into() }],
+                HashMap::new(),
+                HashMap::new(),
+                tx,
+            )
+            .await
+            .unwrap();
+
+        let mut started = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let ExecutionEvent::NodeStarted { node_id, .. } = event {
+                started.push(node_id);
+            }
+        }
+        assert_eq!(
+            started.len(),
+            1,
+            "the sub-flow's one step should have run, got {:?}",
+            started
+        );
+        assert!(
+            started[0].ends_with("step"),
+            "the step that ran should be the sub-flow's, got {:?}",
+            started[0]
+        );
+        assert_ne!(
+            started[0], "step",
+            "and under its scoped id, so two invocations of one sub-flow stay distinct"
+        );
     }
 
     /// The client has to be able to tell which stored run a stream belongs to.

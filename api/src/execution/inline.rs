@@ -161,7 +161,7 @@ impl InlineNote {
 ///
 /// Sent to the client so it can roll those steps' results back onto the node the author can see,
 /// and name the sub-flow in the console — **without ever splitting a synthetic id**.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct InlinedGroup {
     pub group_node_id: String,
     pub flow_id: String,

@@ -190,6 +190,16 @@ pub async fn execute_flow(
     let flow = state.flow_repo.get_by_id(&flow_id).await?
         .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", flow_id)))?;
 
+    // Sub-flow nodes become the steps they stand for, before anything runs. A group node the
+    // engine never resolves is an error there, so this is not optional — and a bad reference is
+    // a `BadRequest` naming the node on the author's canvas, reported now rather than sixty
+    // seconds into a run.
+    let (flow, inlined_groups, inline_notes) =
+        crate::execution::resolve_for_run(flow, state.flow_repo.as_ref()).await?;
+    for note in &inline_notes {
+        tracing::warn!(flow = %flow_id, "{}", note);
+    }
+
     // Fetch the project to get base URL from settings
     let project = state.project_repo.get_by_id(&flow.project_id).await?
         .ok_or_else(|| AppError::NotFound(format!("Project {} not found", flow.project_id)))?;
@@ -209,7 +219,9 @@ pub async fn execute_flow(
     let execution_id = Uuid::new_v4().to_string();
 
     // Create execution engine with base URL
-    let engine = ExecutionEngine::new(input.debug_mode, base_url).with_hooks(state.hooks.clone());
+    let engine = ExecutionEngine::new(input.debug_mode, base_url)
+        .with_hooks(state.hooks.clone())
+        .with_inlined(inlined_groups);
 
     // Execute the flow
     let result = engine.execute_flow(
@@ -278,6 +290,16 @@ pub async fn execute_flow_stream(
     let flow = state.flow_repo.get_by_id(&flow_id).await?
         .ok_or_else(|| AppError::NotFound(format!("Flow {} not found", flow_id)))?;
 
+    // Sub-flow nodes become the steps they stand for, before anything runs. A group node the
+    // engine never resolves is an error there, so this is not optional — and a bad reference is
+    // a `BadRequest` naming the node on the author's canvas, reported now rather than sixty
+    // seconds into a run.
+    let (flow, inlined_groups, inline_notes) =
+        crate::execution::resolve_for_run(flow, state.flow_repo.as_ref()).await?;
+    for note in &inline_notes {
+        tracing::warn!(flow = %flow_id, "{}", note);
+    }
+
     // Fetch the project to get base URL from settings
     let project = state.project_repo.get_by_id(&flow.project_id).await?
         .ok_or_else(|| AppError::NotFound(format!("Project {} not found", flow.project_id)))?;
@@ -322,7 +344,9 @@ pub async fn execute_flow_stream(
 
     // Spawn execution in background task
     tokio::spawn(async move {
-        let engine = ExecutionEngine::new(debug_mode, base_url).with_hooks(hooks);
+        let engine = ExecutionEngine::new(debug_mode, base_url)
+            .with_hooks(hooks)
+            .with_inlined(inlined_groups);
         let outcome = engine.run_flow(
             &exec_id,
             &flow,

@@ -1222,6 +1222,14 @@ pub enum ExecutionEvent {
         execution_id: String,
         flow_id: String,
         total_nodes: usize,
+        /// Which steps each sub-flow node on the canvas turned into.
+        ///
+        /// The client rolls their verdicts back onto the node the author can see, and names the
+        /// sub-flow in the console — **without ever splitting a synthetic id**. Omitted when there
+        /// are none, the same way `teardown` and `iterations_of` were added without touching the
+        /// wire for anyone else.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inlined: Vec<crate::execution::InlinedGroup>,
     },
     /// Node execution started
     NodeStarted {
@@ -1499,6 +1507,11 @@ pub struct ExecutionEngine {
     /// The process-wide stop flag, held rather than read from a static so a test can
     /// give an engine its own and never touch the one every other test is reading.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// What the pre-run splice turned each sub-flow node into, for the Started event.
+    ///
+    /// Carried rather than passed, for the reason `with_hooks` gives: `run_flow` already has
+    /// seven parameters, and `RunState`'s own note says the list was about to grow again.
+    inlined_groups: Vec<crate::execution::InlinedGroup>,
     /// The callback inboxes an `awaitCallback` node watches.
     ///
     /// Defaulted rather than required, so the twenty-odd `ExecutionEngine::new` call sites in
@@ -1521,7 +1534,15 @@ impl ExecutionEngine {
             base_url,
             stop: crate::shutdown::flag(),
             hooks: Hooks::new(),
+            inlined_groups: Vec::new(),
         }
+    }
+
+    /// Tell the run which steps came from which sub-flow node, so the client can roll their
+    /// results back onto the node the author can see.
+    pub fn with_inlined(mut self, groups: Vec<crate::execution::InlinedGroup>) -> Self {
+        self.inlined_groups = groups;
+        self
     }
 
     /// Watch these inboxes. Without this an await node watches an empty set and every wait
@@ -1618,6 +1639,9 @@ impl ExecutionEngine {
                 execution_id: execution_id.to_string(),
                 flow_id: flow.id.clone(),
                 total_nodes,
+                // Filled in by the caller that resolved the sub-flows; by the time the engine
+                // runs, the graph is flat and it has nothing left to say about them.
+                inlined: self.inlined_groups.clone(),
             }).await;
         }
 
@@ -1836,14 +1860,15 @@ impl ExecutionEngine {
                 }
             }
             "group" => {
-                // TODO: Implement nested flow execution
-                // For now, skip group nodes
-                if let Some(next_id) = self.find_next_node(flow, current_node_id, Some("success")) {
-                    return Box::pin(self.traverse_and_execute(
-                        flow, &next_id, tc_repo, ctx, state
-                    )).await;
-                }
-                Ok("completed".to_string())
+                // Sub-flows are spliced into the graph before the run (`execution::inline`), so a
+                // group node reaching the engine means a caller skipped that step. It used to be
+                // routed over silently, which is how a flow containing one ran green having never
+                // executed it — the failure this whole feature exists to end.
+                Err(AppError::Internal(format!(
+                    "Step \"{}\" runs another flow but was never resolved — this run was started \
+                     without resolving sub-flows",
+                    current_node_id
+                )))
             }
             _ => {
                 // Unknown node type, try to continue
@@ -5703,6 +5728,200 @@ mod tests {
         let json = serde_json::to_string(&marked).unwrap();
         assert!(json.contains("\"needs_flow\":true"), "{}", json);
         assert!(serde_json::from_str::<DataRow>(&json).unwrap().needs_flow);
+    }
+
+    // ===================== sub-flows, spliced then run =====================
+
+    /// Splice a parent against its sub-flows the way a run does, and hand back the flat flow.
+    ///
+    /// These tests run the *result* of the splice rather than a graph hand-written to look like
+    /// one. A hand-written stand-in would keep passing after the splice stopped producing that
+    /// shape, which is the failure mode this whole feature is about.
+    fn spliced(parent: Flow, subs: Vec<Flow>) -> Flow {
+        let loaded: HashMap<String, Flow> =
+            subs.into_iter().map(|f| (f.id.clone(), f)).collect();
+        let out = crate::execution::inline::inline_groups(
+            &parent,
+            &loaded,
+            &crate::execution::inline::InlineLimits::default(),
+        );
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        out.flow
+    }
+
+    fn sub_flow(id: &str, nodes: Vec<GraphNode>, edges: Vec<GraphEdge>) -> Flow {
+        let mut f = make_flow(id, nodes, edges);
+        f.name = format!("Sub {id}");
+        f
+    }
+
+    /// The requirement the whole design rests on: drag in a sub-flow, and its cleanup runs
+    /// after the parent's own steps rather than before them.
+    ///
+    /// A sub-flow executed as a nested run would delete the account it created before the
+    /// parent's tests ever touched it. Spliced in, its `Delete` is one of the parent's teardown
+    /// nodes and the existing teardown loop runs it last — for free, which is the argument.
+    #[tokio::test]
+    async fn an_inlined_teardown_node_runs_at_the_end_of_the_parent_run() {
+        let url = stub_times(200, r#"{"ok":true}"#, 3).await;
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(make_test_case("s", "Sign up", &format!("{url}/s"), "POST"))
+            .with_test_case(make_test_case("d", "Delete user", &format!("{url}/d"), "DELETE"))
+            .with_test_case(make_test_case("p", "The actual test", &format!("{url}/p"), "GET"));
+
+        let sub = sub_flow(
+            "onboarding",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("s", "testCase", serde_json::json!({"testCaseId": "s"})),
+                make_node("d", "testCase", serde_json::json!({
+                    "testCaseId": "d", "config": {"teardown": true}
+                })),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![
+                make_edge("a", "start", "s", None),
+                make_edge("b", "s", "d", None),
+                make_edge("c", "d", "end", None),
+            ],
+        );
+        let parent = make_flow(
+            "flow1",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("g", "group", serde_json::json!({"flowId": "onboarding"})),
+                make_node("p", "testCase", serde_json::json!({"testCaseId": "p"})),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![
+                make_edge("e1", "start", "g", None),
+                make_edge("e2", "g", "p", None),
+                make_edge("e3", "p", "end", None),
+            ],
+        );
+
+        let flow = spliced(parent, vec![sub]);
+        let result = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        let ran: Vec<&str> = result.results.iter()
+            .map(|r| r.test_case_name.as_deref().unwrap_or("")).collect();
+        assert_eq!(
+            ran,
+            vec!["Sign up", "The actual test", "Delete user"],
+            "the sub-flow's cleanup must outlive the parent's own step: {ran:?}"
+        );
+        assert_eq!(result.results[2].teardown, Some(true));
+    }
+
+    /// An unresolved sub-flow node stops the run instead of being stepped over.
+    ///
+    /// It used to route onward silently: a flow containing one ran green having executed
+    /// nothing, which is the bug this feature exists to end. Sub-flows are spliced in before
+    /// the run, so a group node arriving here means a caller skipped that — an invariant, not
+    /// something an author can cause.
+    #[tokio::test]
+    async fn a_group_node_that_was_never_resolved_stops_the_run() {
+        let repo = MockTestCaseRepository::new();
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("g", "group", serde_json::json!({"flowId": "onboarding"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "g", None),
+            make_edge("e2", "g", "end", None),
+        ]);
+
+        let err = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .expect_err("a skipped sub-flow must not report success");
+        assert!(err.to_string().contains("g"), "the message names the node: {err}");
+    }
+
+    /// Teardown's own guard has to see the sub-flow's outputs, or it blocks its own cleanup.
+    ///
+    /// `teardown_blocked` refuses to send a DELETE whose URL interpolates a name *this run*
+    /// never produced — the guard against deleting the wrong thing. The names come from
+    /// `flow_produced_names`, which scans the flow's nodes; if the splice dropped `outputVars`
+    /// off the copies, the sub-flow's own `Delete` would be blocked by the value it just set.
+    #[test]
+    fn flow_produced_names_unions_the_sub_flows_outputs() {
+        let sub = sub_flow(
+            "onboarding",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("s", "testCase", serde_json::json!({
+                    "testCaseId": "s",
+                    "config": {"outputVars": [{"name": "new_account_id", "from": "json.id"}]}
+                })),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![make_edge("a", "start", "s", None), make_edge("b", "s", "end", None)],
+        );
+        let parent = make_flow(
+            "flow1",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("g", "group", serde_json::json!({"flowId": "onboarding"})),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![make_edge("e1", "start", "g", None), make_edge("e2", "g", "end", None)],
+        );
+
+        assert!(
+            !flow_produced_names(&parent).contains("new_account_id"),
+            "the parent alone produces nothing — that is the point"
+        );
+        assert!(flow_produced_names(&spliced(parent, vec![sub])).contains("new_account_id"));
+    }
+
+    /// A dataset inside a sub-flow is still one node with its rows underneath.
+    ///
+    /// `run_results` has exactly one level of `parent_id`, reserved for dataset rows. If the
+    /// splice had introduced a level of its own, a fan-out inside a sub-flow would need two —
+    /// and the rows would have had nowhere to go. It does not: the inner node is simply one of
+    /// the parent's nodes.
+    #[tokio::test]
+    async fn a_fan_out_node_inside_a_sub_flow_still_yields_one_aggregate_with_iterations() {
+        let url = stub_times(200, r#"{"ok":true}"#, 2).await;
+        let mut tc = make_test_case("send", "Send", &url, "POST");
+        tc.dataset = Some(dataset_of(vec![("one", Some("{}"), None), ("two", Some("{}"), None)]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+
+        let sub = sub_flow(
+            "sender",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("send", "testCase", serde_json::json!({
+                    "testCaseId": "send", "config": {"forEachRow": true}
+                })),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![make_edge("a", "start", "send", None), make_edge("b", "send", "end", None)],
+        );
+        let parent = make_flow(
+            "flow1",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node("g", "group", serde_json::json!({"flowId": "sender"})),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![make_edge("e1", "start", "g", None), make_edge("e2", "g", "end", None)],
+        );
+
+        let flow = spliced(parent, vec![sub]);
+        let result = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(result.results.len(), 1, "one node, not one per row: {:?}",
+            result.results.iter().map(|r| &r.node_id).collect::<Vec<_>>());
+        let rows = result.results[0].iterations.as_ref().expect("the rows are underneath it");
+        assert_eq!(rows.len(), 2);
     }
 
     // ===================== fan-out: a dataset inside a flow =====================
