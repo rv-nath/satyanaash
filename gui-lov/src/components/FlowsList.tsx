@@ -321,9 +321,13 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
                           ) : (
                             <ChevronDown className="w-3.5 h-3.5 shrink-0 text-muted-foreground/50" />
                           )}
+                          {/* A real group is a thing the author made and can rename, so it reads
+                              as a heading rather than as another grey line among the flows under
+                              it. Ungrouped stays muted: it is where flows sit when they belong to
+                              no group, not a group itself. */}
                           <span
                             className={`truncate text-[11px] font-semibold uppercase tracking-wider ${
-                              bucket.virtual ? "text-muted-foreground/60" : "text-muted-foreground"
+                              bucket.virtual ? "text-muted-foreground/70" : "text-foreground"
                             }`}
                           >
                             {bucket.name}
@@ -369,16 +373,20 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
                     )}
                   </div>
 
+                  {/* The group's body, stepped in under its heading — the same `pl-3` the tests
+                      rail uses for exactly this, so the two rails read alike. One level only:
+                      a group holds flows and nothing holds a group. */}
+                  {!isCollapsed && (
+                  <div className="pl-3">
                   {/* An empty real group says what to do with it, so a bucket you just made is
                       not a blank line you wonder about. */}
-                  {!isCollapsed && bucket.flows.length === 0 && !bucket.virtual && (
-                    <p className="px-6 py-1.5 text-[11px] italic text-muted-foreground/60">
+                  {bucket.flows.length === 0 && !bucket.virtual && (
+                    <p className="px-2 py-1.5 text-[11px] italic text-muted-foreground/60">
                       Empty — drag a flow here
                     </p>
                   )}
 
-                  {!isCollapsed &&
-                    bucket.flows.map(({ flow: group, matchedRequests }) => (
+                  {bucket.flows.map(({ flow: group, matchedRequests }) => (
                 <div
                   key={group.id}
                   draggable
@@ -450,6 +458,8 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
                   </DropdownMenu>
                 </div>
                     ))}
+                  </div>
+                  )}
                 </div>
               );
             })
