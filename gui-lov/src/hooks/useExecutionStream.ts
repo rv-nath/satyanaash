@@ -9,9 +9,10 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { API_URL } from '@/lib/api/client';
-import type { TestCaseExecutionResult } from '@/lib/api/types';
+import type { InlinedGroup, TestCaseExecutionResult } from '@/lib/api/types';
 import type { ConsoleLogDetail } from '@/lib/consoleDetails';
 import { fanOutDetails, resultDetails, resultHeadline } from '@/lib/consoleDetails';
+import { subFlowNameFor } from '@/lib/executionDecor';
 import { suiteLogKey } from '@/lib/runHistory';
 import {
   addResult as addLiveResult,
@@ -33,6 +34,8 @@ interface ExecutionEventStarted {
   execution_id: string;
   flow_id: string;
   total_nodes: number;
+  /** What each sub-flow node on the canvas turned into. Absent when the flow has none. */
+  inlined?: InlinedGroup[];
 }
 
 /**
@@ -47,6 +50,21 @@ export function nodeName(n: {
   node_id: string;
 }): string {
   return n.node_label?.trim() || n.test_case_name || n.test_case_id || n.node_id;
+}
+
+/**
+ * The same name, said with the sub-flow it came from: `Onboard an enterprise › Sign Up`.
+ *
+ * Four flows now open with the same four steps, so a console reading `▶ Running: Sign Up`
+ * no longer says which Sign Up — and after inlining there can legitimately be two of them in
+ * one run. The sub-flow is looked up, never parsed out of the id.
+ */
+export function logName(
+  n: Parameters<typeof nodeName>[0],
+  inlined: InlinedGroup[] | undefined,
+): string {
+  const sub = subFlowNameFor(n.node_id, inlined);
+  return sub ? `${sub} \u203A ${nodeName(n)}` : nodeName(n);
 }
 
 interface ExecutionEventNodeStarted {
@@ -200,6 +218,15 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
   // instant it ends.
   const [liveRun, setLiveRun] = useState<LiveRun | null>(null);
   const [totalNodes, setTotalNodes] = useState(0);
+  /**
+   * What each sub-flow node turned into, per flow.
+   *
+   * The canvas needs it to decorate a node the run never mentions by name: a sub-flow's steps
+   * report under ids that belong to no node on screen. Kept per flow and outliving the run,
+   * exactly as `nodeRuns` is — a verdict that vanished from the sub-flow node the instant the
+   * run ended would be the one node on the canvas that cannot be read afterwards.
+   */
+  const [inlinedByFlow, setInlinedByFlow] = useState<Record<string, InlinedGroup[]>>({});
 
   // Which flow the events arriving right now belong to. A ref because addLog is
   // called from the stream loop, long after the state that started it.
@@ -242,6 +269,13 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
       delete next[flowId];
       return next;
     });
+  }, []);
+
+  /** File the sub-flow map against the flow the events belong to. */
+  const recordInlined = useCallback((groups: InlinedGroup[]) => {
+    const flowId = targetFlowRef.current;
+    if (!flowId) return;
+    setInlinedByFlow(prev => ({ ...prev, [flowId]: groups }));
   }, []);
 
   /** Record what a node did, against the flow the events belong to. */
@@ -313,6 +347,9 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     setActiveNodeId(null);
     setPausedNodeId(null);
     setExecutionId(null);
+    // Last run's sub-flow map would decorate this run's canvas from a graph that may since
+    // have changed. The started event refills it.
+    setInlinedByFlow(prev => ({ ...prev, [flowId]: [] }));
     setRunMode(options.step ? 'running' : 'finishing');
     addLog(options.step ? 'Starting step-by-step execution...' : 'Starting execution...', 'info');
 
@@ -336,6 +373,8 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
       setRunMode: (next) => { if (current()) setRunMode(next); },
       setExecutionId: (id) => { if (current()) setExecutionId(id); },
       setTotalNodes: (n) => { if (current()) setTotalNodes(n); },
+      subFlows: [],
+      setInlined: (groups) => { if (current()) recordInlined(groups); },
       // A flow run has no suite events, so nothing ever calls this. Present because the
       // sink is one shape for both paths.
       updateLiveRun: () => {},
@@ -388,7 +427,7 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
         abortControllerRef.current = null;
       }
     }
-  }, [addLog, recordResult]);
+  }, [addLog, recordResult, recordInlined]);
 
   /**
    * Run a suite: its members one after another, into a console of their own.
@@ -439,6 +478,10 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
       setRunMode: (next) => { if (current()) setRunMode(next); },
       setExecutionId: (id) => { if (current()) setExecutionId(id); },
       setTotalNodes: (n) => { if (current()) setTotalNodes(n); },
+      subFlows: [],
+      // A suite swallows its members' started events, so this never fires there. The sink is
+      // one shape for both paths.
+      setInlined: (groups) => { if (current()) recordInlined(groups); },
       updateLiveRun: (next) => { if (current()) setLiveRun(next); },
       onRunId: (runId, name) => { if (current()) options.onRunId?.(runId, name); },
     };
@@ -480,7 +523,7 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
         abortControllerRef.current = null;
       }
     }
-  }, [addLog, recordResult]);
+  }, [addLog, recordResult, recordInlined]);
 
   return {
     logsByFlow,
@@ -498,6 +541,9 @@ export function useExecutionStream({ onEnvWrites }: UseExecutionStreamOptions = 
     pausedNodeId,
     runMode,
     totalNodes,
+    /** Per flow: what each of its sub-flow nodes turned into, last time it ran. Outlives the
+     *  run, as `nodeRuns` does. */
+    inlinedByFlow,
     step,
     /** The suite run in flight, in the shape a stored run comes back in. Outlives the
      *  stream so a run tab does not blank out the moment the run ends. */
@@ -515,6 +561,15 @@ export interface EventSink {
   setRunMode: (next: RunMode | ((prev: RunMode) => RunMode)) => void;
   setExecutionId: (id: string) => void;
   setTotalNodes: (n: number) => void;
+  /**
+   * The sub-flow map for this run, as it arrives and for as long as it lasts.
+   *
+   * Mutable on the sink for the same reason `envWrites` is: `handleEvent` sees one event at a
+   * time, and this arrives on the first of them while the node lines that need it come later.
+   */
+  subFlows: InlinedGroup[];
+  /** Hand that map to the canvas, which has no other way back from an inner id to a node. */
+  setInlined: (groups: InlinedGroup[]) => void;
   /** Accumulate the run in flight so a report can be drawn from it, not just a log. */
   updateLiveRun: (next: (prev: LiveRun | null) => LiveRun | null) => void;
   /** Called once, when the run announces the id it will be stored under. */
@@ -592,22 +647,35 @@ async function pumpStream(
 export function handleEvent(event: ExecutionEvent, sink: EventSink) {
   const { addLog, envWrites } = sink;
   switch (event.type) {
-    case 'started':
+    case 'started': {
+      const inlined = event.inlined ?? [];
       sink.setExecutionId(event.execution_id);
       sink.setTotalNodes(event.total_nodes);
+      // Kept on the sink as well as in state: the node lines below are written from inside
+      // the stream loop, which cannot read React state it has just set.
+      sink.subFlows.length = 0;
+      sink.subFlows.push(...inlined);
+      sink.setInlined(inlined);
       addLog(`Execution ${event.execution_id.slice(0, 8)}... started (${event.total_nodes} nodes)`, 'info');
+      for (const group of inlined) {
+        addLog(
+          `Includes ${group.flow_name} — ${group.node_ids.length} step${group.node_ids.length === 1 ? '' : 's'}`,
+          'info',
+        );
+      }
       break;
+    }
 
     case 'node_started':
       sink.setActiveNodeId(event.node_id);
       if (event.node_type === 'testCase') {
-        addLog(`▶ Running: ${nodeName(event)}`, 'info');
+        addLog(`▶ Running: ${logName(event, sink.subFlows)}`, 'info');
       } else if (event.node_type === 'awaitCallback') {
         // "Waiting", not "Running", and named rather than described by its type. This step can
         // sit for a minute doing nothing observable, so the line has to say that is expected —
         // "▶ Entering: awaitCallback node" told the author neither which step nor why the run
         // had apparently stopped.
-        addLog(`▶ Waiting for a callback: ${nodeName(event)}`, 'info');
+        addLog(`▶ Waiting for a callback: ${logName(event, sink.subFlows)}`, 'info');
       } else if (event.node_type !== 'start' && event.node_type !== 'end') {
         addLog(`▶ Entering: ${event.node_type} node`, 'info');
       }
@@ -639,7 +707,9 @@ export function handleEvent(event: ExecutionEvent, sink: EventSink) {
         ? fanOutDetails(result)
         : resultDetails(result);
 
-      addLog(resultHeadline(result, nodeName(result)), logType, details.length > 0 ? details : undefined);
+      // Named the same way its ▶ line was: prefixing only one of the pair would read as two
+      // different steps.
+      addLog(resultHeadline(result, logName(result, sink.subFlows)), logType, details.length > 0 ? details : undefined);
       break;
     }
 

@@ -31,6 +31,7 @@ import {
   secondsToMs,
 } from "@/lib/poll";
 import { AwaitConfigPanel } from "./AwaitConfigPanel";
+import { SubFlowConfigPanel } from "./SubFlowConfigPanel";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
 

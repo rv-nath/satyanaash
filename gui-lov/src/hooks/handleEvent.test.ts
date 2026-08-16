@@ -20,6 +20,8 @@ const fakeSink = () => {
     setRunMode: vi.fn(),
     setExecutionId: vi.fn(),
     setTotalNodes: vi.fn(),
+    subFlows: [],
+    setInlined: vi.fn(),
     updateLiveRun: vi.fn(),
   };
   return { sink, logs };
@@ -83,5 +85,86 @@ describe("a step that waits for a callback starting", () => {
     expect(logs).toEqual([]);
     // But they are still marked, because the canvas follows every node.
     expect(sink.setActiveNodeId).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * A run whose canvas has a sub-flow node.
+ *
+ * Its steps report under ids that name no node on the canvas, so both the console and the
+ * canvas need the map that comes with the `started` event — and neither may reconstruct it by
+ * splitting an id.
+ */
+const SEP = "\u001F";
+const inlined = [
+  {
+    group_node_id: "g1",
+    flow_id: "onboarding",
+    flow_name: "Onboard an enterprise",
+    node_ids: [`g1${SEP}signup`],
+  },
+];
+
+describe("a run that includes a sub-flow", () => {
+  const startRun = (sink: EventSink) =>
+    handleEvent(
+      {
+        type: "started",
+        execution_id: "abcdef123456",
+        flow_id: "f1",
+        total_nodes: 3,
+        inlined,
+      } as never,
+      sink,
+    );
+
+  it("hands the map to the canvas, which cannot decorate the node without it", () => {
+    const { sink } = fakeSink();
+    startRun(sink);
+    expect(sink.setInlined).toHaveBeenCalledWith(inlined);
+  });
+
+  it("says which sub-flows the run pulled in, and how many steps each brought", () => {
+    // The node count on the started event jumps for a reason the canvas cannot show: the
+    // canvas has one box where the run has four steps.
+    const { sink, logs } = fakeSink();
+    startRun(sink);
+    expect(logs[1]).toBe("Includes Onboard an enterprise — 1 step");
+  });
+
+  it("names the sub-flow a step came from", () => {
+    // Four flows now open with the same four steps. "▶ Running: Sign Up" no longer says which.
+    const { sink, logs } = fakeSink();
+    startRun(sink);
+    handleEvent(
+      {
+        type: "node_started",
+        node_id: `g1${SEP}signup`,
+        node_type: "testCase",
+        node_label: "Sign Up",
+      } as never,
+      sink,
+    );
+    expect(logs.at(-1)).toBe("▶ Running: Onboard an enterprise \u203A Sign Up");
+  });
+
+  it("leaves the flow's own steps unprefixed", () => {
+    const { sink, logs } = fakeSink();
+    startRun(sink);
+    handleEvent(
+      { type: "node_started", node_id: "n1", node_type: "testCase", node_label: "Send" } as never,
+      sink,
+    );
+    expect(logs.at(-1)).toBe("▶ Running: Send");
+  });
+
+  it("carries no sub-flow lines for a flow that has none", () => {
+    const { sink, logs } = fakeSink();
+    handleEvent(
+      { type: "started", execution_id: "abcdef123456", flow_id: "f1", total_nodes: 3 } as never,
+      sink,
+    );
+    expect(logs).toHaveLength(1);
+    expect(sink.setInlined).toHaveBeenCalledWith([]);
   });
 });

@@ -310,6 +310,25 @@ export interface ResponseLog {
   json?: unknown;
 }
 
+/**
+ * One sub-flow node on the canvas, and the steps it turned into.
+ *
+ * A flow's sub-flow nodes are spliced into its graph before the run, so what executes is a
+ * flat flow whose inner steps carry synthetic ids. This is how the client gets back from
+ * those ids to the node the author can see — **the only way**. The ids are joined by an
+ * unprintable separator precisely so nothing is tempted to split one.
+ *
+ * Arrives on the `started` event, and only when there are any.
+ */
+export interface InlinedGroup {
+  /** The id of the node on the author's own canvas. */
+  group_node_id: string;
+  flow_id: string;
+  flow_name: string;
+  /** The ids the run will report under, in the order they were spliced. */
+  node_ids: string[];
+}
+
 export interface TestCaseExecutionResult {
   node_id: string;
   /** The node's own name on the canvas, when the author gave it one. */

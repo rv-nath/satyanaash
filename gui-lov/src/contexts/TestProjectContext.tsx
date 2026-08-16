@@ -18,7 +18,7 @@ import {
   type StepCommand,
 } from "@/hooks/useExecutionStream";
 import type { LiveRun } from "@/lib/liveRun";
-import type { TestCaseExecutionResult } from "@/lib/api/types";
+import type { InlinedGroup, TestCaseExecutionResult } from "@/lib/api/types";
 import { toast } from "sonner";
 import type { Project, Flow as ApiFlow, ValidationIssue } from "@/lib/api/types";
 import { generateUUID } from "@/lib/utils/uuid";
@@ -144,6 +144,9 @@ interface TestProjectContextType {
   nodeRuns: Record<string, Record<string, TestCaseExecutionResult>>;
   activeNodeId: string | null;
   pausedNodeId: string | null;
+  /** Per flow: what each of its sub-flow nodes turned into. The only way back from an inner
+   *  step's id to the node the author can see. */
+  inlinedByFlow: Record<string, InlinedGroup[]>;
   runMode: RunMode;
   totalNodes: number;
   step: (command: StepCommand) => Promise<void>;
@@ -174,7 +177,6 @@ interface TestProjectContextType {
   getViewport: () => Viewport | undefined;
   syncNodeToSidebar: (nodeId: string, data: any) => void;
   addNodeToCanvas: (nodeType: NodeType, data: any, position: { x: number; y: number }) => void;
-  updateGroupFlow: (groupId: string, nodes: Node[], edges: Edge[]) => void;
   deleteNodes: (nodeIds: string[]) => void;
   updateNodeConfig: (nodeId: string, config: any, alias?: string) => void;
   alignNodes: (direction: AlignDirection) => void;
@@ -525,6 +527,7 @@ export const TestProjectProvider = ({
     nodeRuns,
     activeNodeId,
     pausedNodeId,
+    inlinedByFlow,
     runMode,
     totalNodes,
     step,
@@ -744,14 +747,6 @@ export const TestProjectProvider = ({
     setNodes([...nodes, newNode]);
   }, [activeFlowId, nodes, setNodes, flows, history]);
 
-  const updateGroupFlow = (groupId: string, internalNodes: Node[], internalEdges: Edge[]) => {
-    setFlows(flows.map(group => 
-      group.id === groupId 
-        ? { ...group, internalNodes, internalEdges }
-        : group
-    ));
-  };
-
   const syncNodeToSidebar = (nodeId: string, data: any) => {
     // Update sidebar when node is edited on canvas
     updateTestCase(nodeId, {
@@ -966,6 +961,7 @@ export const TestProjectProvider = ({
         nodeRuns,
         activeNodeId,
         pausedNodeId,
+        inlinedByFlow,
         runMode,
         totalNodes,
         step,
@@ -987,7 +983,6 @@ export const TestProjectProvider = ({
         getViewport,
         syncNodeToSidebar,
         addNodeToCanvas,
-        updateGroupFlow,
         deleteNodes,
         updateNodeConfig,
         alignNodes,

@@ -7,7 +7,7 @@
  * gets lives here as a plain function — the arithmetic of "which node is where in the
  * run" is worth testing without mounting a graph.
  */
-import type { TestCaseExecutionResult } from "@/lib/api/types";
+import type { InlinedGroup, TestCaseExecutionResult } from "@/lib/api/types";
 import { oneLine } from "@/lib/dataset";
 
 /** Where one node stands in the run on screen. */
@@ -20,6 +20,41 @@ export interface ExecutionView {
   pausedNodeId: string | null;
   /** This flow's results so far, by node id. */
   runs: Record<string, TestCaseExecutionResult> | undefined;
+  /**
+   * What each sub-flow node on the canvas turned into, off the run's `started` event.
+   *
+   * Without it a sub-flow node is decorated by nothing at all: the run reports under the
+   * inner ids, which match no node on the canvas, so the one box the author *can* see stays
+   * blank while four of its steps pass and one fails. The running ring and the paused "next"
+   * marker vanish with it.
+   */
+  inlined?: InlinedGroup[];
+}
+
+/**
+ * The run, as one flow's canvas sees it.
+ *
+ * Built here rather than at each reader, because the guards are not obvious and getting one
+ * wrong is silent: `activeNodeId` and `pausedNodeId` belong to whichever flow is running and
+ * must not decorate another one's graph, while `runs` and `inlined` are per flow already and
+ * **must not** be gated on the run being live — a verdict that vanished when the run ended
+ * would leave the canvas blank about a run the author is still reading.
+ */
+export function flowExecutionView(ctx: {
+  activeFlowId: string | null;
+  executingFlowId: string | null;
+  activeNodeId: string | null;
+  pausedNodeId: string | null;
+  nodeRuns: Record<string, Record<string, TestCaseExecutionResult>>;
+  inlinedByFlow: Record<string, InlinedGroup[]>;
+}): ExecutionView {
+  const mine = ctx.executingFlowId === ctx.activeFlowId;
+  return {
+    activeNodeId: mine ? ctx.activeNodeId : null,
+    pausedNodeId: mine ? ctx.pausedNodeId : null,
+    runs: ctx.activeFlowId ? ctx.nodeRuns[ctx.activeFlowId] : undefined,
+    inlined: ctx.activeFlowId ? ctx.inlinedByFlow[ctx.activeFlowId] : undefined,
+  };
 }
 
 /**
@@ -28,12 +63,19 @@ export interface ExecutionView {
  * In flight wins over a stored result, because a node re-run in a later pass is more
  * interesting than what it did in an earlier one. "Next" only applies while paused:
  * once the run is moving, the node about to run is a detail nobody can act on.
+ *
+ * A sub-flow node has no result of its own — it isn't in the run at all — so it takes the
+ * worst of the steps it stands for, and their running/next state as its own.
  */
 export function nodeExecState(nodeId: string, view: ExecutionView): NodeExecState | undefined {
   if (view.activeNodeId === nodeId) return "running";
   if (view.pausedNodeId === nodeId) return "next";
-  const status = view.runs?.[nodeId]?.status;
+  const status = view.runs?.[nodeId]?.status ?? subFlowStatus(nodeId, view);
   switch (status) {
+    case "running":
+      return "running";
+    case "next":
+      return "next";
     case "passed":
       return "passed";
     case "failed":
@@ -45,6 +87,87 @@ export function nodeExecState(nodeId: string, view: ExecutionView): NodeExecStat
     default:
       return undefined;
   }
+}
+
+/** Which entry, if any, says this canvas node is a sub-flow. */
+function groupOf(nodeId: string, view: ExecutionView): InlinedGroup | undefined {
+  return view.inlined?.find((g) => g.group_node_id === nodeId);
+}
+
+/**
+ * Worst-of over the steps a sub-flow node stands for, with a live step outranking any of it.
+ *
+ * The ladder is the engine's own — an error outranks a failure, because a step that could not
+ * run is systemic. `skipped` sits at the bottom: the tail of steps skipped after something
+ * upstream failed shouldn't repaint a sub-flow whose own steps passed, and the failure that
+ * caused them is already showing on whichever node it belongs to.
+ */
+function subFlowStatus(nodeId: string, view: ExecutionView): NodeExecState | undefined {
+  const group = groupOf(nodeId, view);
+  if (!group) return undefined;
+  const inner = group.node_ids;
+  // A step of this sub-flow is the one in flight, or the one a paused run is parked before.
+  // Said here because the events name an inner id, which matches nothing on the canvas.
+  if (view.activeNodeId && inner.includes(view.activeNodeId)) return "running";
+  if (view.pausedNodeId && inner.includes(view.pausedNodeId)) return "next";
+
+  const rank: Record<string, number> = { error: 4, failed: 3, passed: 2, skipped: 1 };
+  let worst: NodeExecState | undefined;
+  for (const id of inner) {
+    const status = view.runs?.[id]?.status;
+    if (!status || !(status in rank)) continue;
+    if (!worst || rank[status] > rank[worst]) worst = status as NodeExecState;
+  }
+  return worst;
+}
+
+/** What a sub-flow node can say about itself while and after it runs. */
+export interface GroupRollup {
+  flowName: string;
+  /** Steps this sub-flow contributed to the run. */
+  total: number;
+  /** How many have a verdict yet. */
+  done: number;
+  failed: number;
+  errors: number;
+  /** The step of this sub-flow in flight, if one is. */
+  runningNodeId: string | null;
+}
+
+/**
+ * The counts a sub-flow node shows — "3 of 4 · 1 failed".
+ *
+ * A sub-flow node is one box standing for several steps, so unlike every other node its
+ * verdict alone loses information: "failed" over four steps does not say whether one of them
+ * failed or all four did. Undefined when this node is not a sub-flow node in this run.
+ */
+export function groupRollup(nodeId: string, view: ExecutionView): GroupRollup | undefined {
+  const group = groupOf(nodeId, view);
+  if (!group) return undefined;
+  const results = group.node_ids.map((id) => view.runs?.[id]).filter(Boolean);
+  return {
+    flowName: group.flow_name,
+    total: group.node_ids.length,
+    done: results.length,
+    failed: results.filter((r) => r!.status === "failed").length,
+    errors: results.filter((r) => r!.status === "error").length,
+    runningNodeId:
+      view.activeNodeId && group.node_ids.includes(view.activeNodeId) ? view.activeNodeId : null,
+  };
+}
+
+/**
+ * The sub-flow a reported node belongs to, or undefined for one of the flow's own steps.
+ *
+ * A lookup, never a parse. The ids are joined by an unprintable separator so that splitting
+ * one is impossible to do by accident — a sub-flow's name is not recoverable from its id, and
+ * must not appear to be.
+ */
+export function subFlowNameFor(
+  nodeId: string,
+  inlined: InlinedGroup[] | undefined,
+): string | undefined {
+  return inlined?.find((g) => g.node_ids.includes(nodeId))?.flow_name;
 }
 
 /** The class name carrying that state to the CSS in index.css. */

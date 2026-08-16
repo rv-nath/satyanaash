@@ -184,6 +184,29 @@ describe("moving a flow between buckets", () => {
   });
 });
 
+describe("what a dragged flow carries", () => {
+  it("carries both shapes, because two drop targets read it differently", async () => {
+    // This rail's own headings read the flat `flowId`; the canvas reads `data` and hands it to
+    // `addNodeToCanvas`. It carried only the flat key for as long as sub-flow nodes have
+    // existed, so dragging a flow onto the canvas threw inside a catch and did nothing at all.
+    // Drop either half and one of the two targets goes silent again.
+    flows = [flow("f1", "Onboard an enterprise", "g1")];
+    renderRail();
+    const setData = vi.fn();
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.dragStart(screen.getByText("Onboard an enterprise"), {
+      dataTransfer: { setData },
+    });
+
+    const [, raw] = setData.mock.calls[0];
+    expect(JSON.parse(raw)).toEqual({
+      type: "flow",
+      flowId: "f1",
+      data: { flowId: "f1", label: "Onboard an enterprise" },
+    });
+  });
+});
+
 describe("creating and renaming a group", () => {
   it("creates one inline", async () => {
     renderRail();

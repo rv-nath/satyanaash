@@ -1,101 +1,152 @@
-import { memo, useState } from "react";
+import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { FolderTree, ChevronDown, ChevronRight, Edit } from "lucide-react";
-import { GroupEditorDialog } from "./GroupEditorDialog";
-import { Button } from "@/components/ui/button";
+import { FolderTree, Loader2 } from "lucide-react";
+import { useTestProject } from "@/contexts/TestProjectContext";
+import { statusIcon } from "@/lib/consoleDetails";
+import { flowExecutionView, groupRollup, nodeExecState } from "@/lib/executionDecor";
 
+/**
+ * A step that runs another flow.
+ *
+ * Its steps are spliced into this flow before the run, so what executes is one flat flow and
+ * this node is not in it — the run reports under ids that name no node on the canvas. Which is
+ * why everything here is a **roll-up**: the verdict is the worst of the steps it stands for,
+ * and the counts beside it are the part a single verdict loses ("failed" over four steps does
+ * not say whether one failed or all four).
+ *
+ * The roll-up is a lookup through the map the run announces, never a parse of an id. Nothing
+ * may recover a sub-flow from the shape of a node id.
+ *
+ * Double-click opens the flow it runs, as a tab like any other. It used to open a modal editor
+ * whose edits were never saved — one flow, one editor, and edits that persist.
+ */
 interface GroupNodeData {
-  label: string;
-  testCaseCount: number;
-  flowId: string;  // Flow reference - backend uses this for circular dependency validation
+  /** A snapshot of the flow's name from when the node was dropped. Only a fallback: the live
+   *  name is resolved below, so a renamed flow does not leave stale nodes behind. */
+  label?: string;
+  /** The flow this node runs. */
+  flowId: string;
 }
 
 interface GroupNodeProps {
+  /** React Flow passes the node's own id — the key the roll-up is looked up under. */
+  id: string;
   data: GroupNodeData;
 }
 
-export const GroupNode = memo(({ data }: GroupNodeProps) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [isEditorOpen, setIsEditorOpen] = useState(false);
+const statusTone = (state: string) =>
+  state === "passed"
+    ? "bg-success text-success-foreground"
+    : state === "failed" || state === "error"
+      ? "bg-destructive text-destructive-foreground"
+      : "bg-muted-foreground text-background";
 
-  const handleDoubleClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setIsEditorOpen(true);
-  };
+export const GroupNode = memo(({ id, data }: GroupNodeProps) => {
+  const { flows, activeFlowId, executingFlowId, nodeRuns, inlinedByFlow, activeNodeId, pausedNodeId, openFlowTab } =
+    useTestProject();
+
+  // The flow this node runs, resolved live. A stale `label` used to survive a rename, and now
+  // matters more than it did: a node pointing at a deleted flow stops the run before it starts.
+  const target = flows.find((f) => f.id === data.flowId);
+  const name = target?.name ?? data.label?.trim() ?? "";
+
+  // The same view the canvas decorates from — built in one place, because which parts are
+  // gated on the run being live is not obvious and getting it wrong is silent.
+  const view = flowExecutionView({
+    activeFlowId,
+    executingFlowId,
+    activeNodeId,
+    pausedNodeId,
+    nodeRuns,
+    inlinedByFlow,
+  });
+  const state = nodeExecState(id, view);
+  const rollup = groupRollup(id, view);
+  const running = state === "running";
+
+  // What the sub-flow will contribute, before it has ever run. Counted off the flow itself
+  // rather than carried on the node, where it was hard-coded to 0 and always read "0 test cases".
+  const steps = target?.internalNodes?.filter(
+    (n) => n.type === "testCase" || n.type === "awaitCallback" || n.type === "group",
+  ).length;
 
   return (
-    <>
-      <div 
-        className="px-4 py-3 rounded-lg border-2 border-node-group bg-card shadow-lg min-w-[220px] hover:shadow-xl transition-shadow"
-        onDoubleClick={handleDoubleClick}
-      >
-        {/* Ids match the other node types so edges can be re-routed to the
-            left/right ports when the graph is arranged horizontally. */}
-        <Handle id="target-top" type="target" position={Position.Top} className="w-3 h-3 !bg-node-group" />
-        <Handle id="target-left" type="target" position={Position.Left} className="w-3 h-3 !bg-node-group" />
-        
-        <div 
-          className="flex items-start gap-2 cursor-pointer"
-          onClick={() => setIsExpanded(!isExpanded)}
+    <div
+      className="relative min-w-[220px] rounded-lg border-2 border-node-group bg-card px-4 py-3 shadow-lg transition-shadow hover:shadow-xl"
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        // `true` — reuse the current tab if it is unpinned, the same as opening a flow from
+        // the rail. Opening the sub-flow is how you edit it now.
+        if (data.flowId) openFlowTab(data.flowId, true);
+      }}
+      title={target ? `Runs ${name} — double-click to open it` : undefined}
+    >
+      {/* Ids match the other node types so edges can be re-routed to the
+          left/right ports when the graph is arranged horizontally. */}
+      <Handle id="target-top" type="target" position={Position.Top} className="w-3 h-3 !bg-node-group" />
+      <Handle id="target-left" type="target" position={Position.Left} className="w-3 h-3 !bg-node-group" />
+
+      {/* The verdict, on the corner and outside the row — the same place, size and ring every
+          other node type puts it. In the row it would widen the node, and nothing about a run
+          may change a node's size. */}
+      {state && (
+        <span
+          className={`absolute -right-2 -top-2 flex h-[18px] w-[18px] items-center justify-center rounded-full border-2 border-card text-[10px] font-bold leading-none shadow-sm ${
+            running || state === "next" ? "bg-primary text-primary-foreground" : statusTone(state)
+          }`}
+          title={
+            running
+              ? `Running a step of ${name}`
+              : state === "next"
+                ? `Next: a step of ${name}`
+                : `Worst of this sub-flow's steps: ${state}`
+          }
+          aria-label={running ? "running" : state}
         >
-          {isExpanded ? (
-            <ChevronDown className="w-4 h-4 text-node-group mt-0.5 flex-shrink-0" />
+          {running ? (
+            <Loader2 className="h-2.5 w-2.5 animate-spin motion-reduce:animate-none" />
+          ) : state === "next" ? (
+            "▸"
           ) : (
-            <ChevronRight className="w-4 h-4 text-node-group mt-0.5 flex-shrink-0" />
+            statusIcon(state)
           )}
-          <FolderTree className="w-4 h-4 text-node-group mt-0.5 flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-foreground truncate">
-              {data.label}
-            </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {data.testCaseCount} test case{data.testCaseCount !== 1 ? 's' : ''}
-            </div>
+        </span>
+      )}
+
+      <div className="flex items-start gap-2">
+        <FolderTree className="mt-0.5 h-4 w-4 flex-shrink-0 text-node-group" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold text-foreground">
+            {name || "Sub-flow"}
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsEditorOpen(true);
-            }}
-          >
-            <Edit className="h-3 w-3" />
-          </Button>
+          {/* Before a run: what it will contribute. During and after: how far it got. One box
+              standing for several steps is the whole point of this node, and also the whole
+              reason its single verdict is not enough on its own. */}
+          {!target ? (
+            <div className="mt-1 text-xs text-destructive">
+              flow not found — this run will not start
+            </div>
+          ) : rollup && rollup.done > 0 ? (
+            <div className="mt-1 text-xs text-muted-foreground">
+              {rollup.done} of {rollup.total} steps
+              {rollup.failed > 0 && (
+                <span className="text-destructive"> · {rollup.failed} failed</span>
+              )}
+              {rollup.errors > 0 && (
+                <span className="text-destructive"> · {rollup.errors} errored</span>
+              )}
+            </div>
+          ) : (
+            <div className="mt-1 text-xs text-muted-foreground">
+              {steps === undefined ? "runs another flow" : `${steps} step${steps === 1 ? "" : "s"}`}
+            </div>
+          )}
         </div>
-
-        {isExpanded && (
-          <div className="mt-2 pt-2 border-t border-border">
-            <p className="text-xs text-muted-foreground mb-2">
-              Reusable flow • Double-click to edit
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full text-xs h-7"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsEditorOpen(true);
-              }}
-            >
-              <Edit className="h-3 w-3 mr-1" />
-              Edit Flow
-            </Button>
-          </div>
-        )}
-
-        <Handle id="source-bottom" type="source" position={Position.Bottom} className="w-3 h-3 !bg-node-group" />
-        <Handle id="source-right" type="source" position={Position.Right} className="w-3 h-3 !bg-node-group" />
       </div>
 
-      <GroupEditorDialog
-        groupId={data.flowId}
-        groupName={data.label}
-        open={isEditorOpen}
-        onOpenChange={setIsEditorOpen}
-      />
-    </>
+      <Handle id="source-bottom" type="source" position={Position.Bottom} className="w-3 h-3 !bg-node-group" />
+      <Handle id="source-right" type="source" position={Position.Right} className="w-3 h-3 !bg-node-group" />
+    </div>
   );
 });
 

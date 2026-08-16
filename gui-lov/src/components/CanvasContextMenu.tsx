@@ -24,7 +24,6 @@ export const CanvasContextMenu = ({ x, y, onClose, canvasPosition, selectedNode,
   const handleAddGroup = (group: any) => {
     addNodeToCanvas('group', {
       label: group.name,
-      testCaseCount: group.testCases.length,
       flowId: group.id,  // Backend expects flowId for circular dependency validation
     }, canvasPosition);
     onClose();

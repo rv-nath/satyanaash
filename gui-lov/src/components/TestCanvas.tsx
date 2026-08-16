@@ -22,7 +22,8 @@ import { TestCaseNode, StartNode, EndNode, GroupNode, AwaitCallbackNode } from "
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { cleanupBandFor } from "@/lib/cleanupBand";
-import { canvasNodeName, completedCount, executionClassFor } from "@/lib/executionDecor";
+import { canvasNodeName, completedCount, executionClassFor, flowExecutionView } from "@/lib/executionDecor";
+import { droppedNode } from "@/lib/dropPayload";
 import { StepControls } from "./StepControls";
 import { EdgeTypeDialog } from "./EdgeTypeDialog";
 import { getLayoutedElements, type LayoutDirection, type LayoutSpacing } from "@/lib/layoutUtils";
@@ -38,7 +39,7 @@ const nodeTypes = {
 };
 
 const TestCanvasContent = () => {
-  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, flows, deleteNodes, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId, openTestTab, projectId } = useTestProject();
+  const { nodes: contextNodes, edges: contextEdges, setNodes, setEdges, showEdgeLabels, edgeType, addNodeToCanvas, flows, deleteNodes, activeFlowId, undo, redo, snapToGrid, setViewport, getViewport, invalidNodeIds, validationErrors, layoutRequest, nodeRuns, inlinedByFlow, activeNodeId, pausedNodeId, runMode, totalNodes, step, executingFlowId, openTestTab, projectId } = useTestProject();
   const [nodes, setNodesState, onNodesChange] = useNodesState(contextNodes);
   // Cached by the nodes themselves already; used here only to spot a node pointing
   // at a test case that has since been deleted.
@@ -285,17 +286,20 @@ const TestCanvasContent = () => {
     
     if (!reactFlowInstance) return;
 
-    try {
-      const data = JSON.parse(event.dataTransfer.getData('application/json'));
-      const position = reactFlowInstance.screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
-      
-      addNodeToCanvas(data.type, data.data, position);
-    } catch (error) {
-      console.error('Error dropping node:', error);
+    const raw = event.dataTransfer.getData('application/json');
+    const dropped = droppedNode(raw);
+    if (!dropped) {
+      // The payload, not just an error. This branch used to be a bare catch that logged the
+      // exception alone, which is how a rail sending the wrong shape went unnoticed.
+      console.warn('Ignored a drop the canvas could not read:', raw);
+      return;
     }
+
+    const position = reactFlowInstance.screenToFlowPosition({
+      x: event.clientX,
+      y: event.clientY,
+    });
+    addNodeToCanvas(dropped.type, dropped.data, position);
   }, [reactFlowInstance, addNodeToCanvas]);
 
   // Handle keyboard shortcuts (delete, undo, redo)
@@ -409,11 +413,10 @@ const TestCanvasContent = () => {
 
   // What the current or last run left on this flow's nodes. Only this flow's own
   // results decorate it — another flow's run is someone else's graph.
-  const executionView = useMemo(() => ({
-    activeNodeId: executingFlowId === activeFlowId ? activeNodeId : null,
-    pausedNodeId: executingFlowId === activeFlowId ? pausedNodeId : null,
-    runs: activeFlowId ? nodeRuns[activeFlowId] : undefined,
-  }), [executingFlowId, activeFlowId, activeNodeId, pausedNodeId, nodeRuns]);
+  const executionView = useMemo(
+    () => flowExecutionView({ activeFlowId, executingFlowId, activeNodeId, pausedNodeId, nodeRuns, inlinedByFlow }),
+    [executingFlowId, activeFlowId, activeNodeId, pausedNodeId, nodeRuns, inlinedByFlow],
+  );
 
   // Apply node styling for selection, validation highlighting, and edge styling based on type
   const styledNodes = nodes.map(node => {

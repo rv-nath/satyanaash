@@ -385,7 +385,14 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
                   onDragStart={(e) =>
                     e.dataTransfer.setData(
                       "application/json",
-                      JSON.stringify({ type: "flow", flowId: group.id }),
+                      // Additive: the flat `flowId` is what this rail's own bucket drop
+                      // target reads, and `data` is what the canvas passes to
+                      // `addNodeToCanvas`. Dropping one for the other breaks the other target.
+                      JSON.stringify({
+                        type: "flow",
+                        flowId: group.id,
+                        data: { flowId: group.id, label: group.name },
+                      }),
                     )
                   }
                   onClick={() => setSelectedFlowId(group.id)}
