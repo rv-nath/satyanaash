@@ -5,7 +5,7 @@ import {
   WorkspaceState, initialWorkspaceState, MAX_TABS,
   openTest, openFlow, openSettings, openRuns, openSuite,
   openStorage, openFiles, openRun, togglePinned,
-  closeTab as closeWsTab, setActive as setActiveWsTab,
+  closeTab as closeWsTab, setActive as setActiveWsTab, activeSurface,
 } from "@/lib/workspaceTabs";
 import { useHistory } from "@/hooks/useHistory";
 import { useAutoSave, SaveStatus } from "@/hooks/useAutoSave";
@@ -383,7 +383,6 @@ export const TestProjectProvider = ({
     const settings = mergeEnvWrites(project.settings, activeEnvId, writes);
     updateProjectMutation.mutate({ id: projectId, data: { settings } });
   }, [project, projectId, activeEnvId, updateProjectMutation]);
-  const closeWorkspaceTab = useCallback((key: string) => setWorkspace((s) => closeWsTab(s, key)), []);
   const setActiveWorkspaceTab = useCallback((key: string) => setWorkspace((s) => setActiveWsTab(s, key)), []);
 
   // Wrapper to update URL when active flow changes
@@ -403,6 +402,27 @@ export const TestProjectProvider = ({
       }, { replace: true });
     }
   }, [setSearchParams]);
+
+  /**
+   * Close a tab — and follow the one that takes its place.
+   *
+   * Closing chooses a new active tab (`closeTab` picks the right neighbour, or the left one at
+   * the end), so it changes what the main pane shows just as much as clicking a tab does. It set
+   * the workspace and left `activeFlowId` where it was, so closing the active flow tab left the
+   * strip naming one flow and the canvas drawing another — with the title bar agreeing with the
+   * canvas, which made it look like the *tab* was wrong.
+   *
+   * The third caller to change the active tab, and the only one that was not paired: `activateTab`
+   * syncs, `openFlowOnCanvas` syncs, this did not.
+   */
+  const closeWorkspaceTab = useCallback((key: string) => {
+    const next = closeWsTab(workspace, key);
+    setWorkspace(next);
+    // Only when a flow is what comes up. Closing onto a test or the runs page shows no canvas,
+    // and whichever flow was last on it is still the right one to come back to.
+    const surface = activeSurface(next);
+    if (surface.kind === "flow") setActiveFlowId(surface.id);
+  }, [workspace, setActiveFlowId]);
 
   /**
    * Open a flow on the canvas, in **its own tab** — and both halves of "open".

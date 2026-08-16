@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -17,12 +18,16 @@ import { TestProjectProvider, useTestProject } from "@/contexts/TestProjectConte
 
 /** What the main pane actually keys off: the open tabs, and which is active. */
 const Probe = () => {
-  const { workspace, activeFlowId } = useTestProject();
+  const { workspace, activeFlowId, openFlowOnCanvas, closeWorkspaceTab } = useTestProject();
   return (
     <div>
       <span data-testid="tabs">{workspace.tabs.map((t) => `${t.kind}:${t.id}`).join(",")}</span>
       <span data-testid="active">{workspace.active ?? "none"}</span>
       <span data-testid="selected">{activeFlowId ?? "none"}</span>
+      <button onClick={() => openFlowOnCanvas("f1")}>open f1</button>
+      <button onClick={() => openFlowOnCanvas("f2")}>open f2</button>
+      <button onClick={() => closeWorkspaceTab(workspace.active!)}>close active</button>
+      <button onClick={() => closeWorkspaceTab("flow:f1")}>close f1</button>
     </div>
   );
 };
@@ -86,5 +91,50 @@ describe("landing on a link that names a flow", () => {
     renderAt("/project/p1");
     expect(screen.getByTestId("selected").textContent).toBe("f1");
     expect(screen.getByTestId("active").textContent).toBe("none");
+  });
+});
+
+/**
+ * Closing a tab.
+ *
+ * The same shape of bug as the deep link above, and the reason this file is rendered rather than
+ * unit-tested: closing picks a new active tab, and the pane that draws the canvas keys off
+ * `activeFlowId` instead. Set one and not the other and the strip names one flow while the canvas
+ * draws another — with the title bar siding with the canvas, so it reads as the tab being wrong.
+ */
+describe("closing the active flow tab", () => {
+  const openTwo = async () => {
+    renderAt("/project/p1");
+    await userEvent.click(screen.getByText("open f1"));
+    await userEvent.click(screen.getByText("open f2"));
+    expect(screen.getByTestId("tabs").textContent).toBe("flow:f1,flow:f2");
+    expect(screen.getByTestId("selected").textContent).toBe("f2");
+  };
+
+  it("moves the canvas to the tab that takes its place", async () => {
+    // The whole bug: the tab vanished, the neighbour became active, and the canvas kept drawing
+    // the flow that had just been closed.
+    await openTwo();
+    await userEvent.click(screen.getByText("close active"));
+    expect(screen.getByTestId("tabs").textContent).toBe("flow:f1");
+    expect(screen.getByTestId("active").textContent).toBe("flow:f1");
+    expect(screen.getByTestId("selected").textContent).toBe("f1");
+  });
+
+  it("leaves the canvas alone when the closed tab was not the active one", async () => {
+    await openTwo();
+    await userEvent.click(screen.getByText("close f1"));
+    expect(screen.getByTestId("tabs").textContent).toBe("flow:f2");
+    expect(screen.getByTestId("selected").textContent).toBe("f2");
+  });
+
+  it("keeps the last flow selected when the last tab closes", async () => {
+    // Nothing is on screen to disagree with — the welcome pane is showing — and the flow the
+    // author was last on is the right one to come back to.
+    renderAt("/project/p1");
+    await userEvent.click(screen.getByText("open f2"));
+    await userEvent.click(screen.getByText("close active"));
+    expect(screen.getByTestId("tabs").textContent).toBe("");
+    expect(screen.getByTestId("selected").textContent).toBe("f2");
   });
 });
