@@ -267,6 +267,58 @@ export function rootPathWarning(
 }
 
 /**
+ * What is wrong with an output variable's path, said beside the field as it is typed.
+ *
+ * Supersedes `rootPathWarning`, which covered one case of a family. The column holds two quite
+ * different things and nothing on screen said so: a **JSONPath into this step's response**
+ * (`$.token`), or a **value carried forward** (`{{e_a_email}}`) that the response never had.
+ * An author wrote the second one, and the run dropped it with a warning into the folded log
+ * block — three configured exports showing as two, with nothing saying why.
+ *
+ * The panel's job is to say it before the run. The validator says it again on save, and the
+ * engine says it once more if it gets that far; this is the one an author reads while typing.
+ */
+export function outputPathNote(
+  path: string,
+  name: string,
+  mode: RunMode,
+): string | undefined {
+  const trimmed = path.trim();
+  if (!trimmed) return undefined;
+  const label = name.trim() || "this variable";
+
+  // A value carried forward rather than read out of the response: `{{name}}` says so on its
+  // own, since that is the variable syntax everywhere else in the product. A leading `=` says
+  // it explicitly, and is the only way to carry a constant.
+  const carried = trimmed.startsWith("=")
+    ? trimmed.slice(1).trim()
+    : !trimmed.startsWith("$") && trimmed.includes("{{")
+      ? trimmed
+      : undefined;
+  if (carried !== undefined) {
+    if (!carried) {
+      return `= carries a value forward. Write {{name}} to hand one on, or a path like $.id to read one out of the response.`;
+    }
+    if (mode !== "once") {
+      return `This step runs more than once, so these become a record's fields — and ${carried} is the same for every record in the list. Point ${label} at a path into the response instead.`;
+    }
+    return undefined;
+  }
+
+  // `$` and `$.` are the two ways to write "the whole thing", and always succeed — so nothing
+  // later ever warns about them.
+  const root = rootPathWarning(trimmed, name, mode);
+  if (root) return root;
+
+  // Neither a path nor a value. Left as its own case on purpose: someone who meant `$.token`
+  // and dropped the `$` would, under a looser rule, silently export the literal word.
+  if (!trimmed.startsWith("$")) {
+    return `This column reads a value out of *this step's response*, by JSONPath — like $.token or $.data.id. Did you mean $.${trimmed}? To hand a value on instead, write {{name}}.`;
+  }
+  return undefined;
+}
+
+/**
  * Whether the list a wait is told to walk is one an earlier step in this flow collects.
  *
  * Three states rather than valid/invalid, because **absence is a doubt, not an error**: a list can

@@ -10,6 +10,7 @@ import {
   awaitListCheck,
   awaitProgress,
   callbackUrlToSend,
+  outputPathNote,
   rootPathWarning,
   AWAIT_TIMEOUT_MS,
   awaitBadge,
@@ -304,5 +305,59 @@ describe("what a waiting step counts", () => {
     // item, so the real total was items × budget. Running them together made the label honest
     // again — the fix belonged in the engine, not in the wording.
     expect(awaitProgress(70, 60000)).toBe("70s / 60s");
+  });
+});
+
+/**
+ * The two things the JSON PATH column can hold.
+ *
+ * An author put `{{e_a_email}}` there — reasonably, since the email they needed downstream was
+ * never in the response — and the run dropped it into a folded log block. The column now takes
+ * `= <value>` for exactly that, and the panel says so while it is being typed.
+ */
+describe("outputPathNote", () => {
+  it("says nothing about a variable, which is how you carry a value", () => {
+    // The author's own first attempt, and now what asking for a value looks like.
+    expect(outputPathNote("{{e_a_email}}", "email", "once")).toBeUndefined();
+    expect(outputPathNote("hello {{name}}", "greeting", "once")).toBeUndefined();
+  });
+
+  it("offers the correction for a bare field name", () => {
+    // The case that stops this being "anything that is not a path is a value": treated as one,
+    // `token` would quietly export the literal word.
+    const note = outputPathNote("token", "signup_token", "once")!;
+    expect(note).toContain("$.token");
+    expect(note).toContain("{{name}}");
+  });
+
+  it("says nothing about a path that works", () => {
+    expect(outputPathNote("$.token", "t", "once")).toBeUndefined();
+    expect(outputPathNote("$.data.items[0].id", "t", "items")).toBeUndefined();
+    expect(outputPathNote("$..id", "t", "once")).toBeUndefined();
+  });
+
+  it("accepts the explicit form too, which is the only way to carry a constant", () => {
+    expect(outputPathNote("= {{e_a_email}}", "email", "once")).toBeUndefined();
+    expect(outputPathNote("= pending", "state", "once")).toBeUndefined();
+  });
+
+  it("asks what a bare = is meant to carry", () => {
+    expect(outputPathNote("=", "email", "once")).toContain("carries a value forward");
+  });
+
+  it("warns that a carried value is the same in every record", () => {
+    // The same rows are a record's fields when the step runs more than once, and a value from
+    // the step's context does not vary per response — so every record would hold one value.
+    const note = outputPathNote("{{e_a_email}}", "email", "rows")!;
+    expect(note).toContain("same for every record");
+  });
+
+  it("still catches the root path, which always succeeds and so never warns later", () => {
+    expect(outputPathNote("$", "campaign_info", "once")).toContain("whole response");
+  });
+
+  it("says nothing about an empty column", () => {
+    expect(outputPathNote("", "x", "once")).toBeUndefined();
+    expect(outputPathNote("   ", "x", "once")).toBeUndefined();
   });
 });

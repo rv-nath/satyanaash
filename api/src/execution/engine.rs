@@ -1021,6 +1021,107 @@ enum CaptureKind {
     Field,
 }
 
+/// What this output variable carries forward, if it carries anything.
+///
+/// The column holds two things, told apart by what the author already writes everywhere else:
+///
+/// - `$.token` — a JSONPath. A JSONPath always begins with `$`, so this is exact.
+/// - `{{e_a_email}}` — a value carried forward. `{{ }}` is *the* variable syntax in this
+///   product; a string containing one is asking for a value by definition.
+/// - `token` — neither, and left to `capture` to reject. That case is the reason this is not
+///   simply "anything that is not a path is a value": someone who meant `$.token` and dropped
+///   the `$` would otherwise export the literal string "token" and never be told.
+///
+/// A leading `=` is accepted too, and is the only way to carry a constant with no variable in
+/// it (`= pending`). It is not what the panel teaches, because a second spelling for the common
+/// case is a second thing to learn.
+fn carried(spec: &ExportVariable) -> Option<&str> {
+    let path = spec.json_path.trim();
+    if let Some(rest) = path.strip_prefix('=') {
+        return Some(rest.trim());
+    }
+    (!path.starts_with('$') && path.contains("{{")).then_some(path)
+}
+
+/// `{{name}}` and nothing else.
+///
+/// Worth telling apart from a template with text around it: a bare reference keeps the value's
+/// own type, so a count carried forward stays a number and an object stays an object. Anything
+/// else is string-building and comes out as a string, which is the only thing it could be.
+fn sole_reference(template: &str) -> Option<&str> {
+    let inner = template.strip_prefix("{{")?.strip_suffix("}}")?;
+    let ok = !inner.is_empty()
+        && !inner.starts_with('$')  // a built-in like {{$uuid}} is generated, not resolved
+        && inner.chars().all(|c| c.is_alphanumeric() || c == '_');
+    ok.then_some(inner)
+}
+
+/// Resolve the output variables that carry a value, against what the flow knows so far.
+///
+/// These never touch the response, which is the point: a step can hand a name onward that its
+/// own response never mentioned — the email it was given, a tenant id from the environment, a
+/// stable name for whatever an earlier step happened to call something.
+///
+/// An unresolved reference is refused rather than exported. `interpolate` leaves an unknown
+/// `{{name}}` as those literal characters, and exporting *that* is the failure this whole file
+/// keeps guarding against: it reaches a later request looking like a value.
+fn carry(
+    specs: &[&ExportVariable],
+    ctx: &ExecutionContext,
+    debug: bool,
+    logs: &mut Vec<String>,
+) -> HashMap<String, Value> {
+    let mut got = HashMap::new();
+    for spec in specs {
+        let Some(template) = carried(spec) else { continue };
+        if template.is_empty() {
+            logs.push(format!(
+                "⚠ Export \"{}\" carries nothing — write = {{{{name}}}} to hand a value on, \
+                 or a path like $.id to read one out of the response",
+                spec.name
+            ));
+            continue;
+        }
+
+        let value = match sole_reference(template) {
+            Some(name) => match ctx.resolve(name) {
+                Some(value) => value.clone(),
+                None => {
+                    logs.push(format!(
+                        "⚠ Export \"{}\": nothing named {} has been set by this run, so \
+                         {{{{{}}}}} will not resolve",
+                        spec.name, template, spec.name
+                    ));
+                    continue;
+                }
+            },
+            None => match ctx.interpolate(template) {
+                // Still holding a `{{...}}` means a name in the template resolved to nothing,
+                // and the text would carry those braces into whatever used it next.
+                Ok(text) if text.contains("{{") => {
+                    logs.push(format!(
+                        "⚠ Export \"{}\": {} has a name this run never set, so it was not \
+                         carried",
+                        spec.name, text
+                    ));
+                    continue;
+                }
+                Ok(text) => Value::String(text),
+                Err(e) => {
+                    logs.push(format!("⚠ Export \"{}\" could not be built: {}", spec.name, e));
+                    continue;
+                }
+            },
+        };
+
+        if debug {
+            logs.push(format!("Carried {} = {:?}", spec.name, value));
+        }
+        got.insert(spec.name.clone(), value);
+    }
+    got
+}
+
 /// Run these JSONPaths against one response body and say what happened to each.
 ///
 /// Extracted so exporting and collecting share one implementation of "query and report"
@@ -1044,6 +1145,21 @@ fn capture(
     let mut got = HashMap::new();
 
     for spec in specs {
+        // A carried value is resolved before `capture` is reached, so an export never arrives
+        // here holding one. A collected record's fields are the same rows under another
+        // heading, and there the answer is different: a record describes what *this row's*
+        // response returned, and a value from the step's context is the same for every record
+        // in the list. Said plainly rather than reported as a broken path.
+        if carried(spec).is_some() {
+            if kind == CaptureKind::Field {
+                logs.push(format!(
+                    "⚠ Field \"{}\" carries a value ({}), which a collected record cannot use — \
+                     every record would hold the same one. Give it a path into the response.",
+                    spec.name, spec.json_path
+                ));
+            }
+            continue;
+        }
         match json.query(&spec.json_path) {
             Ok(results) => {
                 if let Some(value) = results.first() {
@@ -2439,21 +2555,28 @@ impl ExecutionEngine {
         // a messageId to reconcile against, say. Run whatever the verdict, matching the rule a
         // request node already follows.
         let wanted = output_vars(node, &mut logs);
-        let specs: Vec<&ExportVariable> = wanted.iter().collect();
+        // Carried values first, as a request node does: they read the flow's context rather
+        // than the callback, so a callback with no JSON body is no reason to lose them.
+        let (carried_specs, specs): (Vec<&ExportVariable>, Vec<&ExportVariable>) =
+            wanted.iter().partition(|e| carried(e).is_some());
+        let mut got = carry(&carried_specs, ctx, self.debug_mode, &mut logs);
         let exports = if specs.is_empty() {
-            None
+            for (name, value) in &got {
+                ctx.set(name, value.clone());
+            }
+            if got.is_empty() { None } else { Some(got) }
         } else {
             match &response.json {
                 Some(json) => {
                     let mut multi = Vec::new();
-                    let got = capture(
+                    got.extend(capture(
                         &specs,
                         json,
                         CaptureKind::Export,
                         self.debug_mode,
                         &mut logs,
                         &mut multi,
-                    );
+                    ));
                     for (name, value) in &got {
                         ctx.set(name, value.clone());
                     }
@@ -2464,7 +2587,11 @@ impl ExecutionEngine {
                         "⚠ The callback body is not JSON, so nothing was captured for: {}",
                         specs.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ")
                     ));
-                    None
+                    // The carried ones did not need it, so they still stand.
+                    for (name, value) in &got {
+                        ctx.set(name, value.clone());
+                    }
+                    if got.is_empty() { None } else { Some(got) }
                 }
             }
         };
@@ -2901,22 +3028,34 @@ impl ExecutionEngine {
             return None;
         }
 
-        let json = match json {
-            Some(j) => j,
-            None => {
-                // Exports were configured against a body that isn't JSON. Silence
-                // here reads as "extracted fine" and the names never resolve.
-                logs.push(format!(
-                    "⚠ Response is not JSON, so nothing was extracted for: {}",
-                    all_exports.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ")
-                ));
-                return None;
-            }
-        };
+        // Values carried forward are resolved first and independently of the body: they never
+        // touch it, so a response that isn't JSON is no reason for them not to happen.
+        let (carried_specs, path_specs): (Vec<&ExportVariable>, Vec<&ExportVariable>) =
+            all_exports.into_iter().partition(|e| carried(e).is_some());
+        let mut exported = carry(&carried_specs, ctx, self.debug_mode, logs);
 
-        let mut ignored = Vec::new();
-        let exported =
-            capture(&all_exports, json, CaptureKind::Export, self.debug_mode, logs, &mut ignored);
+        if !path_specs.is_empty() {
+            match json {
+                Some(json) => {
+                    let mut ignored = Vec::new();
+                    exported.extend(capture(
+                        &path_specs,
+                        json,
+                        CaptureKind::Export,
+                        self.debug_mode,
+                        logs,
+                        &mut ignored,
+                    ));
+                }
+                // Silence here reads as "extracted fine" and the names never resolve. Only the
+                // ones that needed the body are named: the carried ones are already done.
+                None => logs.push(format!(
+                    "⚠ Response is not JSON, so nothing was extracted for: {}",
+                    path_specs.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", ")
+                )),
+            }
+        }
+
         for (name, value) in &exported {
             ctx.set(name, value.clone());
         }
@@ -5728,6 +5867,231 @@ mod tests {
         let json = serde_json::to_string(&marked).unwrap();
         assert!(json.contains("\"needs_flow\":true"), "{}", json);
         assert!(serde_json::from_str::<DataRow>(&json).unwrap().needs_flow);
+    }
+
+    // ============ output variables that carry a value instead of reading one ============
+
+    /// A one-node flow whose step exports `email` from whatever `path` says.
+    fn carrying_flow(path: &str) -> Flow {
+        make_flow(
+            "flow1",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node(
+                    "a",
+                    "testCase",
+                    serde_json::json!({
+                        "testCaseId": "a",
+                        "config": { "outputVars": [{ "name": "email", "path": path }] }
+                    }),
+                ),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![make_edge("e1", "start", "a", None), make_edge("e2", "a", "end", None)],
+        )
+    }
+
+    async fn carried_export(path: &str, body: &'static str, env: Vec<(&str, Value)>) -> NodeResult {
+        let url = stub_once(200, body).await;
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(make_test_case("a", "Sign up", &url, "POST"));
+        let environment: HashMap<String, Value> =
+            env.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        ExecutionEngine::new(false, None)
+            .execute_flow("e1", &carrying_flow(path), &repo, environment, HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .next()
+            .expect("the step ran")
+    }
+
+    /// The case this exists for: hand a value onward that the response never mentioned.
+    ///
+    /// An author put `{{e_a_email}}` in the JSON PATH column, because the email they signed up
+    /// with is not in the signup response and there was no other way to give it a name the rest
+    /// of the flow could use. A path could never do it — it reads the response — so the column
+    /// takes `= <value>` as well.
+    #[tokio::test]
+    async fn an_export_can_carry_a_value_the_response_never_mentioned() {
+        let result = carried_export(
+            "{{e_a_email}}",
+            r#"{"token":"T-1"}"#,
+            vec![("e_a_email", serde_json::json!("ent.admin@example.com"))],
+        )
+        .await;
+        assert_eq!(
+            result.exports.as_ref().and_then(|e| e.get("email")),
+            Some(&serde_json::json!("ent.admin@example.com")),
+            "{:?}",
+            result.exports
+        );
+    }
+
+    /// `=` says it explicitly, and is the only way to carry something with no variable in it.
+    #[tokio::test]
+    async fn a_constant_needs_the_explicit_form() {
+        let result = carried_export("= pending", "{}", vec![]).await;
+        assert_eq!(
+            result.exports.as_ref().and_then(|e| e.get("email")),
+            Some(&serde_json::json!("pending"))
+        );
+    }
+
+    /// Why `{{ }}` and not "anything that is not a path".
+    #[tokio::test]
+    async fn a_path_with_the_dollar_dropped_is_still_an_error_not_a_value() {
+        // Someone who meant `$.token`. Treating every non-path as a value would export the
+        // literal string "token" here and never say a word.
+        let result = carried_export("token", r#"{"token":"T-1"}"#, vec![]).await;
+        assert!(
+            result.exports.as_ref().map_or(true, |e| !e.contains_key("email")),
+            "{:?}",
+            result.exports
+        );
+        assert!(
+            result.logs.iter().any(|l| l.contains("unusable path")),
+            "{:?}",
+            result.logs
+        );
+    }
+
+    #[tokio::test]
+    async fn a_carried_value_keeps_its_own_type() {
+        // `{{count}}` alone is a reference, not string-building, so a number stays a number —
+        // otherwise a later `response.json.n == {{count}}` compares a number with "12".
+        let result =
+            carried_export("{{count}}", "{}", vec![("count", serde_json::json!(12))]).await;
+        assert_eq!(result.exports.as_ref().and_then(|e| e.get("email")), Some(&serde_json::json!(12)));
+    }
+
+    #[tokio::test]
+    async fn a_carried_template_with_text_around_it_comes_out_as_text() {
+        let result = carried_export(
+            "acct-{{tenant}}-x",
+            "{}",
+            vec![("tenant", serde_json::json!("acme"))],
+        )
+        .await;
+        assert_eq!(
+            result.exports.as_ref().and_then(|e| e.get("email")),
+            Some(&serde_json::json!("acct-acme-x"))
+        );
+    }
+
+    /// The failure this whole file keeps guarding against, in its newest form.
+    #[tokio::test]
+    async fn a_name_this_run_never_set_is_refused_rather_than_carried_literally() {
+        // `interpolate` leaves an unknown `{{name}}` as those characters. Exporting that would
+        // put `{{e_a_email}}` into a later request looking exactly like a value.
+        let result = carried_export("{{e_a_email}}", "{}", vec![]).await;
+        assert!(
+            result.exports.as_ref().map_or(true, |e| !e.contains_key("email")),
+            "{:?}",
+            result.exports
+        );
+        assert!(
+            result.logs.iter().any(|l| l.contains("e_a_email") && l.contains("⚠")),
+            "the run should say why: {:?}",
+            result.logs
+        );
+    }
+
+    #[tokio::test]
+    async fn a_carried_value_survives_a_response_that_is_not_json() {
+        // It never reads the body, so the body's shape is none of its business — where a path
+        // export has nothing to work with and rightly says so.
+        let url = stub_once(200, "OK, created").await;
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(make_test_case("a", "Sign up", &url, "POST"));
+        let flow = make_flow(
+            "flow1",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node(
+                    "a",
+                    "testCase",
+                    serde_json::json!({
+                        "testCaseId": "a",
+                        "config": { "outputVars": [
+                            { "name": "email", "path": "{{e_a_email}}" },
+                            { "name": "token", "path": "$.token" }
+                        ] }
+                    }),
+                ),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![make_edge("e1", "start", "a", None), make_edge("e2", "a", "end", None)],
+        );
+        let environment = HashMap::from([("e_a_email".to_string(), serde_json::json!("a@b.c"))]);
+        let result = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, environment, HashMap::new(), None)
+            .await
+            .unwrap();
+
+        let step = &result.results[0];
+        assert_eq!(
+            step.exports.as_ref().and_then(|e| e.get("email")),
+            Some(&serde_json::json!("a@b.c"))
+        );
+        // And the one that did need the body is named, alone.
+        assert!(
+            step.logs.iter().any(|l| l.contains("not JSON") && l.contains("token")),
+            "{:?}",
+            step.logs
+        );
+        assert!(
+            !step.logs.iter().any(|l| l.contains("not JSON") && l.contains("email")),
+            "the carried one did not need the body: {:?}",
+            step.logs
+        );
+    }
+
+    /// A later step can use it, which is the whole point of exporting anything.
+    #[tokio::test]
+    async fn a_carried_value_reaches_the_step_after_it() {
+        let first = stub_once(200, "{}").await;
+        let second = stub_once(200, "{}").await;
+        let mut b = make_test_case("b", "Use it", &second, "POST");
+        b.headers = serde_json::json!({ "X-Email": "{{email}}" });
+        let repo = MockTestCaseRepository::new()
+            .with_test_case(make_test_case("a", "Sign up", &first, "POST"))
+            .with_test_case(b);
+
+        let flow = make_flow(
+            "flow1",
+            vec![
+                make_node("start", "start", serde_json::json!({})),
+                make_node(
+                    "a",
+                    "testCase",
+                    serde_json::json!({
+                        "testCaseId": "a",
+                        "config": { "outputVars": [{ "name": "email", "path": "{{e_a_email}}" }] }
+                    }),
+                ),
+                make_node("b", "testCase", serde_json::json!({ "testCaseId": "b" })),
+                make_node("end", "end", serde_json::json!({})),
+            ],
+            vec![
+                make_edge("e1", "start", "a", None),
+                make_edge("e2", "a", "b", None),
+                make_edge("e3", "b", "end", None),
+            ],
+        );
+        let environment = HashMap::from([("e_a_email".to_string(), serde_json::json!("a@b.c"))]);
+        let results = ExecutionEngine::new(false, None)
+            .execute_flow("e1", &flow, &repo, environment, HashMap::new(), None)
+            .await
+            .unwrap()
+            .results;
+
+        let used = results.iter().find(|r| r.node_id == "b").expect("the second step ran");
+        assert_eq!(
+            used.request.as_ref().unwrap().headers.get("X-Email").map(String::as_str),
+            Some("a@b.c")
+        );
     }
 
     // ===================== sub-flows, spliced then run =====================

@@ -690,8 +690,9 @@ fn unfillable_lists(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
 /// exports where they configured three and nothing that says why.
 ///
 /// Checked with the engine's own parser rather than a pattern of our own, so this cannot
-/// disagree with what the run will do: `$.token` and `$..id` parse, while `{{name}}`, a bare
-/// `token` with no `$`, and an empty path do not.
+/// disagree with what the run will do: `$.token` and `$..id` parse, while a bare `token` with
+/// no `$` and an empty path do not. `{{name}}` is not a path at all — it carries a value
+/// forward — and is checked on its own terms.
 ///
 /// A warning, not an error: the step still runs and still reports its own verdict. What breaks
 /// is later — `{{name}}` reaches a request as those literal characters.
@@ -699,6 +700,14 @@ fn output_path_issues(node: &GraphNode) -> Vec<ValidationIssue> {
     use jsonpath_rust::JsonPath;
 
     let mut issues = Vec::new();
+    // When a step collects, these same rows are the record's fields rather than exports.
+    let collects = node
+        .data
+        .get("config")
+        .and_then(|c| c.get("collect"))
+        .and_then(|c| c.get("into"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
     let rows = node
         .data
         .get("config")
@@ -710,6 +719,39 @@ fn output_path_issues(node: &GraphNode) -> Vec<ValidationIssue> {
         let (name, path) = (field("name"), field("path"));
         // A row with neither is one the author just added and has not filled in.
         if name.is_empty() {
+            continue;
+        }
+        // `{{name}}` carries a value forward instead of reading one out of the response — the
+        // answer to "the value I need was never in the body". Not a path, and not wrong. A
+        // leading `=` says the same thing explicitly, and is the only way to carry a constant.
+        let carries = path
+            .strip_prefix('=')
+            .map(str::trim)
+            .or_else(|| (!path.starts_with('$') && path.contains("{{")).then_some(path));
+        if let Some(template) = carries {
+            if template.is_empty() {
+                issues.push(ValidationIssue::warning_with_node(
+                    "OUTPUT_VAR_CARRIES_NOTHING",
+                    format!(
+                        "Output variable \"{}\" carries nothing — write {{{{name}}}} to hand a \
+                         value on, or a path like $.id to read one out of the response",
+                        name
+                    ),
+                    &node.id,
+                ));
+            } else if collects {
+                // The same rows are a collected record's fields, and there a carried value is
+                // the same for every record in the list — which is never what an author means.
+                issues.push(ValidationIssue::warning_with_node(
+                    "OUTPUT_VAR_CARRY_IN_RECORD",
+                    format!(
+                        "\"{}\" carries {}, but this step collects a record per response — every \
+                         record would hold the same value. Give it a path into the response.",
+                        name, template
+                    ),
+                    &node.id,
+                ));
+            }
             continue;
         }
         if path.is_empty() {
@@ -728,11 +770,11 @@ fn output_path_issues(node: &GraphNode) -> Vec<ValidationIssue> {
             issues.push(ValidationIssue::warning_with_node(
                 "OUTPUT_VAR_BAD_PATH",
                 format!(
-                    "Output variable \"{}\" has {} where a JSON path goes. This reads a value \
-                     out of *this step's response* — like $.token or $.data.id — so it cannot \
-                     be a variable or a plain name. Nothing is captured, and {{{{{}}}}} will \
-                     not resolve.",
-                    name, path, name
+                    "Output variable \"{}\" has {} where a JSON path goes. This column reads a \
+                     value out of *this step's response* — like $.token or $.data.id. Did you \
+                     mean $.{}? Nothing is captured as it stands, and {{{{{}}}}} will not \
+                     resolve.",
+                    name, path, path, name
                 ),
                 &node.id,
             ));
@@ -1601,21 +1643,59 @@ mod tests {
     }
 
     #[test]
-    fn a_variable_where_a_json_path_goes_is_reported() {
-        // The author's case: `{{e_a_email}}` in the JSON PATH column. The engine drops it with a
-        // warning into the folded `logs` block, under a panel that lists only the exports that
-        // worked — so three configured exports show as two, with nothing saying why.
+    fn a_variable_where_a_json_path_goes_carries_that_value() {
+        // The author's own first attempt. It used to be dropped with a warning into the folded
+        // `logs` block; it is now what asking for a value looks like.
         let issues = output_path_issues(&with_output_vars(serde_json::json!([
             { "name": "signup_token", "path": "$.token" },
             { "name": "email", "path": "{{e_a_email}}" },
         ])));
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn the_explicit_form_is_accepted_too() {
+        // `=` is the only way to carry a constant, and says the same thing explicitly.
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "email", "path": "= {{e_a_email}}" },
+            { "name": "greeting", "path": "hello {{name}}" },
+            { "name": "state", "path": "= pending" },
+        ])));
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn a_mistyped_path_is_still_caught_which_is_why_this_is_not_just_not_a_path() {
+        // Someone who meant `$.token` and dropped the `$`. If anything that were not a path
+        // counted as a value, this would quietly export the literal string "token".
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "token", "path": "token" },
+        ])));
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!(issues[0].code, "OUTPUT_VAR_BAD_PATH");
-        assert_eq!(issues[0].node_id.as_deref(), Some("n1"));
-        // Names the variable, what is wrong, and what a path looks like.
-        assert!(issues[0].message.contains("email"), "{}", issues[0].message);
-        assert!(issues[0].message.contains("{{e_a_email}}"), "{}", issues[0].message);
         assert!(issues[0].message.contains("$.token"), "{}", issues[0].message);
+    }
+
+    #[test]
+    fn a_carry_with_nothing_after_the_equals_is_reported() {
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "email", "path": "=" },
+        ])));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "OUTPUT_VAR_CARRIES_NOTHING");
+    }
+
+    #[test]
+    fn carrying_a_value_into_a_collected_record_is_reported() {
+        // The same rows are a record's fields when a step collects, and a carried value is the
+        // same for every record in the list — which is never what the author meant.
+        let mut node = with_output_vars(serde_json::json!([
+            { "name": "email", "path": "= {{e_a_email}}" },
+        ]));
+        node.data["config"]["collect"] = serde_json::json!({ "into": "launched" });
+        let issues = output_path_issues(&node);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].code, "OUTPUT_VAR_CARRY_IN_RECORD");
     }
 
     #[test]
@@ -1666,7 +1746,7 @@ mod tests {
         let repos = WithFlows(vec![]);
         let validator = GraphValidator::new(&repos, &repos);
         let mut node = with_output_vars(serde_json::json!([
-            { "name": "email", "path": "{{e_a_email}}" },
+            { "name": "signup_token", "path": "token" },
         ]));
         node.id = "signup".to_string();
         let flow = flow_of(
@@ -1681,6 +1761,7 @@ mod tests {
             .find(|w| w.code == "OUTPUT_VAR_BAD_PATH")
             .expect("the bad path should be reported on the canvas");
         assert_eq!(issue.node_id.as_deref(), Some("signup"));
+        assert!(issue.message.contains("$.token"), "{}", issue.message);
         // A warning: the step itself still runs and still reports its own verdict.
         assert!(result.valid, "errors: {:?}", result.errors);
     }

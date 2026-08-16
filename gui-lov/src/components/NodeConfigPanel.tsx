@@ -11,7 +11,7 @@ import {
   collectionSummary,
   itemVarSuggestion,
   listName,
-  rootPathWarning,
+  outputPathNote,
   runModeOf,
   stripBraces,
   walkSummary,
@@ -692,7 +692,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
               title="Output variables"
               subtitle={
                 runMode === "once"
-                  ? "Pulled from the response by JSONPath, for the steps after this one"
+                  ? "A JSONPath into the response, or {{a variable}} to carry a value on — for the steps after this one"
                   : "Pulled from every response by JSONPath — one record per run, so a run's values stay together"
               }
               // Suppressed while the list is empty, because the dashed row below is the same
@@ -765,6 +765,13 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                     A name and a JSONPath, like{" "}
                     <span className="font-mono">campaignId</span> ←{" "}
                     <span className="font-mono">$.campaignId</span>
+                    {runMode === "once" && (
+                      <>
+                        {" "}— or{" "}
+                        <span className="font-mono">{"{{"}e_a_email{"}}"}</span> to carry a value
+                        the response never had
+                      </>
+                    )}
                   </span>
                 </button>
               ) : (
@@ -779,7 +786,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                     // Said beside the field it is about, as it is typed — a path of `$` is the
                     // one wrong path that never produces a run-time warning, because it always
                     // matches. There is nothing later to catch it.
-                    const rootNote = rootPathWarning(v.path, v.name, runMode);
+                    const rootNote = outputPathNote(v.path, v.name, runMode);
                     return (
                     <div key={i}>
                       <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.5fr)_auto] items-center gap-2">
