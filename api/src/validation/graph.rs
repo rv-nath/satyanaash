@@ -307,6 +307,32 @@ impl<'a> GraphValidator<'a> {
             }
         }
 
+        // 7b. What resolving the sub-flows would actually produce.
+        //
+        // Run through the *same* splicer the runner uses, so validation and execution cannot
+        // form different opinions about what a sub-flow node means. Skipped when a group node
+        // is already in error: the splice would only repeat what SELF_REFERENCE /
+        // MISSING_FLOW_REF / CIRCULAR_DEPENDENCY just said, in different words, against the
+        // same node.
+        let group_already_wrong = errors.iter().any(|e| {
+            matches!(
+                e.code.as_str(),
+                "SELF_REFERENCE" | "MISSING_FLOW_REF" | "CIRCULAR_DEPENDENCY"
+            )
+        });
+        if crate::execution::has_groups(flow) && !group_already_wrong {
+            let limits = crate::execution::InlineLimits::default();
+            let loaded = crate::execution::load_referenced(flow, self.flow_repo, &limits).await?;
+            let inlined = crate::execution::inline_groups(flow, &loaded, &limits);
+            for issue in subflow_issues(flow, &loaded, &inlined) {
+                if issue.severity == "error" {
+                    errors.push(issue);
+                } else {
+                    warnings.push(issue);
+                }
+            }
+        }
+
         // === WARNINGS ===
 
         // Missing failure edges on test case nodes
@@ -646,6 +672,185 @@ fn unfillable_lists(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
             &producer.id,
         ));
     }
+    issues
+}
+
+/// The output variable names a flow declares.
+///
+/// Read off the nodes, the same way the engine's own `flow_produced_names` does — a flow has no
+/// declared interface, so what it exports is whatever its steps happen to export.
+fn declared_outputs(flow: &Flow) -> Vec<String> {
+    let mut names = Vec::new();
+    for node in &flow.graph_data.nodes {
+        let rows = node
+            .data
+            .get("config")
+            .and_then(|c| c.get("outputVars"))
+            .and_then(|v| v.as_array());
+        for row in rows.into_iter().flatten() {
+            if let Some(name) = row.get("name").and_then(|v| v.as_str()) {
+                let name = name.trim();
+                if !name.is_empty() && !names.iter().any(|n| n == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// What a flow's sub-flow nodes will do that its author cannot see by looking at the canvas.
+///
+/// Every issue is attributed to a **group node**, never to an inlined step: the author has one
+/// box on screen, and pointing at `g1\u{1F}signup` would name a node that exists nowhere they
+/// can look.
+///
+/// Given the already-spliced result rather than computing its own, so a rule here and the runner
+/// cannot disagree about what a sub-flow contains.
+fn subflow_issues(
+    flow: &Flow,
+    loaded: &HashMap<String, Flow>,
+    inlined: &crate::execution::Inlined,
+) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let groups = flow
+        .graph_data
+        .nodes
+        .iter()
+        .filter(|n| n.node_type == "group")
+        .collect::<Vec<_>>();
+
+    // --- Two nodes running one flow -------------------------------------------------------
+    //
+    // Node ids are namespaced by the splice, so both invocations genuinely run. Variable names
+    // are *not*: they are string keys in one flat map, written by a plain insert. So the second
+    // invocation's `new_account_id` overwrites the first's, and the first's cleanup then deletes
+    // the second's account — leaking the very account this feature exists to stop leaking.
+    // Keyed by the id `extract_flow_id` resolves, so the `flowId` and `flow_id` spellings of
+    // one reference are counted as one flow rather than two.
+    let mut by_flow: HashMap<String, Vec<&GraphNode>> = HashMap::new();
+    for node in &groups {
+        if let Some(id) = extract_flow_id(&node.data) {
+            by_flow.entry(id).or_default().push(node);
+        }
+    }
+    by_flow.retain(|_, nodes| nodes.len() >= 2);
+    for (flow_id, sharing) in &by_flow {
+        let sub = loaded.get(flow_id);
+        let name = sub.map(|f| f.name.as_str()).unwrap_or(flow_id.as_str());
+        let outputs = sub.map(declared_outputs).unwrap_or_default();
+        for node in sharing {
+            let issue = if outputs.is_empty() {
+                ValidationIssue::warning_with_node(
+                    "SUBFLOW_INVOKED_TWICE",
+                    format!(
+                        "{} steps in this flow run \"{}\". They are separate steps and both will \
+                         run, but they share one set of variables.",
+                        sharing.len(),
+                        name
+                    ),
+                    &node.id,
+                )
+            } else {
+                ValidationIssue::error_with_node(
+                    "SUBFLOW_INVOKED_TWICE",
+                    format!(
+                        "{} steps in this flow run \"{}\", which sets {}. Variables are not \
+                         scoped per step, so the second run overwrites the first's values — and \
+                         cleanup would then delete the wrong thing. Use one step, or copy the \
+                         flow.",
+                        sharing.len(),
+                        name,
+                        outputs.join(", ")
+                    ),
+                    &node.id,
+                )
+            };
+            issues.push(issue);
+        }
+    }
+
+    // --- A failure edge out of a sub-flow node --------------------------------------------
+    //
+    // Dead: the node has no verdict of its own, and a failing step inside it stops the run
+    // rather than continuing to the sub-flow's exit. Worse than dead, in fact — `pick_edge`'s
+    // fallback can take it for a reason that has nothing to do with failure.
+    for node in &groups {
+        if flow
+            .graph_data
+            .edges
+            .iter()
+            .any(|e| e.source == node.id && edge_type_is(e, "failure"))
+        {
+            issues.push(ValidationIssue::warning_with_node(
+                "GROUP_FAILURE_EDGE_IGNORED",
+                "The failure edge out of this step is never taken. A step inside the sub-flow \
+                 that fails stops the run there; this step has no verdict of its own to branch \
+                 on.",
+                &node.id,
+            ));
+        }
+    }
+
+    // --- Two waits on one inbox, once the sub-flows are resolved ---------------------------
+    //
+    // Invisible to the check on the authored graph, which sees a single group node where the
+    // run sees a waiting step — or two of them, when one sub-flow is invoked twice. Run through
+    // the same rule, on the flat graph, and then re-attributed to the group node.
+    let origin_of: HashMap<&str, &crate::execution::NodeOrigin> = inlined
+        .origins
+        .iter()
+        .map(|o| (o.node_id.as_str(), o))
+        .collect();
+    let mut clashed: Vec<(String, String)> = Vec::new();
+    for issue in await_path_clashes(&inlined.flow.graph_data.nodes) {
+        let Some(node_id) = issue.node_id.as_deref() else { continue };
+        // A clash between two of the parent's own steps is already reported against those
+        // steps by the ordinary check. Only the inlined half is news.
+        let Some(origin) = origin_of.get(node_id) else { continue };
+        let pair = (origin.group_node_id.clone(), origin.flow_name.clone());
+        if !clashed.contains(&pair) {
+            clashed.push(pair);
+        }
+    }
+    for (group_node_id, flow_name) in clashed {
+        issues.push(ValidationIssue::warning_with_node(
+            "GROUP_AWAIT_PATH_CLASH",
+            format!(
+                "\"{}\" waits for a callback at a path something else in this run also waits \
+                 for. Nothing is consumed when a wait succeeds, so one callback satisfies both.",
+                flow_name
+            ),
+            &group_node_id,
+        ));
+    }
+
+    // --- A sub-flow's own flow variable, lost to this flow's -------------------------------
+    //
+    // Taken from the splice's own notes rather than compared here, so the warning cannot claim
+    // one thing while the run does another.
+    let group_for_flow: HashMap<&str, &str> = inlined
+        .origins
+        .iter()
+        .map(|o| (o.flow_name.as_str(), o.group_node_id.as_str()))
+        .collect();
+    for note in &inlined.notes {
+        let crate::execution::InlineNote::FlowVarShadowed { name, flow_name } = note;
+        let message = format!(
+            "\"{}\" sets the flow variable {} too. This flow's value wins, so the sub-flow runs \
+             with a value it did not choose.",
+            flow_name, name
+        );
+        match group_for_flow.get(flow_name.as_str()) {
+            Some(node_id) => issues.push(ValidationIssue::warning_with_node(
+                "FLOW_VAR_SHADOWED",
+                message,
+                node_id,
+            )),
+            None => issues.push(ValidationIssue::warning("FLOW_VAR_SHADOWED", message)),
+        }
+    }
+
     issues
 }
 
@@ -1316,6 +1521,266 @@ mod tests {
             edge_type: None,
             data: serde_json::Value::Null,
         }
+    }
+
+    /// A repository that actually holds the sub-flows, so the splice has something to resolve.
+    ///
+    /// `NoRepos` returns `None` for everything, which makes every group node a `MISSING_FLOW_REF`
+    /// — and that error deliberately suppresses the sub-flow rules, so none of them could be
+    /// reached through it.
+    struct WithFlows(Vec<Flow>);
+
+    #[async_trait::async_trait]
+    impl TestCaseRepository for WithFlows {
+        async fn create(&self, _: &str, _: crate::db::models::CreateTestCase) -> Result<TestCase, AppError> { unimplemented!() }
+        async fn get_by_id(&self, _: &str) -> Result<Option<TestCase>, AppError> { Ok(None) }
+        async fn list_by_project(&self, _: &str, _: crate::db::models::Pagination) -> Result<crate::db::models::PaginatedResponse<TestCase>, AppError> { unimplemented!() }
+        async fn update(&self, _: &str, _: crate::db::models::UpdateTestCase) -> Result<TestCase, AppError> { unimplemented!() }
+        async fn delete(&self, _: &str) -> Result<(), AppError> { unimplemented!() }
+        async fn find_existing_ids(&self, ids: &[String]) -> Result<std::collections::HashSet<String>, AppError> {
+            // Every test case referenced exists: this stub is about flows, and a
+            // MISSING_TEST_CASE would only add noise to what each test is actually asserting.
+            Ok(ids.iter().cloned().collect())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl FlowRepository for WithFlows {
+        async fn create(&self, _: &str, _: crate::db::models::CreateFlow) -> Result<Flow, AppError> { unimplemented!() }
+        async fn get_by_id(&self, id: &str) -> Result<Option<Flow>, AppError> {
+            Ok(self.0.iter().find(|f| f.id == id).cloned())
+        }
+        async fn list_by_project(&self, _: &str, _: crate::db::models::Pagination) -> Result<crate::db::models::PaginatedResponse<Flow>, AppError> { unimplemented!() }
+        async fn update(&self, _: &str, _: crate::db::models::UpdateFlow) -> Result<Flow, AppError> { unimplemented!() }
+        async fn update_graph(&self, _: &str, _: crate::db::models::UpdateGraphData) -> Result<Flow, AppError> { unimplemented!() }
+        async fn delete(&self, _: &str) -> Result<(), AppError> { unimplemented!() }
+        async fn find_existing_ids(&self, ids: &[String]) -> Result<std::collections::HashSet<String>, AppError> {
+            Ok(ids.iter().filter(|id| self.0.iter().any(|f| &&f.id == id)).cloned().collect())
+        }
+        async fn set_group(&self, _: &str, _: Option<&str>) -> Result<Flow, AppError> { unimplemented!() }
+    }
+
+    fn group_node(id: &str, flow_id: &str) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: "group".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({ "flowId": flow_id }),
+            width: None,
+            height: None,
+        }
+    }
+
+    /// A sub-flow: start → one step → end. `exports` names what its step declares.
+    fn sub_flow_named(id: &str, name: &str, exports: &[&str], inner: GraphNode) -> Flow {
+        let mut flow = flow_of(
+            vec![plain("start", "start"), inner, plain("end", "end")],
+            vec![edge("a", "start", "step"), edge("b", "step", "end")],
+        );
+        flow.id = id.to_string();
+        flow.name = name.to_string();
+        if !exports.is_empty() {
+            let vars: Vec<serde_json::Value> = exports
+                .iter()
+                .map(|n| serde_json::json!({ "name": n, "from": "json.id" }))
+                .collect();
+            flow.graph_data.nodes[1].data["config"] = serde_json::json!({ "outputVars": vars });
+        }
+        flow
+    }
+
+    fn step_node() -> GraphNode {
+        GraphNode {
+            id: "step".to_string(),
+            node_type: "testCase".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({ "testCaseId": "tc1" }),
+            width: None,
+            height: None,
+        }
+    }
+
+    /// A parent whose chain is start → g1 → g2 → end, both running `sub`.
+    fn parent_invoking_twice() -> Flow {
+        flow_of(
+            vec![
+                plain("start", "start"),
+                group_node("g1", "sub"),
+                group_node("g2", "sub"),
+                plain("end", "end"),
+            ],
+            vec![
+                edge("e1", "start", "g1"),
+                edge("e2", "g1", "g2"),
+                edge("e3", "g2", "end"),
+            ],
+        )
+    }
+
+    #[tokio::test]
+    async fn two_steps_running_one_sub_flow_that_exports_is_refused() {
+        // Node ids are namespaced by the splice, so both invocations run. Variable names are
+        // not: the second's `new_account_id` overwrites the first's, and the first's cleanup
+        // then deletes the second's account — the leak this feature exists to stop, back again
+        // through its own cure.
+        let sub = sub_flow_named("sub", "Onboard an enterprise", &["new_account_id"], step_node());
+        let repos = WithFlows(vec![sub]);
+        let validator = GraphValidator::new(&repos, &repos);
+
+        let result = validator.validate(&parent_invoking_twice()).await.unwrap();
+        let twice: Vec<&ValidationIssue> = result
+            .errors
+            .iter()
+            .filter(|e| e.code == "SUBFLOW_INVOKED_TWICE")
+            .collect();
+        assert_eq!(twice.len(), 2, "both steps are marked: {:?}", result.errors);
+        // Named on the canvas, and told which variable collides.
+        let nodes: Vec<&str> = twice.iter().filter_map(|e| e.node_id.as_deref()).collect();
+        assert!(nodes.contains(&"g1") && nodes.contains(&"g2"), "{nodes:?}");
+        assert!(twice[0].message.contains("new_account_id"), "{}", twice[0].message);
+        assert!(!result.valid);
+    }
+
+    #[tokio::test]
+    async fn two_steps_running_a_sub_flow_that_exports_nothing_is_only_a_warning() {
+        // Nothing to collide, so the flow still runs. Said anyway, because two invocations is
+        // more often a mistake than an intention.
+        let sub = sub_flow_named("sub", "Ping twice", &[], step_node());
+        let repos = WithFlows(vec![sub]);
+        let validator = GraphValidator::new(&repos, &repos);
+
+        let result = validator.validate(&parent_invoking_twice()).await.unwrap();
+        assert_eq!(
+            result.warnings.iter().filter(|w| w.code == "SUBFLOW_INVOKED_TWICE").count(),
+            2,
+            "{:?}",
+            result.warnings
+        );
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[tokio::test]
+    async fn one_step_running_a_sub_flow_is_not_reported_at_all() {
+        let sub = sub_flow_named("sub", "Onboard an enterprise", &["new_account_id"], step_node());
+        let repos = WithFlows(vec![sub]);
+        let validator = GraphValidator::new(&repos, &repos);
+        let flow = flow_of(
+            vec![plain("start", "start"), group_node("g1", "sub"), plain("end", "end")],
+            vec![edge("e1", "start", "g1"), edge("e2", "g1", "end")],
+        );
+
+        let result = validator.validate(&flow).await.unwrap();
+        let codes: Vec<&str> = result
+            .errors
+            .iter()
+            .chain(result.warnings.iter())
+            .map(|i| i.code.as_str())
+            .collect();
+        assert!(!codes.contains(&"SUBFLOW_INVOKED_TWICE"), "{codes:?}");
+        assert!(result.valid, "errors: {:?}", result.errors);
+    }
+
+    #[tokio::test]
+    async fn a_failure_edge_out_of_a_sub_flow_node_is_reported_dead() {
+        // It has no verdict of its own, and a failing step inside it stops the run rather than
+        // reaching the sub-flow's exit. Worse, `pick_edge`'s fallback may take it for a reason
+        // that has nothing to do with failure.
+        let sub = sub_flow_named("sub", "Onboarding", &[], step_node());
+        let repos = WithFlows(vec![sub]);
+        let validator = GraphValidator::new(&repos, &repos);
+        let mut flow = flow_of(
+            vec![
+                plain("start", "start"),
+                group_node("g1", "sub"),
+                plain("recover", "end"),
+                plain("end", "end"),
+            ],
+            vec![
+                edge("e1", "start", "g1"),
+                edge("e2", "g1", "end"),
+                edge("e3", "g1", "recover"),
+            ],
+        );
+        flow.graph_data.edges[2].edge_type = Some("failure".to_string());
+
+        let result = validator.validate(&flow).await.unwrap();
+        let issue = result
+            .warnings
+            .iter()
+            .find(|w| w.code == "GROUP_FAILURE_EDGE_IGNORED")
+            .expect("a dead failure edge should be reported");
+        assert_eq!(issue.node_id.as_deref(), Some("g1"));
+    }
+
+    #[tokio::test]
+    async fn two_invocations_of_a_waiting_sub_flow_clash_on_one_inbox() {
+        // Invisible to the ordinary check, which sees a single group node where the run sees a
+        // waiting step — and here, two of them on the same path.
+        let sub = sub_flow_named("sub", "Send and wait", &[], {
+            let mut w = waiter("step", "dr/x");
+            w.id = "step".to_string();
+            w
+        });
+        let repos = WithFlows(vec![sub]);
+        let validator = GraphValidator::new(&repos, &repos);
+
+        let result = validator.validate(&parent_invoking_twice()).await.unwrap();
+        let clashes: Vec<&ValidationIssue> = result
+            .warnings
+            .iter()
+            .filter(|w| w.code == "GROUP_AWAIT_PATH_CLASH")
+            .collect();
+        assert_eq!(clashes.len(), 2, "{:?}", result.warnings);
+        let nodes: Vec<&str> = clashes.iter().filter_map(|w| w.node_id.as_deref()).collect();
+        // Attributed to the boxes the author can see, never to a spliced id they cannot.
+        assert!(nodes.contains(&"g1") && nodes.contains(&"g2"), "{nodes:?}");
+        assert!(nodes.iter().all(|n| !n.contains('\u{1F}')), "{nodes:?}");
+    }
+
+    #[tokio::test]
+    async fn a_sub_flows_flow_variable_lost_to_this_flows_is_named() {
+        // Parent wins, matching the outer-wins ordering everywhere else — so the sub-flow runs
+        // with a value it did not choose, and nothing else would say so.
+        let mut sub = sub_flow_named("sub", "Onboarding", &[], step_node());
+        sub.graph_data
+            .variables
+            .insert("base_path".to_string(), serde_json::json!("/sub"));
+        let repos = WithFlows(vec![sub]);
+        let validator = GraphValidator::new(&repos, &repos);
+        let mut flow = flow_of(
+            vec![plain("start", "start"), group_node("g1", "sub"), plain("end", "end")],
+            vec![edge("e1", "start", "g1"), edge("e2", "g1", "end")],
+        );
+        flow.graph_data
+            .variables
+            .insert("base_path".to_string(), serde_json::json!("/parent"));
+
+        let result = validator.validate(&flow).await.unwrap();
+        let issue = result
+            .warnings
+            .iter()
+            .find(|w| w.code == "FLOW_VAR_SHADOWED")
+            .expect("the shadowed variable should be named");
+        assert_eq!(issue.node_id.as_deref(), Some("g1"));
+        assert!(issue.message.contains("base_path"), "{}", issue.message);
+    }
+
+    #[tokio::test]
+    async fn a_missing_sub_flow_is_said_once_rather_than_four_ways() {
+        // The splice cannot resolve a flow that isn't there either, and its complaints would
+        // land on the same node in different words. MISSING_FLOW_REF is the one that helps.
+        let repos = WithFlows(vec![]);
+        let validator = GraphValidator::new(&repos, &repos);
+
+        let result = validator.validate(&parent_invoking_twice()).await.unwrap();
+        let codes: Vec<&str> = result
+            .errors
+            .iter()
+            .chain(result.warnings.iter())
+            .map(|i| i.code.as_str())
+            .collect();
+        assert_eq!(codes.iter().filter(|c| **c == "MISSING_FLOW_REF").count(), 2, "{codes:?}");
+        assert!(!codes.contains(&"SUBFLOW_INVOKED_TWICE"), "{codes:?}");
     }
 
     #[tokio::test]

@@ -32,7 +32,10 @@ pub use http::{HttpExecutor, RequestLog, ResponseLog};
 pub use history::{record_single, MemberRef};
 // The splice that turns a graph containing sub-flow nodes into one flat graph the engine can
 // run. `InlinedGroup` is a field of the Started event, so it belongs in this list.
-pub use inline::{resolve_for_run, InlineLimits, InlinedGroup};
+pub use inline::{
+    has_groups, inline_groups, load_referenced, resolve_for_run, InlineLimits, InlineNote, Inlined,
+    InlinedGroup, NodeOrigin,
+};
 #[allow(unused_imports)]
 pub use suite::{resolve_members, ResolvedMember, SuiteRun};
 pub use pre_test_script::PreTestScriptEngine;
