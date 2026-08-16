@@ -257,6 +257,13 @@ impl<'a> GraphValidator<'a> {
             }
         }
 
+        // 6d-ii. Output variables, on any node type that can declare them — a test case, and a
+        // waiting step taking values out of a callback. Also covers a collected record's
+        // fields, which are the same rows read under a different heading.
+        for node in graph.nodes.iter() {
+            warnings.extend(output_path_issues(node));
+        }
+
         // 6e. Steps that wait for a callback. An error, not a warning: a wait with no path
         // cannot run at all, and the run-time report would come sixty seconds into a flow
         // rather than before it started.
@@ -671,6 +678,65 @@ fn unfillable_lists(nodes: &[GraphNode]) -> Vec<ValidationIssue> {
             ),
             &producer.id,
         ));
+    }
+    issues
+}
+
+/// Output variables whose path can never pull anything out of a response.
+///
+/// An output variable is a **JSONPath into the response body**, and a path the parser rejects
+/// is dropped at run time with a warning — into the `logs` block, folded shut, below a panel
+/// that lists only the exports that worked. An author who wrote `{{e_a_email}}` there sees two
+/// exports where they configured three and nothing that says why.
+///
+/// Checked with the engine's own parser rather than a pattern of our own, so this cannot
+/// disagree with what the run will do: `$.token` and `$..id` parse, while `{{name}}`, a bare
+/// `token` with no `$`, and an empty path do not.
+///
+/// A warning, not an error: the step still runs and still reports its own verdict. What breaks
+/// is later — `{{name}}` reaches a request as those literal characters.
+fn output_path_issues(node: &GraphNode) -> Vec<ValidationIssue> {
+    use jsonpath_rust::JsonPath;
+
+    let mut issues = Vec::new();
+    let rows = node
+        .data
+        .get("config")
+        .and_then(|c| c.get("outputVars"))
+        .and_then(|v| v.as_array());
+
+    for row in rows.into_iter().flatten() {
+        let field = |key: &str| row.get(key).and_then(|v| v.as_str()).unwrap_or("").trim();
+        let (name, path) = (field("name"), field("path"));
+        // A row with neither is one the author just added and has not filled in.
+        if name.is_empty() {
+            continue;
+        }
+        if path.is_empty() {
+            issues.push(ValidationIssue::warning_with_node(
+                "OUTPUT_VAR_NO_PATH",
+                format!(
+                    "Output variable \"{}\" has no JSON path, so nothing is captured and \
+                     {{{{{}}}}} will not resolve",
+                    name, name
+                ),
+                &node.id,
+            ));
+            continue;
+        }
+        if serde_json::Value::Null.query(path).is_err() {
+            issues.push(ValidationIssue::warning_with_node(
+                "OUTPUT_VAR_BAD_PATH",
+                format!(
+                    "Output variable \"{}\" has {} where a JSON path goes. This reads a value \
+                     out of *this step's response* — like $.token or $.data.id — so it cannot \
+                     be a variable or a plain name. Nothing is captured, and {{{{{}}}}} will \
+                     not resolve.",
+                    name, path, name
+                ),
+                &node.id,
+            ));
+        }
     }
     issues
 }
@@ -1521,6 +1587,102 @@ mod tests {
             edge_type: None,
             data: serde_json::Value::Null,
         }
+    }
+
+    fn with_output_vars(rows: serde_json::Value) -> GraphNode {
+        GraphNode {
+            id: "n1".to_string(),
+            node_type: "testCase".to_string(),
+            position: crate::db::models::Position { x: 0.0, y: 0.0 },
+            data: serde_json::json!({ "testCaseId": "tc1", "config": { "outputVars": rows } }),
+            width: None,
+            height: None,
+        }
+    }
+
+    #[test]
+    fn a_variable_where_a_json_path_goes_is_reported() {
+        // The author's case: `{{e_a_email}}` in the JSON PATH column. The engine drops it with a
+        // warning into the folded `logs` block, under a panel that lists only the exports that
+        // worked — so three configured exports show as two, with nothing saying why.
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "signup_token", "path": "$.token" },
+            { "name": "email", "path": "{{e_a_email}}" },
+        ])));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].code, "OUTPUT_VAR_BAD_PATH");
+        assert_eq!(issues[0].node_id.as_deref(), Some("n1"));
+        // Names the variable, what is wrong, and what a path looks like.
+        assert!(issues[0].message.contains("email"), "{}", issues[0].message);
+        assert!(issues[0].message.contains("{{e_a_email}}"), "{}", issues[0].message);
+        assert!(issues[0].message.contains("$.token"), "{}", issues[0].message);
+    }
+
+    #[test]
+    fn a_field_name_without_the_dollar_is_reported_too() {
+        // `token` is not a JSONPath, and fails exactly the same way as the case above.
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "token", "path": "token" },
+        ])));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "OUTPUT_VAR_BAD_PATH");
+    }
+
+    #[test]
+    fn a_name_with_no_path_says_so_before_the_run_rather_than_during_it() {
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "email", "path": "  " },
+        ])));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "OUTPUT_VAR_NO_PATH");
+    }
+
+    #[test]
+    fn the_paths_that_work_are_left_alone() {
+        // Checked with the engine's own parser, so this list is what the run accepts.
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "a", "path": "$.token" },
+            { "name": "b", "path": "$.data.user.id" },
+            { "name": "c", "path": "$..id" },
+            { "name": "d", "path": "$.items[0].name" },
+        ])));
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn a_blank_row_the_author_just_added_is_not_nagged_about() {
+        let issues = output_path_issues(&with_output_vars(serde_json::json!([
+            { "name": "", "path": "" },
+        ])));
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[tokio::test]
+    async fn the_validator_reports_an_output_path_that_cannot_work() {
+        // The wiring, not the rule: cutting the call from `validate` leaves every test above
+        // green while the author sees nothing at all.
+        // `WithFlows` rather than `NoRepos`: its test-case stub says every referenced id exists,
+        // so a MISSING_TEST_CASE does not stand in for the thing being asserted.
+        let repos = WithFlows(vec![]);
+        let validator = GraphValidator::new(&repos, &repos);
+        let mut node = with_output_vars(serde_json::json!([
+            { "name": "email", "path": "{{e_a_email}}" },
+        ]));
+        node.id = "signup".to_string();
+        let flow = flow_of(
+            vec![plain("start", "start"), node, plain("end", "end")],
+            vec![edge("e1", "start", "signup"), edge("e2", "signup", "end")],
+        );
+
+        let result = validator.validate(&flow).await.unwrap();
+        let issue = result
+            .warnings
+            .iter()
+            .find(|w| w.code == "OUTPUT_VAR_BAD_PATH")
+            .expect("the bad path should be reported on the canvas");
+        assert_eq!(issue.node_id.as_deref(), Some("signup"));
+        // A warning: the step itself still runs and still reports its own verdict.
+        assert!(result.valid, "errors: {:?}", result.errors);
     }
 
     /// A repository that actually holds the sub-flows, so the splice has something to resolve.
