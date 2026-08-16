@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import type { Node } from "@xyflow/react";
 import { alignedPositions, heightOf, minimumNodes, widthOf } from "@/lib/alignNodes";
@@ -152,5 +154,30 @@ describe("minimumNodes", () => {
     expect(minimumNodes("distribute-v")).toBe(3);
     expect(minimumNodes("center-h")).toBe(2);
     expect(minimumNodes("left")).toBe(2);
+  });
+});
+
+/**
+ * What keeps an alignment once it is made.
+ *
+ * The arithmetic above is only half of it. An author reported alignment "getting lost
+ * frequently", and it was: React Flow's default drag threshold is 1px, so an ordinary click
+ * moved the node. Measured in a browser, 3px of hand-tremor shifted a node from x=300 to
+ * x=300.816 — off the column, and onto a fractional pixel this file rounds away everywhere else.
+ *
+ * Read off the source because it is a prop on a component no unit test mounts; the alternative
+ * is a rule nothing checks, which is how it would quietly go back to 1.
+ */
+describe("the canvas keeps an alignment", () => {
+  const canvas = readFileSync(resolve(process.cwd(), "src/components/TestCanvas.tsx"), "utf8");
+
+  it("does not treat a click with a tremor in it as a drag", () => {
+    const threshold = Number(/nodeDragThreshold=\{(\d+)\}/.exec(canvas)?.[1]);
+    expect(threshold).toBeGreaterThanOrEqual(4);
+  });
+
+  it("lands a dragged node on a whole pixel, as alignment does", () => {
+    expect(canvas).toMatch(/onNodeDragStop=\{handleNodeDragStop\}/);
+    expect(canvas).toMatch(/Math\.round\(n\.position\.x\)/);
   });
 });

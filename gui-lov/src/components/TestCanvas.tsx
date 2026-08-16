@@ -167,6 +167,28 @@ const TestCanvasContent = () => {
     });
   }, [setNodes, onNodesChange, setNodesState, snapToGrid]);
 
+  /**
+   * A dragged node lands on a whole pixel.
+   *
+   * `alignedPositions` already rounds, for the reason stated there: a graph sitting on
+   * fractional coordinates renders faintly blurred. A drag left `300.816` behind, so half the
+   * canvas obeyed that rule and half did not — and a node one fraction off an aligned column is
+   * indistinguishable from one the alignment missed.
+   */
+  const handleNodeDragStop = useCallback((_event: React.MouseEvent, _node: Node, dragged: Node[]) => {
+    const moved = new Set(dragged.map((n) => n.id));
+    if (moved.size === 0) return;
+    setNodesState((current) => {
+      const next = current.map((n) =>
+        moved.has(n.id)
+          ? { ...n, position: { x: Math.round(n.position.x), y: Math.round(n.position.y) } }
+          : n,
+      );
+      setNodes(next);
+      return next;
+    });
+  }, [setNodes, setNodesState]);
+
   const handleEdgesChange = useCallback((changes: any) => {
     onEdgesChange(changes);
     requestAnimationFrame(() => {
@@ -528,7 +550,16 @@ const TestCanvasContent = () => {
         nodes={styledNodes}
         edges={styledEdges}
         onNodesChange={handleNodesChange}
+        onNodeDragStop={handleNodeDragStop}
         onEdgesChange={handleEdgesChange}
+        /* How far the pointer may wander before a click counts as a drag.
+         *
+         * React Flow's default is 1px, which means an ordinary click moves the node: measured
+         * in a browser, 3px of hand-tremor shifted a node to x=300.816 — off the alignment the
+         * author had just made, and onto a fractional pixel. Alignment being "lost frequently"
+         * was this, one click at a time. 6px absorbs the tremor; a deliberate drag is nowhere
+         * near it. */
+        nodeDragThreshold={6}
         onConnect={onConnect}
         onReconnect={onReconnect}
         onConnectStart={onConnectStart}

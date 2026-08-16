@@ -72,7 +72,7 @@ export const GroupNode = memo(({ id, data }: GroupNodeProps) => {
 
   return (
     <div
-      className="relative min-w-[220px] max-w-[280px] rounded-lg border-2 border-node-group bg-card px-4 py-3 shadow-lg transition-shadow hover:shadow-xl"
+      className="relative w-[260px] rounded-lg border-2 border-node-group bg-card px-4 py-3 shadow-lg transition-shadow hover:shadow-xl"
       onDoubleClick={(e) => {
         e.stopPropagation();
         // Both halves: `openFlowTab` alone adds a tab the canvas never switches to, which is
@@ -116,9 +116,12 @@ export const GroupNode = memo(({ id, data }: GroupNodeProps) => {
       <div className="flex items-start gap-2">
         <FolderTree className="mt-0.5 h-4 w-4 flex-shrink-0 text-node-group" aria-hidden="true" />
         <div className="min-w-0 flex-1">
-          {/* Truncated, which needs the max-width above to mean anything: with the width free,
-              a long flow name grew the node to 440px and left it out of scale with every other
-              node on the canvas. */}
+          {/* Truncated, which needs the fixed width above to mean anything: left free, a long
+              flow name grew the node to 440px and left it out of scale with everything around
+              it. Fixed rather than clamped because of the line below — "nothing about a run may
+              change a node's size", and `3 of 4 steps · 1 failed · 1 errored` is wider than
+              `4 steps`. A node that grows re-centres itself, which quietly undoes an alignment
+              the author made before the run. */}
           <div className="truncate text-sm font-semibold text-foreground">
             {name || "Sub-flow"}
           </div>
@@ -130,7 +133,7 @@ export const GroupNode = memo(({ id, data }: GroupNodeProps) => {
               flow not found — this run will not start
             </div>
           ) : rollup && rollup.done > 0 ? (
-            <div className="mt-1 text-xs text-muted-foreground">
+            <div className="mt-1 truncate text-xs text-muted-foreground">
               {rollup.done} of {rollup.total} steps
               {rollup.failed > 0 && (
                 <span className="text-destructive"> · {rollup.failed} failed</span>

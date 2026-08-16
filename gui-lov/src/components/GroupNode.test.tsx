@@ -85,6 +85,16 @@ describe("a sub-flow node at rest", () => {
     expect(screen.getByText("2 steps")).toBeInTheDocument();
   });
 
+  it("is a fixed size, so a run cannot move it out of a column", () => {
+    // "Nothing about a run may change a node's size" — the rule the other two node types state.
+    // `3 of 4 steps · 1 failed · 1 errored` is wider than `4 steps`, and a node that grows
+    // re-centres itself, quietly undoing an alignment made before the run.
+    const { container } = render(node());
+    const box = container.firstElementChild as HTMLElement;
+    expect(box.className).toMatch(/\bw-\[\d+px\]/);
+    expect(box.className).not.toMatch(/\b(min|max)-w-\[/);
+  });
+
   it("says a missing flow will stop the run, because now it does", () => {
     // A node pointing at a deleted flow used to be a silent no-op and the run "succeeded".
     ctx = { ...ctx, flows: [] };
