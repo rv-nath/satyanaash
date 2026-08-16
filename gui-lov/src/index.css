@@ -213,6 +213,42 @@ All colors MUST be HSL.
   }
 }
 
+/* A sub-flow node is not React Flow's own "group" node.
+ *
+ * `group` is one of React Flow's *built-in* node type names, and its stylesheet gives
+ * `.react-flow__node-group` a hard `width: 150px` plus padding, a border and a background —
+ * styling meant for the container node it ships. Registering our own component under that name
+ * replaces the component but not the CSS, so our node rendered *inside* a 150px box and spilled
+ * out of it: the wrapper React Flow measures stayed 172px wide while the node drew twice that.
+ *
+ * Everything downstream of a measurement was then wrong — Align Horizontal Centers centred the
+ * 172px box, leaving the visible node hanging off to the right, and the selection outline hugged
+ * a rectangle that was not the node.
+ *
+ * Undone here rather than by renaming the node type, which needs a `graph_data` migration across
+ * every saved flow. Outside `@layer` for the same reason the rules below are: these class names
+ * come from React Flow, not from anything Tailwind's content scan can see.
+ */
+.react-flow__node-group {
+  width: auto;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background-color: transparent;
+  text-align: left;
+  font-size: inherit;
+  color: inherit;
+}
+
+.react-flow__node-group.selectable.selected,
+.react-flow__node-group.selectable:focus,
+.react-flow__node-group.selectable:focus-visible,
+.react-flow__node-group.selectable:hover {
+  /* The canvas draws its own selection border through `node.style`; React Flow's box-shadow on
+     top of it reads as a second, misaligned outline around the box that isn't the node. */
+  box-shadow: none;
+}
+
 /* How a run and the validator mark a node — deliberately OUTSIDE @layer.
  *
  * Not a style choice: Tailwind purges rules inside an `@layer` directive when it cannot find

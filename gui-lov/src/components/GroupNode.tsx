@@ -42,7 +42,7 @@ const statusTone = (state: string) =>
       : "bg-muted-foreground text-background";
 
 export const GroupNode = memo(({ id, data }: GroupNodeProps) => {
-  const { flows, activeFlowId, executingFlowId, nodeRuns, inlinedByFlow, activeNodeId, pausedNodeId, openFlowTab } =
+  const { flows, activeFlowId, executingFlowId, nodeRuns, inlinedByFlow, activeNodeId, pausedNodeId, openFlowOnCanvas } =
     useTestProject();
 
   // The flow this node runs, resolved live. A stale `label` used to survive a rename, and now
@@ -72,12 +72,12 @@ export const GroupNode = memo(({ id, data }: GroupNodeProps) => {
 
   return (
     <div
-      className="relative min-w-[220px] rounded-lg border-2 border-node-group bg-card px-4 py-3 shadow-lg transition-shadow hover:shadow-xl"
+      className="relative min-w-[220px] max-w-[280px] rounded-lg border-2 border-node-group bg-card px-4 py-3 shadow-lg transition-shadow hover:shadow-xl"
       onDoubleClick={(e) => {
         e.stopPropagation();
-        // `true` — reuse the current tab if it is unpinned, the same as opening a flow from
-        // the rail. Opening the sub-flow is how you edit it now.
-        if (data.flowId) openFlowTab(data.flowId, true);
+        // Both halves: `openFlowTab` alone adds a tab the canvas never switches to, which is
+        // exactly how this looked like a dead gesture. Opening the sub-flow is how you edit it.
+        if (data.flowId) openFlowOnCanvas(data.flowId);
       }}
       title={target ? `Runs ${name} — double-click to open it` : undefined}
     >
@@ -116,6 +116,9 @@ export const GroupNode = memo(({ id, data }: GroupNodeProps) => {
       <div className="flex items-start gap-2">
         <FolderTree className="mt-0.5 h-4 w-4 flex-shrink-0 text-node-group" aria-hidden="true" />
         <div className="min-w-0 flex-1">
+          {/* Truncated, which needs the max-width above to mean anything: with the width free,
+              a long flow name grew the node to 440px and left it out of scale with every other
+              node on the canvas. */}
           <div className="truncate text-sm font-semibold text-foreground">
             {name || "Sub-flow"}
           </div>

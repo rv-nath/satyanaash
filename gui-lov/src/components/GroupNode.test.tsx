@@ -13,7 +13,7 @@ import userEvent from "@testing-library/user-event";
  */
 
 const SEP = "\u001F";
-const openFlowTab = vi.fn();
+const openFlowOnCanvas = vi.fn();
 
 let ctx = {
   flows: [] as { id: string; name: string; internalNodes?: { type: string }[] }[],
@@ -23,7 +23,7 @@ let ctx = {
   inlinedByFlow: {} as Record<string, unknown[]>,
   activeNodeId: null as string | null,
   pausedNodeId: null as string | null,
-  openFlowTab,
+  openFlowOnCanvas,
 };
 
 vi.mock("@/contexts/TestProjectContext", () => ({ useTestProject: () => ctx }));
@@ -46,7 +46,7 @@ const node = (data: Record<string, unknown> = { flowId: "sub", label: "stale nam
 );
 
 beforeEach(() => {
-  openFlowTab.mockClear();
+  openFlowOnCanvas.mockClear();
   ctx = {
     flows: [
       {
@@ -66,7 +66,7 @@ beforeEach(() => {
     inlinedByFlow: {},
     activeNodeId: null,
     pausedNodeId: null,
-    openFlowTab,
+    openFlowOnCanvas,
   };
 });
 
@@ -92,10 +92,12 @@ describe("a sub-flow node at rest", () => {
     expect(screen.getByText(/flow not found/i)).toBeInTheDocument();
   });
 
-  it("opens the flow it runs, rather than a modal whose edits were never saved", async () => {
+  it("opens the flow it runs — selecting it *and* opening its tab", async () => {
+    // `openFlowTab` alone adds a tab the canvas never switches to, so double-clicking looked
+    // like a dead gesture. Both halves, or it is not open.
     render(node());
     await userEvent.dblClick(screen.getByText("Onboard an enterprise"));
-    expect(openFlowTab).toHaveBeenCalledWith("sub", true);
+    expect(openFlowOnCanvas).toHaveBeenCalledWith("sub");
   });
 });
 

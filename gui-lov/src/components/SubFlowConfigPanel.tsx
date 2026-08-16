@@ -25,7 +25,7 @@ interface SubFlowConfigPanelProps {
 }
 
 export const SubFlowConfigPanel = ({ node, onClose }: SubFlowConfigPanelProps) => {
-  const { flows, updateNodeConfig, openFlowTab } = useTestProject();
+  const { flows, updateNodeConfig, openFlowOnCanvas } = useTestProject();
   const [alias, setAlias] = useState("");
   const [teardown, setTeardown] = useState(false);
 
@@ -96,7 +96,7 @@ export const SubFlowConfigPanel = ({ node, onClose }: SubFlowConfigPanelProps) =
                 variant="outline"
                 className="h-9 shrink-0"
                 disabled={!target}
-                onClick={() => flowId && openFlowTab(flowId, true)}
+                onClick={() => flowId && openFlowOnCanvas(flowId)}
               >
                 <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
                 Open

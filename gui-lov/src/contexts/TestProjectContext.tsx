@@ -87,6 +87,8 @@ interface TestProjectContextType {
   workspace: WorkspaceState;
   openTestTab: (id: string) => void;
   openFlowTab: (id: string, canReuseActive: boolean) => void;
+  /** Select a flow and open its tab — the two halves of "open this flow". */
+  openFlowOnCanvas: (id: string) => void;
   openSettingsTab: () => void;
   /** Run history — one surface for the project, so a singleton like Settings. */
   openRunsTab: () => void;
@@ -401,6 +403,23 @@ export const TestProjectProvider = ({
       }, { replace: true });
     }
   }, [setSearchParams]);
+
+  /**
+   * Open a flow on the canvas — **both halves**.
+   *
+   * Selecting a flow and opening its tab are separate operations, and doing only one of them
+   * fails quietly in opposite ways: `setActiveFlowId` alone leaves the main pane on whatever tab
+   * was open (the deep-link bug this file already carries a note about), and `openFlowTab` alone
+   * adds a tab the canvas never switches to — which is what made double-clicking a sub-flow node
+   * look like a dead gesture.
+   *
+   * `canReuseActive` is true: an unpinned tab showing another flow is the natural place to put
+   * this one, the same choice the deep link makes.
+   */
+  const openFlowOnCanvas = useCallback((id: string) => {
+    setActiveFlowId(id);
+    openFlowTab(id, true);
+  }, [setActiveFlowId, openFlowTab]);
 
   // Selection and editing state for test cases
   const [selectedTestCaseId, setSelectedTestCaseId] = useState<string | null>(null);
@@ -923,6 +942,7 @@ export const TestProjectProvider = ({
         workspace,
         openTestTab,
         openFlowTab,
+        openFlowOnCanvas,
         openSettingsTab,
         openRunsTab,
         openSuiteTab,

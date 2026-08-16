@@ -11,14 +11,14 @@ const graphNodes = [
   { id: "n1", type: "testCase", data: {} },
 ];
 const graphEdges = [{ id: "e1", source: "up", target: "n1" }];
-const openFlowTab = vi.fn();
+const openFlowOnCanvas = vi.fn();
 vi.mock("@/contexts/TestProjectContext", () => ({
   useTestProject: () => ({
     updateNodeConfig,
     projectId: "p1",
     nodes: graphNodes,
     edges: graphEdges,
-    openFlowTab,
+    openFlowOnCanvas,
     flows: [
       {
         id: "sub",

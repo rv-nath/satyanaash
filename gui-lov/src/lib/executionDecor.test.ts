@@ -348,6 +348,26 @@ describe("the stylesheet keeps the classes this file computes", () => {
     expect(layered).toEqual([]);
   });
 
+  it("takes back the width React Flow's built-in \"group\" node imposes", () => {
+    // `group` is one of React Flow's own node type names, and its stylesheet gives
+    // `.react-flow__node-group` `width: 150px` with padding and a border. Registering our
+    // component under that name replaces the component, not the CSS — so the node drew wider
+    // than the box React Flow measured, and Align Horizontal Centers centred the box.
+    const rule = css.match(/^\.react-flow__node-group \{([^}]*)\}/m)?.[1] ?? "";
+    expect(rule).toMatch(/width:\s*auto/);
+    expect(rule).toMatch(/padding:\s*0/);
+    expect(rule).toMatch(/border:\s*none/);
+  });
+
+  it("declares that rule outside @layer too, where the class name is React Flow's", () => {
+    // Same trap as above: Tailwind's content scan cannot see a class name that only exists in
+    // another package's stylesheet.
+    const before = css.slice(0, css.indexOf(".react-flow__node-group {"));
+    const opened = (before.match(/^\s*@layer\b[^;]*\{/gm) || []).length;
+    const braces = (before.match(/\{/g) || []).length - (before.match(/\}/g) || []).length;
+    expect(opened > 0 && braces > 0).toBe(false);
+  });
+
   it("still has a rule for each state this file can return", () => {
     // A state with no rule renders nothing at all — which is the bug, just from the other side.
     const selectors = decorationRules().map((r) => r.selector);
