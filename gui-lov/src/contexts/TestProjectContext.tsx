@@ -405,7 +405,7 @@ export const TestProjectProvider = ({
   }, [setSearchParams]);
 
   /**
-   * Open a flow on the canvas — **both halves**.
+   * Open a flow on the canvas, in **its own tab** — and both halves of "open".
    *
    * Selecting a flow and opening its tab are separate operations, and doing only one of them
    * fails quietly in opposite ways: `setActiveFlowId` alone leaves the main pane on whatever tab
@@ -413,13 +413,21 @@ export const TestProjectProvider = ({
    * adds a tab the canvas never switches to — which is what made double-clicking a sub-flow node
    * look like a dead gesture.
    *
-   * `canReuseActive` is true: an unpinned tab showing another flow is the natural place to put
-   * this one, the same choice the deep link makes.
+   * **Never reuses the active tab**, unlike the rail and the deep link. Following a sub-flow is
+   * a step *away from* a flow you are working on, and you want to come back: reusing the tab
+   * closed the parent, and there is no history to go back through — the browser Back button
+   * moves between projects, not between tabs. The rail can reuse a tab because you chose that
+   * flow deliberately; here the parent is the context for what you just opened.
    */
   const openFlowOnCanvas = useCallback((id: string) => {
+    const { state, capped } = openFlow(workspace, id, { canReuseActive: false });
+    if (capped) {
+      toast.warning(`Too many tabs open (max ${MAX_TABS}). Close one first.`);
+      return;
+    }
+    setWorkspace(state);
     setActiveFlowId(id);
-    openFlowTab(id, true);
-  }, [setActiveFlowId, openFlowTab]);
+  }, [workspace, setActiveFlowId]);
 
   // Selection and editing state for test cases
   const [selectedTestCaseId, setSelectedTestCaseId] = useState<string | null>(null);
