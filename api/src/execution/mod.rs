@@ -11,6 +11,7 @@ mod assertions;
 mod body;
 mod http;
 mod engine;
+mod inline;
 mod history;
 mod pre_test_script;
 mod suite;
@@ -29,6 +30,10 @@ pub use body::{BodyType, FormField};
 #[allow(unused_imports)]
 pub use http::{HttpExecutor, RequestLog, ResponseLog};
 pub use history::{record_single, MemberRef};
+// The splice that turns a graph containing sub-flow nodes into one flat graph the engine can
+// run. `InlinedGroup` is a field of the Started event, so it belongs in this list.
+#[allow(unused_imports)]
+pub use inline::{resolve_for_run, InlineLimits, InlinedGroup};
 #[allow(unused_imports)]
 pub use suite::{resolve_members, ResolvedMember, SuiteRun};
 pub use pre_test_script::PreTestScriptEngine;
