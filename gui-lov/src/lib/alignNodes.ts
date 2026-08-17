@@ -47,11 +47,28 @@ export function alignedPositions(
   direction: AlignDirection,
 ): Record<string, XYPosition> {
   const out: Record<string, XYPosition> = {};
-  // Whole pixels: a centred node lands on a half otherwise, and a graph of nodes
-  // sitting on fractional pixels renders faintly blurred.
+  // Whole pixels: a graph of nodes sitting on fractional pixels renders faintly blurred.
   const put = (n: Node, xy: Partial<XYPosition>) => {
     const next = { ...n.position, ...xy };
     out[n.id] = { x: Math.round(next.x), y: Math.round(next.y) };
+  };
+
+  /**
+   * The same, for the two directions that share a **centre** rather than an edge.
+   *
+   * Rounding each node's own coordinate cannot centre an odd-width node: a 155-wide node on
+   * centre 169 belongs at x=91.5, and rounding that to 92 puts it half a pixel right of every
+   * even-width node beside it. Four nodes centre-aligned, three landing on 169.0 and one on
+   * 169.5 — and with `smoothstep` edges that half pixel becomes a visible bend down the whole
+   * run between them, which reads as the alignment having failed.
+   *
+   * So the rounding moves to the shared reference: the centre is rounded once, and each node
+   * takes its exact offset from it. Every node then lands on the *same* centre, which is the
+   * only thing "align centres" can honestly mean. Odd-width nodes keep a `.5` coordinate — the
+   * cost of being genuinely centred, and invisible next to a leaning connector.
+   */
+  const putCentred = (n: Node, xy: Partial<XYPosition>) => {
+    out[n.id] = { ...n.position, ...xy };
   };
 
   const left = () => Math.min(...selected.map((n) => n.position.x));
@@ -85,13 +102,15 @@ export function alignedPositions(
       // The middle of the selection's bounding box — the same reference Align Left
       // uses for its left edge. An average of the nodes' own centres would drift
       // towards whichever side happens to hold more of them.
-      const centre = (left() + right()) / 2;
-      selected.forEach((n) => put(n, { x: centre - widthOf(n) / 2 }));
+      //
+      // Rounded here, once, rather than per node — see `putCentred`.
+      const centre = Math.round((left() + right()) / 2);
+      selected.forEach((n) => putCentred(n, { x: centre - widthOf(n) / 2 }));
       break;
     }
     case "center-v": {
-      const centre = (top() + bottom()) / 2;
-      selected.forEach((n) => put(n, { y: centre - heightOf(n) / 2 }));
+      const centre = Math.round((top() + bottom()) / 2);
+      selected.forEach((n) => putCentred(n, { y: centre - heightOf(n) / 2 }));
       break;
     }
     case "distribute-h":

@@ -141,6 +141,42 @@ describe("node size", () => {
     expect(widthOf({ ...fresh, width: 250 })).toBe(250);
   });
 
+  it("puts every node on the *same* centre, whatever its width's parity", () => {
+    // The bug, reported as "why does it look misaligned even after centre-align?". A 155-wide
+    // node on centre 169 belongs at x=91.5; rounding each node's own x to a whole pixel moved it
+    // to 92 and left it half a pixel right of its even-width neighbours. Three nodes on 169.0
+    // and one on 169.5 — and with smoothstep edges that half pixel is a visible bend down the
+    // whole run between them.
+    //
+    // These are the author's real numbers.
+    const nodes = [
+      node("start", 131, 66, 76, 31),
+      node("group", 39, 141, 260, 67),
+      node("balance", 92, 251, 155, 33),
+      node("end", 134, 319, 70, 31),
+    ];
+    const out = alignedPositions(nodes, "center-h");
+    const centres = nodes.map((n) => out[n.id].x + widthOf(n) / 2);
+    expect(new Set(centres).size).toBe(1);
+    expect(centres[0]).toBe(169);
+    // Which costs the odd one a half-pixel coordinate. That is the whole price.
+    expect(out.balance.x).toBe(91.5);
+  });
+
+  it("keeps whole pixels for the odd-width node's neighbours", () => {
+    // Only the node that cannot be centred on an integer pays; nothing else drifts off-pixel.
+    const nodes = [node("a", 0, 0, 100, 40), node("b", 0, 60, 41, 40)];
+    const out = alignedPositions(nodes, "center-h");
+    expect(out.a.x % 1).toBe(0);
+    expect(out.b.x % 1).toBe(0.5);
+  });
+
+  it("shares one centre vertically too", () => {
+    const nodes = [node("a", 0, 0, 40, 31), node("b", 60, 0, 40, 40)];
+    const out = alignedPositions(nodes, "center-v");
+    expect(out.a.y + 31 / 2).toBe(out.b.y + 40 / 2);
+  });
+
   it("rounds, so a centred node doesn't land on half a pixel", () => {
     // Box spans 0..101, centre 50.5, node 40 wide → 30.5 before rounding.
     const nodes = [node("a", 0, 0, 101, 40), node("b", 0, 60, 40, 40)];
