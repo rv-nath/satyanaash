@@ -41,14 +41,37 @@ interface PaginatedResponse<T> {
   };
 }
 
+/**
+ * Every page of a paginated list, not just the first.
+ *
+ * The three list calls below asked for no page at all, took `response.data` and dropped
+ * `pagination` on the floor — so they silently returned the server's default first 20. A project
+ * that crossed 20 test cases lost the rest *everywhere at once*: double-clicking a node said
+ * "That test case no longer exists", nodes fell back to the stale label saved on them, and the
+ * config panel opened with no data rows — while the flow itself ran perfectly, because the engine
+ * reads the database rather than this list.
+ *
+ * Follows the page count the server already reports rather than asking for one big page: a cap on
+ * `per_page` would put the same bug back, one order of magnitude further out.
+ */
+async function fetchAll<T>(path: string): Promise<T[]> {
+  const sep = path.includes("?") ? "&" : "?";
+  const first = await apiClient.get<PaginatedResponse<T>>(`${path}${sep}page=1&per_page=100`);
+  const { total_pages } = first.pagination;
+  if (!total_pages || total_pages <= 1) return first.data;
+  const rest = await Promise.all(
+    Array.from({ length: total_pages - 1 }, (_, i) =>
+      apiClient.get<PaginatedResponse<T>>(`${path}${sep}page=${i + 2}&per_page=100`),
+    ),
+  );
+  return [...first.data, ...rest.flatMap((r) => r.data)];
+}
+
 // ============ Projects API ============
 
 export const projectsApi = {
   /** List all projects */
-  list: async (): Promise<Project[]> => {
-    const response = await apiClient.get<PaginatedResponse<Project>>('/projects');
-    return response.data;
-  },
+  list: (): Promise<Project[]> => fetchAll<Project>('/projects'),
 
   /** Get a single project by ID */
   get: (id: string) => apiClient.get<Project>(`/projects/${id}`),
@@ -68,10 +91,8 @@ export const projectsApi = {
 
 export const testCasesApi = {
   /** List test cases for a project */
-  list: async (projectId: string): Promise<TestCase[]> => {
-    const response = await apiClient.get<PaginatedResponse<TestCase>>(`/projects/${projectId}/test-cases`);
-    return response.data;
-  },
+  list: (projectId: string): Promise<TestCase[]> =>
+    fetchAll<TestCase>(`/projects/${projectId}/test-cases`),
 
   /** Get a single test case by ID */
   get: (id: string) => apiClient.get<TestCase>(`/test-cases/${id}`),
@@ -139,10 +160,8 @@ export const flowGroupsApi = {
 
 export const flowsApi = {
   /** List flows for a project */
-  list: async (projectId: string): Promise<Flow[]> => {
-    const response = await apiClient.get<PaginatedResponse<Flow>>(`/projects/${projectId}/flows`);
-    return response.data;
-  },
+  list: (projectId: string): Promise<Flow[]> =>
+    fetchAll<Flow>(`/projects/${projectId}/flows`),
 
   /** Get a single flow by ID (includes graph data) */
   get: (id: string) => apiClient.get<Flow>(`/flows/${id}`),
