@@ -32,6 +32,16 @@ import {
 } from "@/lib/poll";
 import { AwaitConfigPanel } from "./AwaitConfigPanel";
 import { SubFlowConfigPanel } from "./SubFlowConfigPanel";
+
+/**
+ * A placeholder has to look like an example, not like a value.
+ *
+ * The same rule and the same string as `AwaitConfigPanel`, which grew it first: the default
+ * `placeholder:text-muted-foreground` is close enough to real text that in a 13px mono field it
+ * reads as filled in. An author asked what the `402` in Expect meant, having taken it for an
+ * answer already given.
+ */
+const HINT = "placeholder:italic placeholder:text-muted-foreground/60";
 import { useTestProject } from "@/contexts/TestProjectContext";
 import { useTestCases } from "@/hooks/useApi";
 
@@ -386,7 +396,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                     placeholder="launched"
                     value={forEachList}
                     onChange={(e) => setForEachList(e.target.value)}
-                    className="h-9 font-mono text-[13px]"
+                    className={`h-9 font-mono text-[13px] ${HINT}`}
                   />
                   <datalist id="node-foreach-lists">
                     {upstreamLists.map((name) => (
@@ -403,7 +413,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                     value={itemVar}
                     onChange={(e) => setItemVar(e.target.value)}
                     onAccept={setItemVar}
-                    className="h-9 font-mono text-[13px]"
+                    className={`h-9 font-mono text-[13px] ${HINT}`}
                   />
                 </div>
               </Field>
@@ -424,8 +434,8 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                 id="node-check"
                 value={check}
                 onChange={(e) => setCheck(e.target.value)}
-                placeholder="402   — or an expression"
-                className="h-9 font-mono text-[13px]"
+                placeholder="200 — or an expression"
+                className={`h-9 font-mono text-[13px] ${HINT}`}
               />
             </Field>
 
@@ -473,7 +483,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                       value={until}
                       onChange={(e) => setUntil(e.target.value)}
                       placeholder={'response.json.status != "pending"'}
-                      className="mt-1 h-9 font-mono text-[13px]"
+                      className={`mt-1 h-9 font-mono text-[13px] ${HINT}`}
                     />
                     {/* The division of labour, stated where the second expression is
                         typed. Without it, "until" and Expect become a guessing game —
@@ -575,13 +585,13 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                         placeholder="variableName"
                         value={v.key}
                         onChange={(e) => updateInputVar(i, "key", e.target.value)}
-                        className="h-9 font-mono text-[13px]"
+                        className={`h-9 font-mono text-[13px] ${HINT}`}
                       />
                       <Input
                         placeholder="value"
                         value={v.value}
                         onChange={(e) => updateInputVar(i, "value", e.target.value)}
-                        className="h-9 font-mono text-[13px]"
+                        className={`h-9 font-mono text-[13px] ${HINT}`}
                       />
                       <DeleteButton onClick={() => removeInputVar(i)} label="Remove input variable" />
                     </div>
@@ -723,7 +733,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                       placeholder="launched"
                       value={collectInto}
                       onChange={(e) => setCollectInto(e.target.value)}
-                      className="h-8 font-mono text-[13px]"
+                      className={`h-8 font-mono text-[13px] ${HINT}`}
                     />
                   </div>
                   {/* Passing is not the same as producing. A negative case expecting a 400
@@ -739,7 +749,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                       placeholder="response.status == 202 — leave blank for every run that passed"
                       value={collectWhen}
                       onChange={(e) => setCollectWhen(e.target.value)}
-                      className="h-8 font-mono text-[13px]"
+                      className={`h-8 font-mono text-[13px] ${HINT}`}
                     />
                   </div>
                   <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
@@ -794,19 +804,19 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                         placeholder="variableName"
                         value={v.name}
                         onChange={(e) => updateOutputVar(i, "name", e.target.value)}
-                        className="h-9 font-mono text-[13px]"
+                        className={`h-9 font-mono text-[13px] ${HINT}`}
                       />
                       <Input
                         placeholder="$.campaignId"
                         value={v.path}
                         onChange={(e) => updateOutputVar(i, "path", e.target.value)}
-                        className="h-9 font-mono text-[13px]"
+                        className={`h-9 font-mono text-[13px] ${HINT}`}
                       />
                       <Input
                         placeholder="Optional note"
                         value={v.description || ""}
                         onChange={(e) => updateOutputVar(i, "description", e.target.value)}
-                        className="h-9 text-[13px]"
+                        className={`h-9 text-[13px] ${HINT}`}
                       />
                       <DeleteButton onClick={() => removeOutputVar(i)} label="Remove output variable" />
                       </div>
