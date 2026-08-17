@@ -31,8 +31,8 @@ impl FlowRepository for SqlxFlowRepository {
         sqlx::query(
             r#"INSERT INTO flows (
                 id, project_id, name, description, graph_data, canvas_settings,
-                version, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?)"#
+                version, created_at, updated_at, group_id
+            ) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)"#
         )
         .bind(&id)
         .bind(project_id)
@@ -42,6 +42,7 @@ impl FlowRepository for SqlxFlowRepository {
         .bind(1i32)
         .bind(now.to_rfc3339())
         .bind(now.to_rfc3339())
+        .bind(&input.group_id)
         .execute(&self.pool)
         .await?;
 
@@ -52,7 +53,7 @@ impl FlowRepository for SqlxFlowRepository {
             description: input.description,
             graph_data,
             version: 1,
-            group_id: None,
+            group_id: input.group_id,
             created_at: now,
             updated_at: now,
         })

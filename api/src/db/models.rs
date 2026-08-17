@@ -118,6 +118,12 @@ pub struct CreateFlow {
     pub description: Option<String>,
     #[serde(default)]
     pub graph_data: Option<GraphData>,
+    /// The sidebar bucket to create it in. Absent is Ungrouped, which is every caller written
+    /// before this — a flow could only be moved into a bucket afterwards, so "new flow in this
+    /// group" meant creating one and then moving it, and a failure halfway left the flow sitting
+    /// somewhere the author did not ask for.
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 /// Update flow request (for name/description only, use update_graph for graph changes)

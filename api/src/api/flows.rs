@@ -49,6 +49,9 @@ pub async fn clone_flow(
         name,
         description: source.description.clone(),
         graph_data: Some(source.graph_data.clone()),
+        // Beside the original. A copy landing in Ungrouped is a copy the author has to go and
+        // find — and the sidebar is where they were standing when they asked for it.
+        group_id: source.group_id.clone(),
     }).await?;
 
     Ok((StatusCode::CREATED, Json(flow)))

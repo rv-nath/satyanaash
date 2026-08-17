@@ -33,7 +33,10 @@ import {
 
 interface FlowsListProps {
   onOpenFlow: (flowId: string) => void;
-  onAddGroup: () => void;
+  /** Create a flow. With a bucket id, create it in that bucket — the group menu's own action.
+   *  Named `onAddGroup` because "group" meant "flow" when this was written; renaming it reaches
+   *  further than this change should. */
+  onAddGroup: (groupId?: string | null) => void;
   onEditGroup: (group: any) => void;
   onCloneGroup: (groupId: string) => void;
   onDeleteGroup: (groupId: string) => void;
@@ -221,7 +224,9 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
           variant="ghost"
           size="icon"
           className="h-6 w-6"
-          onClick={onAddGroup}
+          // Wrapped, not passed straight through: the handler's first parameter is a bucket id
+          // now, and React would hand it the click event.
+          onClick={() => onAddGroup()}
           title="New flow"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -369,6 +374,24 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
+                              {/* First, as the tests rail puts "New test case" first: creating
+                                  something in a group is what its menu is most often opened for,
+                                  while renaming and deleting are occasional. */}
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  // A collapsed bucket would swallow the new flow.
+                                  setCollapsed((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(bucket.id);
+                                    localStorage.setItem(storageKey, JSON.stringify([...next]));
+                                    return next;
+                                  });
+                                  onAddGroup(bucket.id);
+                                }}
+                              >
+                                <Plus className="w-3 h-3 mr-2" />
+                                New flow in this group
+                              </DropdownMenuItem>
                               <DropdownMenuItem
                                 onClick={() => setRenaming({ id: bucket.id, name: bucket.name })}
                               >

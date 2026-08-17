@@ -227,6 +227,76 @@ describe("what a dragged flow carries", () => {
   });
 });
 
+describe("creating a flow from a group's own menu", () => {
+  it("asks for it in that group, not in Ungrouped", async () => {
+    // The menu offered rename and delete only, so the way to get a flow into a bucket was to
+    // create it and then drag it there.
+    const onAddGroup = vi.fn();
+    render(
+      <FlowsList
+        onOpenFlow={vi.fn()}
+        onAddGroup={onAddGroup}
+        onEditGroup={vi.fn()}
+        onCloneGroup={vi.fn()}
+        onDeleteGroup={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /campaigns group actions/i }));
+    await userEvent.click(screen.getByText(/new flow in this group/i));
+    expect(onAddGroup).toHaveBeenCalledWith("g1");
+  });
+
+  it("expands the group first, so the new flow is not created out of sight", async () => {
+    const onAddGroup = vi.fn();
+    render(
+      <FlowsList
+        onOpenFlow={vi.fn()}
+        onAddGroup={onAddGroup}
+        onEditGroup={vi.fn()}
+        onCloneGroup={vi.fn()}
+        onDeleteGroup={vi.fn()}
+      />,
+    );
+    // Collapse it, then create through the menu.
+    await userEvent.click(screen.getByRole("button", { name: /campaigns/i, expanded: true }));
+    expect(screen.queryByText("JT1 - SMS")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /campaigns group actions/i }));
+    await userEvent.click(screen.getByText(/new flow in this group/i));
+    expect(screen.getByText("JT1 - SMS")).toBeInTheDocument();
+  });
+
+  it("still creates an ungrouped flow from the header button", async () => {
+    // And passes no bucket — React would otherwise hand the click event through as one.
+    const onAddGroup = vi.fn();
+    render(
+      <FlowsList
+        onOpenFlow={vi.fn()}
+        onAddGroup={onAddGroup}
+        onEditGroup={vi.fn()}
+        onCloneGroup={vi.fn()}
+        onDeleteGroup={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /new flow/i }));
+    expect(onAddGroup).toHaveBeenCalledWith();
+  });
+
+  it("offers nothing of the sort on Ungrouped, which is not a group", async () => {
+    render(
+      <FlowsList
+        onOpenFlow={vi.fn()}
+        onAddGroup={vi.fn()}
+        onEditGroup={vi.fn()}
+        onCloneGroup={vi.fn()}
+        onDeleteGroup={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /ungrouped group actions/i }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("creating and renaming a group", () => {
   it("creates one inline", async () => {
     renderRail();

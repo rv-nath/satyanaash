@@ -504,7 +504,14 @@ const ProjectDetailContent = () => {
     }
   };
 
-  const handleCreateFlow = async () => {
+  /**
+   * Create a flow, optionally straight into a sidebar bucket.
+   *
+   * `groupId` comes from the bucket's own menu. Created *in* the group rather than created and
+   * then moved: two requests leave a window where the flow exists somewhere the author did not
+   * ask for, and a failed second one leaves it there.
+   */
+  const handleCreateFlow = async (groupId?: string | null) => {
     if (!projectId) {
       toast.error("Project ID not found");
       return;
@@ -526,6 +533,7 @@ const ProjectDetailContent = () => {
         data: {
           name: flowName,
           description: "",
+          ...(groupId ? { group_id: groupId } : {}),
           graph_data: {
             nodes: [
               { id: generateUUID(), type: 'start', position: { x: 250, y: 50 }, data: { label: 'Start' } },

@@ -235,6 +235,8 @@ export interface CreateFlowRequest {
   name: string;
   description?: string;
   graph_data?: GraphData;
+  /** The sidebar bucket to create it in. Omitted is Ungrouped. */
+  group_id?: string | null;
 }
 
 export interface UpdateFlowRequest {
