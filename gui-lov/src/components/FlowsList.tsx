@@ -20,7 +20,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useTestProject } from "@/contexts/TestProjectContext";
-import { filterFlows, matchNote } from "@/lib/flowSearch";
+import { filterFlows, matchNote, requestsOf, type SearchableRequest } from "@/lib/flowSearch";
 import { UNGROUPED, bucketsOf, collapseKey, dropTarget } from "@/lib/flowGrouping";
 import {
   useCreateFlowGroup,
@@ -28,6 +28,7 @@ import {
   useFlowGroups,
   useMoveFlowToGroup,
   useRenameFlowGroup,
+  useTestCases,
 } from "@/hooks/useApi";
 
 interface FlowsListProps {
@@ -52,7 +53,24 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
   const searchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const matches = useMemo(() => filterFlows(flows, searchQuery), [flows, searchQuery]);
+  // The requests each flow runs, so the search box's second promise can be kept. Shares the
+  // tests rail's query rather than adding one: same key, same cache.
+  const { data: projectRequests } = useTestCases(projectId || "");
+  const requestsById = useMemo(
+    () =>
+      new Map<string, SearchableRequest>(
+        (projectRequests ?? []).map((tc) => [
+          tc.id,
+          { name: tc.name, method: tc.method, endpoint: tc.endpoint },
+        ]),
+      ),
+    [projectRequests],
+  );
+  const searchable = useMemo(
+    () => flows.map((flow) => ({ ...flow, testCases: requestsOf(flow.internalNodes, requestsById) })),
+    [flows, requestsById],
+  );
+  const matches = useMemo(() => filterFlows(searchable, searchQuery), [searchable, searchQuery]);
   const searching = searchQuery.trim().length > 0;
 
   // Buckets over the *filtered* flows, so searching narrows within each group rather than
@@ -427,9 +445,6 @@ export const FlowsList = ({ onOpenFlow, onAddGroup, onEditGroup, onCloneGroup, o
                         {matchNote(matchedRequests)}
                       </span>
                     )}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {group.testCases.length}
                   </span>
 
                   <DropdownMenu>

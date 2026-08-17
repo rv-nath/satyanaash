@@ -20,6 +20,34 @@ export interface SearchableFlow {
   testCases: SearchableRequest[];
 }
 
+/**
+ * The requests a flow's nodes reference, resolved against the project's test cases.
+ *
+ * `Flow.testCases` is hard-coded to `[]` for every flow loaded from the API, so the "and their
+ * requests" half of the search box has never been able to match anything — the filter below ran
+ * over an empty array and the `via …` annotation could never render. The data was there the
+ * whole time, one step away: each node carries `data.testCaseId`, and the project's requests are
+ * already in the query cache for the rail beside this one.
+ *
+ * Deduplicated by id, because two nodes may run the same request in different roles and "via
+ * Login +1" would then be counting one request twice.
+ */
+export function requestsOf(
+  nodes: { data?: Record<string, unknown> }[] | undefined,
+  byId: Map<string, SearchableRequest>,
+): SearchableRequest[] {
+  const seen = new Set<string>();
+  const out: SearchableRequest[] = [];
+  for (const node of nodes ?? []) {
+    const id = node.data?.testCaseId;
+    if (typeof id !== "string" || seen.has(id)) continue;
+    seen.add(id);
+    const request = byId.get(id);
+    if (request) out.push(request);
+  }
+  return out;
+}
+
 export interface FlowMatch<T> {
   flow: T;
   /**

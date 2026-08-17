@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterFlows, matchNote, type SearchableFlow } from "@/lib/flowSearch";
+import { filterFlows, matchNote, requestsOf, type SearchableFlow, type SearchableRequest } from "@/lib/flowSearch";
 
 const flow = (name: string, requests: [string, string, string][] = []): SearchableFlow => ({
   name,
@@ -68,5 +68,47 @@ describe("filtering the flows rail", () => {
     expect(names("nonesuch")).toEqual([]);
     // A flow with no requests can only match on its own name.
     expect(names("contacts")).toEqual(["Contacts upload"]);
+  });
+});
+
+/**
+ * Turning a flow's nodes into the requests it runs.
+ *
+ * `filterFlows` had nothing to filter: every flow arrived with `testCases: []`, so the "and
+ * their requests" half of the search box could never match and the `via …` annotation could
+ * never appear. This is the missing step.
+ */
+describe("requestsOf", () => {
+  const byId = new Map<string, SearchableRequest>([
+    ["tc1", { name: "SignUp API", method: "POST", endpoint: "/accounts/users/signup" }],
+    ["tc2", { name: "Login-2-Ngage", method: "POST", endpoint: "/login" }],
+  ]);
+  const node = (testCaseId?: string) => ({ data: testCaseId ? { testCaseId } : {} });
+
+  it("resolves the requests a flow's nodes reference", () => {
+    expect(requestsOf([node("tc1"), node("tc2")], byId).map((r) => r.name)).toEqual([
+      "SignUp API",
+      "Login-2-Ngage",
+    ]);
+  });
+
+  it("counts a request once even when two nodes run it", () => {
+    // Two nodes can run one request in different roles. Counting it twice would make
+    // "via Login-2-Ngage +1" claim two requests where there is one.
+    expect(requestsOf([node("tc2"), node("tc2")], byId)).toHaveLength(1);
+  });
+
+  it("skips nodes that reference no request", () => {
+    // start, end, and a sub-flow node carry no testCaseId.
+    expect(requestsOf([node(), node("tc1"), node()], byId).map((r) => r.name)).toEqual(["SignUp API"]);
+  });
+
+  it("skips an id the project no longer has", () => {
+    // A deleted request leaves the node behind; naming it would be inventing a request.
+    expect(requestsOf([node("gone")], byId)).toEqual([]);
+  });
+
+  it("copes with a flow whose graph has not loaded", () => {
+    expect(requestsOf(undefined, byId)).toEqual([]);
   });
 });

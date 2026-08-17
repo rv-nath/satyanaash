@@ -11,7 +11,15 @@ import userEvent from "@testing-library/user-event";
  */
 
 const setFlowGroup = vi.fn();
-let flows: { id: string; name: string; groupId?: string | null; testCases: unknown[] }[] = [];
+let flows: {
+  id: string;
+  name: string;
+  groupId?: string | null;
+  testCases: unknown[];
+  internalNodes?: { data?: Record<string, unknown> }[];
+}[] = [];
+/** The project's requests, as the tests rail's query already has them. */
+let projectRequests: { id: string; name: string; method: string; endpoint: string }[] = [];
 
 vi.mock("@/contexts/TestProjectContext", () => ({
   useTestProject: () => ({ flows, projectId: "p1", setFlowGroup }),
@@ -24,6 +32,7 @@ const renameMutate = vi.fn();
 const deleteMutate = vi.fn();
 
 vi.mock("@/hooks/useApi", () => ({
+  useTestCases: () => ({ data: projectRequests }),
   useFlowGroups: () => ({ data: groups }),
   useCreateFlowGroup: () => ({ mutate: createMutate }),
   useRenameFlowGroup: () => ({ mutate: renameMutate }),
@@ -36,11 +45,21 @@ vi.mock("sonner", () => ({ toast: { error: (m: string) => toastError(m) } }));
 
 import { FlowsList } from "@/components/FlowsList";
 
-const flow = (id: string, name: string, groupId?: string | null) => ({
+const flow = (
+  id: string,
+  name: string,
+  groupId?: string | null,
+  runs: string[] = [],
+) => ({
   id,
   name,
   groupId,
   testCases: [],
+  internalNodes: [
+    { data: {} },
+    ...runs.map((testCaseId) => ({ data: { testCaseId } })),
+    { data: {} },
+  ],
 });
 
 const renderRail = () =>
@@ -73,6 +92,7 @@ beforeEach(() => {
   // ran after it — an order dependency that passes today and breaks the day one is reordered.
   localStorage.clear();
   groups = [{ id: "g1", name: "Campaigns" }];
+  projectRequests = [];
   flows = [flow("f1", "JT1 - SMS", "g1"), flow("f2", "Balance")];
 });
 
@@ -269,5 +289,52 @@ describe("deleting a group", () => {
     expect(setFlowGroup).toHaveBeenCalledWith("f1", null);
     // The flow that was already Ungrouped is left alone.
     expect(setFlowGroup).not.toHaveBeenCalledWith("f2", null);
+  });
+});
+
+/**
+ * Searching by request.
+ *
+ * The box says "Search flows and their requests..", and the second half had never worked: every
+ * flow reached `filterFlows` with `testCases: []`, because the field is hard-coded empty for any
+ * flow loaded from the API. The requests are resolved from each flow's own nodes now, and these
+ * tests are the wiring — cut the resolution and they fail while `flowSearch`'s own stay green.
+ */
+describe("searching flows by the requests inside them", () => {
+  beforeEach(() => {
+    projectRequests = [
+      { id: "tc1", name: "Login-2-Ngage", method: "POST", endpoint: "/api/v1/login" },
+      { id: "tc2", name: "SignUp API", method: "POST", endpoint: "/accounts/users/signup" },
+    ];
+    // "Balance" runs the login request; its own name says nothing about logging in.
+    flows = [flow("f1", "JT1 - SMS", "g1", ["tc2"]), flow("f2", "Balance", null, ["tc1"])];
+  });
+
+  it("finds a flow by a request it runs, not only by its own name", async () => {
+    renderRail();
+    await userEvent.type(screen.getByPlaceholderText(/search flows/i), "login");
+    expect(screen.getByText("Balance")).toBeInTheDocument();
+    expect(screen.queryByText("JT1 - SMS")).not.toBeInTheDocument();
+  });
+
+  it("says why a flow whose name does not match is in the list", async () => {
+    // Without the annotation, "Balance" appearing under `login` reads as a bug.
+    renderRail();
+    await userEvent.type(screen.getByPlaceholderText(/search flows/i), "login");
+    expect(screen.getByText(/via Login-2-Ngage/)).toBeInTheDocument();
+  });
+
+  it("matches on the endpoint too", async () => {
+    renderRail();
+    await userEvent.type(screen.getByPlaceholderText(/search flows/i), "users/signup");
+    expect(screen.getByText("JT1 - SMS")).toBeInTheDocument();
+    expect(screen.queryByText("Balance")).not.toBeInTheDocument();
+  });
+
+  it("does not annotate a flow that matched on its own name", async () => {
+    renderRail();
+    await userEvent.type(screen.getByPlaceholderText(/search flows/i), "balance");
+    expect(screen.getByText("Balance")).toBeInTheDocument();
+    expect(screen.queryByText(/via /)).not.toBeInTheDocument();
   });
 });
