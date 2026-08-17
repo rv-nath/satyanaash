@@ -1351,8 +1351,8 @@ export function SingleResultView({
 }) {
   return (
       <div className="h-full flex flex-col">
-        {/* Status Bar */}
-        <div className={`px-6 py-3 border-b flex items-center justify-between ${
+        {/* Status Bar — outside the scroller, so the verdict stays visible while you read. */}
+        <div className={`shrink-0 px-4 py-2 border-b flex items-center justify-between ${
           result.status === 'passed'
             ? 'bg-success/10 border-success/30'
             : result.status === 'failed'
@@ -1361,23 +1361,23 @@ export function SingleResultView({
         }`}>
           <div className="flex items-center gap-3">
             {result.status === 'passed' ? (
-              <CheckCircle2 className="w-5 h-5 text-success" />
+              <CheckCircle2 className="w-4 h-4 text-success" />
             ) : result.status === 'failed' ? (
-              <XCircle className="w-5 h-5 text-destructive" />
+              <XCircle className="w-4 h-4 text-destructive" />
             ) : (
-              <AlertCircle className="w-5 h-5 text-warning" />
+              <AlertCircle className="w-4 h-4 text-warning" />
             )}
-            <span className="font-semibold capitalize">{result.status}</span>
+            <span className="text-sm font-semibold capitalize">{result.status}</span>
             {result.response && (
               <Badge variant={result.response.status >= 200 && result.response.status < 300 ? "default" : "destructive"}>
                 {result.response.status}
               </Badge>
             )}
-            <span className="text-sm text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {result.duration_ms}ms
             </span>
             {result.error_message && (
-              <span className="text-sm text-destructive">• {result.error_message}</span>
+              <span className="text-xs text-destructive">• {result.error_message}</span>
             )}
           </div>
           <div className="flex items-center gap-1">
@@ -1401,12 +1401,16 @@ export function SingleResultView({
           </div>
         </div>
 
+        {/* One scroller from here down. Each of these blocks used to take a fixed slice of the
+            panel and leave the response whatever remained — on a split pane that was a sliver
+            with its own scrollbar inside a pane that was itself barely scrolled. */}
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-hairline">
         {/* What the engine said while running. These were being dropped: an
             unresolved {{variable}}, a leftover "null", an export that matched
             nothing, and anything the script printed all arrive here, and a run
             that warns has to say so where the run is shown. */}
         {result.logs && result.logs.length > 0 && (
-          <div className="max-h-28 shrink-0 overflow-y-auto border-b bg-muted/20 px-6 py-2 scrollbar-hairline">
+          <div className="border-b bg-muted/20 px-4 py-2">
             {result.logs.map((line, i) => (
               <p
                 key={i}
@@ -1423,8 +1427,8 @@ export function SingleResultView({
         <ExportsBlock exports={result.exports} collected={false} />
 
         {/* Sub-tabs for Response details */}
-        <Tabs defaultValue="body" className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <div className="border-b px-6">
+        <Tabs defaultValue="body" className="flex flex-col">
+          <div className="sticky top-0 z-10 border-b bg-background px-4">
             <TabsList className="h-10 bg-transparent p-0 gap-4">
               <TabsTrigger value="body" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none px-1 pb-2">
                 Body
@@ -1444,11 +1448,11 @@ export function SingleResultView({
           </div>
 
           {/* Body Sub-tab */}
-          <TabsContent value="body" className="flex-1 min-h-0 mt-0 overflow-hidden">
-            <div className="h-full flex flex-col">
+          <TabsContent value="body" className="mt-0">
+            <div className="flex flex-col">
               {result.response?.body ? (
                 <>
-                  <div className="flex justify-end px-4 py-1.5 border-b bg-muted/20">
+                  <div className="sticky top-9 z-10 flex justify-end border-b bg-muted/40 px-4 py-1">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1459,7 +1463,7 @@ export function SingleResultView({
                       Wrap
                     </Button>
                   </div>
-                  <pre className={`flex-1 overflow-auto p-4 text-sm font-mono bg-muted/30 ${wordWrap ? 'whitespace-pre-wrap break-all' : ''}`}>
+                  <pre className={`overflow-x-auto p-4 text-xs leading-relaxed font-mono bg-muted/30 ${wordWrap ? 'whitespace-pre-wrap break-all' : ''}`}>
                     {(() => {
                       try {
                         return JSON.stringify(JSON.parse(result.response.body), null, 2);
@@ -1478,10 +1482,10 @@ export function SingleResultView({
           </TabsContent>
 
           {/* Headers Sub-tab */}
-          <TabsContent value="headers" className="flex-1 min-h-0 mt-0 overflow-hidden">
+          <TabsContent value="headers" className="mt-0">
             {result.response && Object.keys(result.response.headers).length > 0 ? (
-              <div className="h-full overflow-auto">
-                <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
                   <tbody>
                     {Object.entries(result.response.headers).map(([k, v]) => (
                       <tr key={k} className="border-b border-border/50 hover:bg-muted/30">
@@ -1500,8 +1504,8 @@ export function SingleResultView({
           </TabsContent>
 
           {/* Request Sub-tab */}
-          <TabsContent value="request" className="flex-1 min-h-0 mt-0 overflow-hidden">
-            <div className="h-full overflow-auto p-4 space-y-4">
+          <TabsContent value="request" className="mt-0">
+            <div className="space-y-4 p-4">
               {result.request && (
                 <>
                   {/* Request line */}
@@ -1509,14 +1513,14 @@ export function SingleResultView({
                     <Badge className={getMethodColor(result.request.method)}>
                       {result.request.method}
                     </Badge>
-                    <code className="text-sm font-mono break-all">{result.request.url}</code>
+                    <code className="break-all font-mono text-xs">{result.request.url}</code>
                   </div>
 
                   {/* Request Headers */}
                   {Object.keys(result.request.headers).length > 0 && (
                     <div>
-                      <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST HEADERS</h4>
-                      <table className="w-full text-sm">
+                      <h4 className="text-[11px] font-semibold text-muted-foreground mb-2">REQUEST HEADERS</h4>
+                      <table className="w-full text-xs">
                         <tbody>
                           {Object.entries(result.request.headers).map(([k, v]) => (
                             <tr key={k} className="border-b border-border/50">
@@ -1533,7 +1537,7 @@ export function SingleResultView({
                   {result.request.body && (
                     <div>
                       <h4 className="text-xs font-semibold text-muted-foreground mb-2">REQUEST BODY</h4>
-                      <pre className="text-sm font-mono bg-muted/50 p-3 rounded overflow-x-auto whitespace-pre-wrap break-all">
+                      <pre className="rounded bg-muted/50 p-3 font-mono text-xs overflow-x-auto whitespace-pre-wrap break-all">
                         {(() => {
                           try {
                             return JSON.stringify(JSON.parse(result.request.body), null, 2);
@@ -1549,6 +1553,7 @@ export function SingleResultView({
             </div>
           </TabsContent>
         </Tabs>
+        </div>
       </div>
   );
 }
