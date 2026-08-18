@@ -60,6 +60,23 @@ export interface DataRow {
    *  `needs_flow`, which says *where* a row can run, this says it runs nowhere until you
    *  enable it — somewhere to park a case while you work out what it should say. */
   disabled?: boolean;
+  /** Headers this row sends instead of, or as well as, the request's own — merged over them
+   *  by key, case-insensitively, because HTTP header names are.
+   *
+   *  An **unticked** entry means "send no such header", which is the one thing a value cannot
+   *  say: blank means "unset" everywhere else here. That is what makes a case with no
+   *  `Authorization` at all expressible on a row rather than needing its own request. */
+  headers?: RowHeader[];
+}
+
+/** One header a row sets, or suppresses. The same shape the request's own headers are edited
+ *  in, so the editor is the one that already exists. */
+export interface RowHeader {
+  key: string;
+  value: string;
+  /** Unticked means don't send it. Absent counts as ticked — an override, not a suppression,
+   *  which is the safer reading since a silent suppression is invisible on the wire. */
+  enabled?: boolean;
 }
 
 /** A table of cases. "Run dataset" in the editor iterates them, and so does a flow

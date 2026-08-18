@@ -7,6 +7,13 @@ import {
   joinEndpoint,
   looksLikeInvalidJson,
   pathVariables,
+  rowPreview,
+  addRowHeader,
+  clearRowHeader,
+  effectiveHeaders,
+  rowHeader,
+  setRowHeader,
+  suppressRowHeader,
   rowVar,
   runnableInFlow,
   runnableLabel,
@@ -269,5 +276,143 @@ describe("runnableLabel", () => {
     let d = withRows(2);
     for (const row of d.rows) d = setRowDisabled(d, row.id, true);
     expect(runnableLabel(d)).toBe("0/2");
+  });
+});
+
+
+
+describe("rowPreview", () => {
+  const row = (vars: Record<string, string>) => ({ id: "r1", vars });
+
+  it("shows one declared name as its bare value, because nothing can be confused with it", () => {
+    // This is what lets thirteen credentials be compared down the column without opening any.
+    expect(rowPreview(row({ bad_auth: "Bearer garbage" }), ["bad_auth"])).toBe("Bearer garbage");
+  });
+
+  it("shows several as name=value, because a bare value cannot say which name it filled", () => {
+    // Three names declared and only the middle one set: "c-123" alone is a riddle.
+    expect(rowPreview(row({ campaignID: "c-123" }), ["channel", "campaignID", "recurrenceID"])).toBe(
+      "campaignID=c-123",
+    );
+  });
+
+  it("keeps declaration order, not the order the row's map happens to hold", () => {
+    // A preview that reordered would not be comparable down the column, which is its only job.
+    const r = row({ recurrenceID: "r-1", channel: "sms" });
+    expect(rowPreview(r, ["channel", "campaignID", "recurrenceID"])).toBe(
+      "channel=sms · recurrenceID=r-1",
+    );
+  });
+
+  it("is blank when the row sets nothing, so the cell can say what that means in prose", () => {
+    expect(rowPreview(row({}), ["channel"])).toBe("");
+    expect(rowPreview(row({ channel: "   " }), ["channel"])).toBe("");
+  });
+
+  it("ignores a value for a name the request no longer declares", () => {
+    // Editing the URL leaves stale vars on the row; they are not this column's business.
+    expect(rowPreview(row({ gone: "x" }), ["channel"])).toBe("");
+  });
+});
+
+describe("a row's own headers", () => {
+  const ds = (headers?: { key: string; value: string; enabled?: boolean }[]) => ({
+    rows: [{ id: "r1", name: "case", headers }],
+  });
+  const request = [
+    { key: "Authorization", value: "Bearer {{token}}", enabled: true },
+    { key: "Content-Type", value: "application/json", enabled: true },
+  ];
+
+  it("finds a row's entry whatever case the key was typed in", () => {
+    // HTTP header names are case-insensitive, so `authorization` means *the* Authorization header.
+    expect(rowHeader(ds([{ key: "authorization", value: "x" }]).rows[0], "Authorization")?.value).toBe("x");
+  });
+
+  it("overrides one header and leaves the request's others alone", () => {
+    const next = setRowHeader(ds(), "r1", "Authorization", "Bearer garbage");
+    const eff = effectiveHeaders(request, next.rows[0]);
+    expect(eff.find((h) => h.key === "Authorization")).toEqual({
+      key: "Authorization",
+      value: "Bearer garbage",
+      origin: "overridden",
+    });
+    // A row states a difference, not a replacement for the whole set.
+    expect(eff.find((h) => h.key === "Content-Type")?.origin).toBe("inherited");
+  });
+
+  it("suppresses a header, which is the one thing a value cannot say", () => {
+    // Blank means "unset" everywhere else in this model, so "send no Authorization at all" needs
+    // its own way of being said.
+    const next = suppressRowHeader(ds(), "r1", "Authorization", true);
+    const eff = effectiveHeaders(request, next.rows[0]);
+    expect(eff.find((h) => h.key === "Authorization")).toEqual({
+      key: "Authorization",
+      value: "",
+      origin: "suppressed",
+    });
+  });
+
+  it("keeps the value when suppressing, so bringing it back needs no retyping", () => {
+    let d = setRowHeader(ds(), "r1", "Authorization", "Bearer garbage");
+    d = suppressRowHeader(d, "r1", "Authorization", true);
+    expect(rowHeader(d.rows[0], "Authorization")?.value).toBe("Bearer garbage");
+    d = suppressRowHeader(d, "r1", "Authorization", false);
+    expect(effectiveHeaders(request, d.rows[0]).find((h) => h.key === "Authorization")).toEqual({
+      key: "Authorization",
+      value: "Bearer garbage",
+      origin: "overridden",
+    });
+  });
+
+  it("distinguishes 'nothing to say about it' from 'do not send it'", () => {
+    // Reset drops the row's entry, so the header goes back to the request's value. Suppressing
+    // sends nothing. Collapsing the two would make one of them unsayable.
+    let d = suppressRowHeader(ds(), "r1", "Authorization", true);
+    d = clearRowHeader(d, "r1", "Authorization");
+    expect(rowHeader(d.rows[0], "Authorization")).toBeUndefined();
+    expect(effectiveHeaders(request, d.rows[0]).find((h) => h.key === "Authorization")?.origin).toBe(
+      "inherited",
+    );
+  });
+
+  it("lists a header only this row sends, after the request's own", () => {
+    const d = setRowHeader(ds(), "r1", "X-Case-Only", "yes");
+    const eff = effectiveHeaders(request, d.rows[0]);
+    // Request order first, so the list does not reshuffle as a row overrides things.
+    expect(eff.map((h) => h.key)).toEqual(["Authorization", "Content-Type", "X-Case-Only"]);
+    expect(eff.at(-1)?.origin).toBe("row-only");
+  });
+
+  it("matches the request's header whatever case the row typed", () => {
+    const d = setRowHeader(ds(), "r1", "authorization", "Bearer garbage");
+    const eff = effectiveHeaders(request, d.rows[0]);
+    // One entry, not two — the row overrode the request's rather than adding a second.
+    expect(eff.filter((h) => h.key.toLowerCase() === "authorization")).toHaveLength(1);
+    expect(eff[0]).toMatchObject({ value: "Bearer garbage", origin: "overridden" });
+  });
+
+  it("ignores a header the request has switched off", () => {
+    const eff = effectiveHeaders(
+      [{ key: "Authorization", value: "x", enabled: false }],
+      ds().rows[0],
+    );
+    expect(eff).toEqual([]);
+  });
+
+  it("leaves an unnamed entry out of what gets sent", () => {
+    // A half-typed entry is not an instruction; it needs somewhere to live on the row without
+    // pretending to be a header.
+    const d = addRowHeader(ds(), "r1");
+    expect(d.rows[0].headers).toHaveLength(1);
+    expect(effectiveHeaders(request, d.rows[0]).map((h) => h.origin)).toEqual([
+      "inherited",
+      "inherited",
+    ]);
+  });
+
+  it("says nothing about a row written before row headers existed", () => {
+    const eff = effectiveHeaders(request, { id: "r1" });
+    expect(eff.every((h) => h.origin === "inherited")).toBe(true);
   });
 });

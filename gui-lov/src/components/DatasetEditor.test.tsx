@@ -1,5 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render as rtlRender, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+
+/** The editor keeps the open case in `?row=`, so it needs a router. Wrapped here rather than in
+ *  every test, and named `render` so the existing tests read unchanged.
+ *
+ *  `rerender` is wrapped too: the bare one re-renders without the router, which fails inside the
+ *  component rather than in the test, so the message names React Router instead of the setup. */
+const render = (ui: React.ReactElement, initial = "/") => {
+  const wrap = (node: React.ReactElement) => (
+    <MemoryRouter initialEntries={[initial]}>{node}</MemoryRouter>
+  );
+  const result = rtlRender(wrap(ui));
+  return { ...result, rerender: (node: React.ReactElement) => result.rerender(wrap(node)) };
+};
 import userEvent from "@testing-library/user-event";
 import { DatasetEditor } from "@/components/DatasetEditor";
 import { addRow, emptyDataset, setRowBody, setRowCheck, setRowName, setRowDisabled, setRowNeedsFlow, setRowVar } from "@/lib/dataset";
@@ -277,72 +291,78 @@ describe("DatasetEditor", () => {
   });
 });
 
-describe("DatasetEditor endpoint parameters", () => {
+describe("DatasetEditor request parameters", () => {
   const endpoint =
     "{{baseUrl}}/api/v1/campaigns/{{channel}}/pause/{{campaignID}}/{{recurrenceID}}";
 
-  it("grows a column per placeholder the endpoint declares", () => {
-    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint={endpoint} />);
-
-    // Named as written in the URL, so the column and the placeholder are obviously
-    // the same thing. baseUrl is the prefix, not a parameter.
-    expect(screen.getByText("channel")).toBeInTheDocument();
-    expect(screen.getByText("campaignID")).toBeInTheDocument();
-    expect(screen.getByText("recurrenceID")).toBeInTheDocument();
-    expect(screen.queryByText("baseUrl")).not.toBeInTheDocument();
-
-    // And the columns that were always there are still there, with the parameters
-    // sitting between Case and them.
-    // Spans only: the footer's help text mentions "Path / query" in a <strong>.
-    const headings = screen
-      .getAllByText(/^(Case|channel|campaignID|recurrenceID|Path \/ query|Body|Expect)$/)
+  const headings = () =>
+    screen
+      .getAllByText(/^(Case|Parameters|Path \/ query|Body|Expect)$/)
       .filter((el) => el.tagName === "SPAN")
       .map((el) => el.textContent);
-    expect(headings).toEqual([
-      "Case", "channel", "campaignID", "recurrenceID", "Path / query", "Body", "Expect",
-    ]);
+
+  it("gives every declared name one column, named for what it is and not for the request", () => {
+    // The point of the change. It used to grow a column per placeholder — headed `channel`, or
+    // on another project `bad_auth` — so the table's shape was a function of the request's
+    // content. One fixed heading whatever the request declares.
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint={endpoint} />);
+
+    expect(headings()).toEqual(["Case", "Parameters", "Path / query", "Body", "Expect"]);
+    expect(screen.queryByText("channel")).not.toBeInTheDocument();
+    expect(screen.queryByText("campaignID")).not.toBeInTheDocument();
+    expect(screen.queryByText("baseUrl")).not.toBeInTheDocument();
   });
 
-  it("leaves a dataset alone when the endpoint has no parameters", () => {
+  it("names the declared names on the heading, since the heading no longer does", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint={endpoint} />);
+    const title = screen.getByText("Parameters").getAttribute("title") ?? "";
+    for (const name of ["{{channel}}", "{{campaignID}}", "{{recurrenceID}}"]) {
+      expect(title).toContain(name);
+    }
+    // baseUrl is the prefix, not a parameter.
+    expect(title).not.toContain("baseUrl");
+  });
+
+  it("leaves a dataset alone when the request declares no parameters", () => {
     render(<DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint="{{baseUrl}}/signup" />);
-    expect(screen.getByText("Case")).toBeInTheDocument();
-    expect(screen.getByText("Body")).toBeInTheDocument();
-    // Nothing extra: a signup case looks exactly as it did.
+    // Absent, not present and empty.
+    expect(headings()).toEqual(["Case", "Path / query", "Body", "Expect"]);
     expect(screen.getByLabelText(/case name for row 1/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/channel for valid/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/parameters for/i)).not.toBeInTheDocument();
   });
 
-  it("records a value against the row and the name", async () => {
-    const onChange = vi.fn();
-    render(<DatasetEditor dataset={seed()} onChange={onChange} endpoint={endpoint} />);
-
-    await userEvent.type(screen.getByLabelText(/^channel for valid$/i), "sms");
-    expect(onChange.mock.calls.at(-1)![0].rows[0].vars).toEqual({ channel: "s" });
-  });
-
-  it("shows what a row already has for each parameter", () => {
+  it("previews one declared name as its bare value, so the column still scans", () => {
     let d = seed();
-    d = setRowVar(d, d.rows[0].id, "channel", "email");
+    d = setRowVar(d, d.rows[0].id, "channel", "sms");
+    render(
+      <DatasetEditor dataset={d} onChange={vi.fn()} endpoint="{{baseUrl}}/campaigns/{{channel}}" />,
+    );
+    expect(screen.getByLabelText(/parameters for valid/i)).toHaveTextContent("sms");
+  });
+
+  it("previews several as name=value, because a bare value could not say which name it filled", () => {
+    let d = seed();
     d = setRowVar(d, d.rows[0].id, "campaignID", "c-456");
     render(<DatasetEditor dataset={d} onChange={vi.fn()} endpoint={endpoint} />);
-
-    expect(screen.getByLabelText(/^channel for valid$/i)).toHaveValue("email");
-    expect(screen.getByLabelText(/^campaignid for valid$/i)).toHaveValue("c-456");
-    // Unset stays empty rather than inventing something.
-    expect(screen.getByLabelText(/^recurrenceid for valid$/i)).toHaveValue("");
+    expect(screen.getByLabelText(/parameters for valid/i)).toHaveTextContent("campaignID=c-456");
   });
 
-  it("offers the column as soon as the URL mentions it, before saving", () => {
+  it("says what an empty cell means rather than showing an example", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint={endpoint} />);
+    expect(screen.getByLabelText(/parameters for valid/i)).toHaveTextContent(/sets none of them/i);
+  });
+
+  it("offers the column as soon as the URL mentions a name, before saving", () => {
     // The editor passes the endpoint being edited, not the saved one.
     const { rerender } = render(
       <DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint="{{baseUrl}}/campaigns" />,
     );
-    expect(screen.queryByText("channel")).not.toBeInTheDocument();
+    expect(screen.queryByText("Parameters")).not.toBeInTheDocument();
 
     rerender(
       <DatasetEditor dataset={seed()} onChange={vi.fn()} endpoint="{{baseUrl}}/campaigns/{{channel}}" />,
     );
-    expect(screen.getByText("channel")).toBeInTheDocument();
+    expect(screen.getByText("Parameters")).toBeInTheDocument();
   });
 });
 
@@ -527,5 +547,145 @@ describe("DatasetEditor room to write", () => {
     await userEvent.click(screen.getByRole("button", { name: /expected result for/i }));
     await userEvent.click(screen.getByRole("button", { name: /room to write/i }));
     expect(screen.getByText(/leaves the cell as it was/i)).toBeInTheDocument();
+  });
+});
+
+
+
+describe("DatasetEditor — the row's actions", () => {
+  it("keeps all three out of the way until the row is hovered or focused", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    for (const name of [/^edit valid$/i, /^duplicate valid$/i, /^remove valid$/i]) {
+      expect(screen.getByRole("button", { name })).toHaveClass("opacity-0");
+    }
+  });
+
+  it("reveals them by opacity and never by width, so nothing shifts on hover", () => {
+    // A gutter that appears on hover and reflows the row would move every value sideways as the
+    // pointer travels down twenty rows — the fault this codebase already guards against for
+    // canvas nodes.
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    const edit = screen.getByRole("button", { name: /^edit valid$/i });
+    expect(edit.className).toContain("group-hover:opacity-100");
+    expect(edit.className).toContain("w-full");
+    expect(edit.className).not.toMatch(/\bhidden\b|group-hover:block|group-hover:w-/);
+  });
+
+  it("stays reachable without a mouse", () => {
+    render(<DatasetEditor dataset={seed()} onChange={vi.fn()} />);
+    const edit = screen.getByRole("button", { name: /^edit valid$/i });
+    expect(edit.className).toContain("focus-visible:opacity-100");
+  });
+});
+
+describe("DatasetEditor — a case on its own page", () => {
+  const endpoint = "{{baseUrl}}/api/v1/accounts/list";
+  const requestHeaders = [
+    { id: "h1", key: "Authorization", value: "Bearer {{token}}", enabled: true },
+    { id: "h2", key: "Content-Type", value: "application/json", enabled: true },
+  ];
+
+  const openCase = async (dataset = seed()) => {
+    const onChange = vi.fn();
+    render(
+      <DatasetEditor
+        dataset={dataset}
+        onChange={onChange}
+        endpoint={endpoint}
+        headers={requestHeaders}
+        method="GET"
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^edit valid$/i }));
+    return onChange;
+  };
+
+  it("replaces the matrix rather than floating over it", async () => {
+    // It was a dialog first and outgrew it: max-h-[60vh] was clipping the body with five sections,
+    // and headers needs several times that.
+    await openCase();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /all 1 case/i })).toBeInTheDocument();
+    // The table is gone, not merely scrolled away.
+    expect(screen.queryByLabelText(/^body for valid$/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the request it varies, and does not offer it as a field", async () => {
+    await openCase();
+    expect(screen.getByText(/GET \{\{baseUrl\}\}\/api\/v1\/accounts\/list/)).toBeInTheDocument();
+    // A case cannot change either, and a box would say it can.
+    expect(screen.queryByLabelText(/^endpoint$/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^method$/i)).not.toBeInTheDocument();
+  });
+
+  it("lists the request's headers as inherited, so the page says what the case sends", async () => {
+    await openCase();
+    expect(screen.getByText("Authorization")).toBeInTheDocument();
+    expect(screen.getByText("Content-Type")).toBeInTheDocument();
+    expect(screen.getAllByText(/from the request/i).length).toBeGreaterThan(0);
+  });
+
+  it("overrides one header on this case alone", async () => {
+    const onChange = await openCase();
+    await userEvent.click(screen.getByRole("button", { name: /override Authorization/i }));
+    const last = onChange.mock.calls.at(-1)![0] as Dataset;
+    expect(last.rows[0].headers?.[0]).toMatchObject({ key: "Authorization", enabled: true });
+  });
+
+  it("unticking a header is how a case says 'send no such header'", async () => {
+    // The case that forced a duplicate test case to exist, because it was otherwise unsayable.
+    const onChange = await openCase();
+    await userEvent.click(screen.getByRole("checkbox", { name: /send Authorization/i }));
+    const last = onChange.mock.calls.at(-1)![0] as Dataset;
+    expect(last.rows[0].headers?.[0]).toMatchObject({ key: "Authorization", enabled: false });
+  });
+
+  it("writes edits straight through, with no draft to save", async () => {
+    // A page is where you are, not a detour, so there is no Cancel and no Save — the test case's
+    // own dirty-and-save owns the result.
+    const onChange = await openCase();
+    expect(screen.queryByRole("button", { name: /^save$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^cancel$/i })).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/^case name$/i), "!");
+    expect(onChange).toHaveBeenCalled();
+  });
+
+  it("keeps the open case in the URL, so Back leaves it and a link can be pasted", async () => {
+    let d = addRow(seed());
+    d = setRowName(d, d.rows[1].id, "second");
+    render(
+      <DatasetEditor dataset={d} onChange={vi.fn()} endpoint={endpoint} headers={requestHeaders} />,
+      `/?row=${d.rows[1].id}`,
+    );
+    // Opened straight from the URL, without a click.
+    expect(screen.getByRole("heading", { name: "second" })).toBeInTheDocument();
+  });
+
+  it("walks the dataset case by case, which is what the matrix cannot do from here", async () => {
+    let d = addRow(seed());
+    d = setRowName(d, d.rows[1].id, "second");
+    render(
+      <DatasetEditor dataset={d} onChange={vi.fn()} endpoint={endpoint} headers={requestHeaders} />,
+      `/?row=${d.rows[0].id}`,
+    );
+    expect(screen.getByText(/case 1 of 2/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /previous case/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: /next case/i }));
+    expect(screen.getByRole("heading", { name: "second" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next case/i })).toBeDisabled();
+  });
+
+  it("has no parameters section when the endpoint declares nothing", async () => {
+    const onChange = vi.fn();
+    render(<DatasetEditor dataset={seed()} onChange={onChange} endpoint="{{baseUrl}}/signup" />);
+    await userEvent.click(screen.getByRole("button", { name: /^edit valid$/i }));
+    // Absent rather than an empty section, which reads as something failing to load.
+    expect(screen.queryByText("Parameters")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^body$/i)).toBeInTheDocument();
+  });
+
+  it("states where a case runs as one choice of three, not two switches", async () => {
+    await openCase();
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
   });
 });

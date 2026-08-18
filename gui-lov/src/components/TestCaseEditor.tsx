@@ -1043,6 +1043,13 @@ export const TestCaseEditor = ({
                   // The one being edited, not the saved one: adding {{channel}} to the URL
                   // should offer the column before you save.
                   endpoint={endpoint}
+                  // Same reason, and the same live state the Headers tab is editing: a
+                  // {{name}} in a header value is a parameter too, so templating an
+                  // Authorization header gives every row its own credential.
+                  headers={headers}
+                  // Context only, at the top of a row's own form — a row varies this request
+                  // and cannot change its method.
+                  method={method}
                 />
               </div>
             </ScrollArea>

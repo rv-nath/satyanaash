@@ -340,6 +340,42 @@ pub struct DataRow {
     /// have anyway. Sorted so a saved dataset's JSON doesn't churn on key order.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vars: BTreeMap<String, String>,
+    /// Headers this row sends instead of, or as well as, the request's own.
+    ///
+    /// The reason this exists: everything else about a request could already be varied per row —
+    /// the body wholesale, the path suffix, the values of any `{{name}}` — but headers could not,
+    /// and headers are where credentials live. The workaround was to template the value
+    /// (`Authorization: {{tok}}`) and give each row its own `tok`, which works but makes the
+    /// author invent a variable for a thing they were not trying to name, and cannot express
+    /// *absence* at all.
+    ///
+    /// A **list, not a map**, and the same `{key, value, enabled}` shape the request's own headers
+    /// are edited in — so the editor is the editor that already exists, and an entry can be
+    /// unticked. Unticked is what makes "send no `Authorization` at all" sayable, which no value
+    /// can say: blank means "unset" everywhere else in this model.
+    ///
+    /// Merged over the request's headers by key, **case-insensitively**, because HTTP header names
+    /// are — a row overriding `authorization` must replace `Authorization` rather than send a
+    /// second one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RowHeader>,
+}
+
+/// One header a data row sets, or suppresses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RowHeader {
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
+    /// Unticked means **do not send this header**, whatever the request says. Defaults to true so
+    /// an entry written by hand or by an older client is an override rather than a suppression —
+    /// the safer reading, since a silent suppression is invisible on the wire.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Keeps `needs_flow: false` out of the stored JSON — an ordinary row says nothing.

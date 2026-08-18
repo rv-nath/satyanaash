@@ -332,6 +332,7 @@ mod tests {
                 path: None,
                 needs_flow: false,
                 disabled: false,
+                headers: Vec::new(),
                 vars: [("channel", "sms"), ("campaignID", "c-123")]
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_string()))

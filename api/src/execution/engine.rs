@@ -3234,6 +3234,46 @@ impl ExecutionEngine {
             }
         }
 
+        // Then this row's own, over the top. Interpolated like the request's, so a row header can
+        // still hold `{{names}}` — it is a value on the wire, not a literal.
+        //
+        // Matched **case-insensitively**, because HTTP header names are: a row saying
+        // `authorization` must replace the request's `Authorization` rather than add a second one,
+        // and a suppression has to find the header it is suppressing whatever case it was typed
+        // in. `HashMap` cannot do that for us, so the existing key is looked up and removed first.
+        if let Some(row) = row {
+            for header in &row.headers {
+                let Ok(key) = ctx.interpolate(&header.key) else {
+                    continue;
+                };
+                let key = key.trim();
+                // A blank key is a half-typed row, not an instruction. Silently ignoring it beats
+                // sending a header with no name, which reqwest would refuse and report as the
+                // request failing for no visible reason.
+                if key.is_empty() {
+                    continue;
+                }
+                if let Some(existing) = headers
+                    .keys()
+                    .find(|k| k.eq_ignore_ascii_case(key))
+                    .cloned()
+                {
+                    headers.remove(&existing);
+                }
+                // Unticked says "do not send this at all" — the one thing a value cannot say.
+                // Having removed the inherited one above, leaving it out is the whole act.
+                if !header.enabled {
+                    if self.debug_mode {
+                        logs.push(format!("Header suppressed for this row: {}", key));
+                    }
+                    continue;
+                }
+                if let Ok(value) = ctx.interpolate(&header.value) {
+                    headers.insert(key.to_string(), value);
+                }
+            }
+        }
+
         // Interpolate payload (body)
         // A data row may supply its own body; otherwise the test case's payload is
         // used. Either way it is interpolated, so {{variables}} work in both.
@@ -4141,6 +4181,7 @@ mod tests {
                     path: None,
                     needs_flow: false,
                     disabled: false,
+                    headers: Vec::new(),
                     vars: Default::default(),
                     id: format!("r{}", i),
                     name: Some(name.to_string()),
@@ -4309,7 +4350,7 @@ mod tests {
         // Nothing left over once everything resolved
         assert!(find_unresolved("http://x/api/1", &HashMap::new(), Some("{}")).is_empty());
     }
-    use crate::db::models::{Flow, GraphData, GraphNode, GraphEdge, Position, TestCase, ExportVariable};
+    use crate::db::models::{Flow, GraphData, GraphNode, GraphEdge, Position, RowHeader, TestCase, ExportVariable};
     use crate::db::repositories::TestCaseRepository;
     use crate::error::AppError;
     use async_trait::async_trait;
@@ -5432,6 +5473,203 @@ mod tests {
             "{}", rows[0].request.as_ref().unwrap().url);
         assert!(rows[1].request.as_ref().unwrap().url.ends_with("/from-the-node"),
             "{}", rows[1].request.as_ref().unwrap().url);
+    }
+
+    /// The per-row results of a one-node fan-out flow — the four lines every row test below
+    /// repeated verbatim.
+    async fn row_results(
+        engine: &ExecutionEngine,
+        flow: &Flow,
+        repo: &MockTestCaseRepository,
+    ) -> Vec<NodeResult> {
+        engine
+            .execute_flow("exec1", flow, repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap()
+            .results
+            .into_iter()
+            .find(|r| r.node_id == "b")
+            .unwrap()
+            .iterations
+            .unwrap()
+    }
+
+    /// The whole point of `DataRow::headers`: a credential can be varied per row without the
+    /// author inventing a variable to hold it. Before this, `Authorization` could only differ
+    /// between rows by templating its value and giving each row a `{{name}}` — a variable named
+    /// after a workaround rather than after anything in the domain.
+    #[tokio::test]
+    async fn a_rows_header_replaces_the_requests_own() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 2).await;
+        let mut tc = make_test_case("tc", "List", &url, "GET");
+        tc.headers = serde_json::json!({
+            "Authorization": "Bearer from-the-request",
+            "Content-Type": "application/json"
+        });
+        let mut dataset = dataset_of(vec![("overrides it", None, None), ("leaves it", None, None)]);
+        dataset.rows[0].headers = vec![RowHeader {
+            key: "Authorization".into(),
+            value: "Bearer garbage".into(),
+            enabled: true,
+        }];
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({ "forEachRow": true }));
+
+        let rows = row_results(&engine, &flow, &repo).await;
+
+        let sent = |i: usize| rows[i].request.as_ref().unwrap().headers.clone();
+        assert_eq!(sent(0).get("Authorization").unwrap(), "Bearer garbage");
+        // Overriding one header leaves the others alone — a row states a difference, not a
+        // replacement for the whole set.
+        assert_eq!(sent(0).get("Content-Type").unwrap(), "application/json");
+        // And row 2, which said nothing, still sends the request's own.
+        assert_eq!(sent(1).get("Authorization").unwrap(), "Bearer from-the-request");
+    }
+
+    /// HTTP header names are case-insensitive, so a row typing `authorization` means *the*
+    /// Authorization header. Matching exactly would send both, and which one the server honours
+    /// is then anybody's guess — the worst kind of failure, because the run looks fine.
+    #[tokio::test]
+    async fn a_rows_header_matches_the_requests_whatever_the_case() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let mut tc = make_test_case("tc", "List", &url, "GET");
+        tc.headers = serde_json::json!({ "Authorization": "Bearer from-the-request" });
+        let mut dataset = dataset_of(vec![("lower case", None, None)]);
+        dataset.rows[0].headers = vec![RowHeader {
+            key: "authorization".into(),
+            value: "Bearer garbage".into(),
+            enabled: true,
+        }];
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({ "forEachRow": true }));
+
+        let sent = row_results(&engine, &flow, &repo).await[0]
+            .request
+            .as_ref()
+            .unwrap()
+            .headers
+            .clone();
+
+        let auth: Vec<_> = sent.keys().filter(|k| k.eq_ignore_ascii_case("authorization")).collect();
+        assert_eq!(auth.len(), 1, "one Authorization header, not two: {:?}", sent);
+        assert_eq!(sent.values().filter(|v| v.contains("garbage")).count(), 1);
+        assert!(!sent.values().any(|v| v.contains("from-the-request")));
+    }
+
+    /// Unticked means "send no such header", which is the one thing a *value* cannot say: blank
+    /// means "unset" everywhere else in this model. It is also the case that forced a duplicate
+    /// test case to exist, because "no Authorization at all" was otherwise unsayable.
+    #[tokio::test]
+    async fn an_unticked_row_header_is_not_sent_at_all() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let mut tc = make_test_case("tc", "List", &url, "GET");
+        tc.headers = serde_json::json!({
+            "Authorization": "Bearer from-the-request",
+            "Content-Type": "application/json"
+        });
+        let mut dataset = dataset_of(vec![("no credential at all", None, None)]);
+        dataset.rows[0].headers = vec![RowHeader {
+            key: "Authorization".into(),
+            // A value is kept but ignored: unticking is meant to be reversible without retyping
+            // the credential.
+            value: "Bearer garbage".into(),
+            enabled: false,
+        }];
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({ "forEachRow": true }));
+
+        let sent = row_results(&engine, &flow, &repo).await[0]
+            .request
+            .as_ref()
+            .unwrap()
+            .headers
+            .clone();
+
+        assert!(
+            !sent.keys().any(|k| k.eq_ignore_ascii_case("authorization")),
+            "suppressed, so absent — not blank: {:?}",
+            sent
+        );
+        assert_eq!(sent.get("Content-Type").unwrap(), "application/json");
+    }
+
+    /// A row header is a value on the wire like any other, so it interpolates — otherwise a row
+    /// could not reuse a token an earlier step exported.
+    #[tokio::test]
+    async fn a_rows_header_is_interpolated() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let mut tc = make_test_case("tc", "List", &url, "GET");
+        let mut dataset = dataset_of(vec![("from a var", None, None)]);
+        dataset.rows[0].headers = vec![RowHeader {
+            key: "Authorization".into(),
+            value: "Bearer {{tok}}".into(),
+            enabled: true,
+        }];
+        dataset.rows[0].vars = [("tok".to_string(), "abc123".to_string())].into_iter().collect();
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({ "forEachRow": true }));
+
+        let sent = row_results(&engine, &flow, &repo).await[0]
+            .request
+            .as_ref()
+            .unwrap()
+            .headers
+            .clone();
+        assert_eq!(sent.get("Authorization").unwrap(), "Bearer abc123");
+    }
+
+    /// A half-typed entry is not an instruction. A header with no name would be refused by the
+    /// client and reported as the request failing, which names the wrong problem.
+    #[tokio::test]
+    async fn a_row_header_with_no_name_is_ignored() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let mut tc = make_test_case("tc", "List", &url, "GET");
+        tc.headers = serde_json::json!({ "Authorization": "Bearer from-the-request" });
+        let mut dataset = dataset_of(vec![("half typed", None, None)]);
+        dataset.rows[0].headers = vec![RowHeader {
+            key: "   ".into(),
+            value: "orphan".into(),
+            enabled: true,
+        }];
+        tc.dataset = Some(dataset);
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({ "forEachRow": true }));
+
+        let result = &row_results(&engine, &flow, &repo).await[0];
+        assert_eq!(result.status, NodeStatus::Passed);
+        let sent = result.request.as_ref().unwrap().headers.clone();
+        assert!(!sent.values().any(|v| v == "orphan"));
+        // The request's own is untouched, rather than removed by a blank key matching nothing.
+        assert_eq!(sent.get("Authorization").unwrap(), "Bearer from-the-request");
+    }
+
+    /// A dataset written before row headers existed must behave exactly as it did.
+    #[tokio::test]
+    async fn a_row_with_no_headers_of_its_own_sends_the_requests() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let mut tc = make_test_case("tc", "List", &url, "GET");
+        tc.headers = serde_json::json!({ "Authorization": "Bearer from-the-request" });
+        tc.dataset = Some(dataset_of(vec![("plain", None, None)]));
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({ "forEachRow": true }));
+
+        let sent = row_results(&engine, &flow, &repo).await[0]
+            .request
+            .as_ref()
+            .unwrap()
+            .headers
+            .clone();
+        assert_eq!(sent.get("Authorization").unwrap(), "Bearer from-the-request");
     }
 
     /// A blank value is not a value: it must fall through rather than send an empty
