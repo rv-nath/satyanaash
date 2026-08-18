@@ -199,12 +199,57 @@ export interface FlowNode {
   height?: number;
 }
 
+/**
+ * What an edge says about when it is taken.
+ *
+ * - `success` / `failure` — the verdict it belongs to
+ * - **`any`** — taken whatever the verdict, labelled **Always** on the canvas. The primitive that
+ *   was missing: before it, "carry on either way" could only be drawn as two edges to the same
+ *   target, and parallel edges overlap exactly, so the graph showed one of them and hid the other.
+ * - `default` — a synonym for untyped that nothing creates; `pick_edge` still honours it
+ * - *absent* — how nearly every existing flow is drawn. Taken on a pass or a skip, **never** on a
+ *   failure, which is why an untyped edge cannot stand in for `any`.
+ */
+export type EdgeKind = 'success' | 'failure' | 'any' | 'default';
+
+/**
+ * What each kind is called on the canvas.
+ *
+ * `any` reads as **Always** rather than "Any": on a line between two steps, "Always" says when it
+ * is taken, which is the question an edge answers. Kept beside the type so a fourth kind cannot be
+ * added without naming it.
+ */
+export const EDGE_LABEL: Record<EdgeKind, string> = {
+  success: 'Success',
+  failure: 'Failure',
+  any: 'Always',
+  default: 'Always',
+};
+
 export interface FlowEdge {
   id: string;
   source: string;
   target: string;
-  edge_type?: 'success' | 'failure' | 'default';
-  label?: string;
+  /**
+   * `type` on the wire, because that is what the server calls it —
+   * `GraphEdge.edge_type` carries `#[serde(rename = "type")]`.
+   *
+   * It was declared here as `edge_type`, matching the Rust field name rather than the JSON
+   * key, so every edge saved from the canvas sent a field the server did not know and had
+   * its type dropped. A `failure` edge could be drawn, would colour itself correctly until
+   * the next load, and then came back untyped — which meant **no failure edge drawn on the
+   * canvas ever persisted**, and the validator (which is sent the same shape) reported
+   * `NO_FAILURE_EDGE` about graphs that had one.
+   */
+  type?: EdgeKind;
+  /**
+   * The edge's own bag, mirroring `GraphEdge.data`.
+   *
+   * Where the label lives. The server has no top-level `label` field, so a label sent as one
+   * was dropped exactly like the type — and since the canvas labels every typed edge
+   * ("Success" / "Failure"), that label vanished on save too.
+   */
+  data?: Record<string, unknown>;
 }
 
 export interface CanvasSettings {

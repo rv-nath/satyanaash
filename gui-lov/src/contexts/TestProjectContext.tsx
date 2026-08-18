@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { Node, Edge, Viewport } from "@xyflow/react";
 import { useSearchParams } from "react-router-dom";
+import { edgesFromApi } from "@/lib/graphUtils";
 import {
   WorkspaceState, initialWorkspaceState, MAX_TABS,
   openTest, openFlow, openSettings, openRuns, openSuite,
@@ -247,13 +248,10 @@ function fromApiFlow(flow: ApiFlow): Flow {
     { id: generateUUID(), type: "end", position: { x: 250, y: 480 }, data: { label: "End" } },
   ];
 
-  const edges = flow.graph_data?.edges?.map(e => ({
-    id: e.id,
-    // Update source/target if they were remapped due to duplicates
-    source: idRemap.get(e.source) || e.source,
-    target: idRemap.get(e.target) || e.target,
-    label: e.label,
-  })) || [];
+  // Through the shared conversion, which is what carries the edge's **type** — this mapped
+  // id/source/target/label by hand and never read the type at all, so a stored failure edge
+  // arrived on the canvas untyped and was then saved back that way.
+  const edges = edgesFromApi(flow.graph_data?.edges, id => idRemap.get(id) || id);
 
   // Parse edge settings from graph_data.canvas_settings
   const canvasSettings = flow.graph_data?.canvas_settings || {};
