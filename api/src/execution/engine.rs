@@ -204,18 +204,33 @@ fn poll_config(node: &GraphNode) -> Option<PollConfig> {
     })
 }
 
-/// An edge this author explicitly labelled `failure`, and nothing else.
+/// An edge this author explicitly labelled `failure` or `any` — nothing else.
 ///
-/// Strict on purpose. `pick_edge` falls back — exact type, `default`, untyped, then the first
-/// edge it can find — which is right for a graph drawn without labels but catastrophic for a
+/// Strict on purpose. `pick_edge` falls back — exact type, `any`, `default`, untyped, then the
+/// first edge it can find — which is right for a graph drawn without labels but catastrophic for a
 /// failure: it would find the happy path and take it. Every edge in a real flow here is untyped,
 /// so that fallback was not a rare case, it was the only case.
+///
+/// `any` is the one relaxation, and it is not a fallback: it is a type the author chose, on an
+/// edge that says "then this, whatever happened". Before it existed the only way to express that
+/// was **two edges to the same target**, one untyped and one `failure` — which routes correctly
+/// and draws as a single line, because parallel edges between one pair of nodes overlap exactly.
+/// A graph that cannot be read is a bad graph even when the engine agrees with it.
+///
+/// Continuing past a failure cannot flatter the run: `run_flow`'s final-status guard turns any
+/// run with a failed node red whatever the traversal returned.
+/// `failure` beats `any` when a node has both, because the specific type is the author being
+/// specific — an `any` edge alongside it is the fallback they also drew, not a competitor. Taken
+/// in two passes rather than one `find`, or edge order would decide it silently.
 fn failure_edge(flow: &Flow, current_id: &str) -> Option<String> {
-    flow.graph_data
-        .edges
-        .iter()
-        .find(|e| e.source == current_id && e.edge_type.as_deref() == Some("failure"))
-        .map(|e| e.target.clone())
+    let of_type = |want: &str| {
+        flow.graph_data
+            .edges
+            .iter()
+            .find(|e| e.source == current_id && e.edge_type.as_deref() == Some(want))
+            .map(|e| e.target.clone())
+    };
+    of_type("failure").or_else(|| of_type("any"))
 }
 
 /// A node's fan-out choice, as the canvas stores it.
@@ -3100,10 +3115,16 @@ impl ExecutionEngine {
             return None;
         }
 
-        // Edge routing rules:
-        // 1. If preferred_type is specified, look for exact match first
-        // 2. Then look for "default" type
-        // 3. Then use any edge (first one)
+        // Edge routing rules, most specific first:
+        // 1. The exact type asked for
+        // 2. `any` — the author's own "then this, whatever happened"
+        // 3. `default`
+        // 4. An untyped edge, which is how nearly every real flow is drawn
+        // 5. Whatever edge comes first
+        //
+        // `any` sits above `default` and below the exact match because it is a choice rather than
+        // a fallback: an author who labelled one edge Success and another Always meant the first
+        // one on a pass. Below the exact match, it never overrides that.
 
         if let Some(ptype) = preferred_type {
             // Look for exact match
@@ -3112,6 +3133,13 @@ impl ExecutionEngine {
             }) {
                 return Some(edge.target.clone());
             }
+        }
+
+        // Look for an "any" edge — taken on every verdict, which is the whole point of it
+        if let Some(edge) = edges.iter().find(|e| {
+            e.edge_type.as_ref().map(|t| t == "any").unwrap_or(false)
+        }) {
+            return Some(edge.target.clone());
         }
 
         // Look for default edge
@@ -4525,6 +4553,132 @@ mod tests {
         // Should find failure edge
         let next = engine.find_next_node(&flow, "tc1", Some("failure"));
         assert_eq!(next, Some("end_failure".to_string()));
+    }
+
+    /// **A run that continued past a failed step is still a failed run.**
+    ///
+    /// This is the property that makes `any` safe to add at all. Traversal returns the *last*
+    /// node's outcome, so a red step followed by a green one returns "completed" — and an `any`
+    /// edge is precisely a licence to have red steps followed by green ones. `run_flow`'s
+    /// final-status guard (`stats.failed > 0`) is what keeps the run red, and its comment records
+    /// that this was got wrong once already: "the more visible one was the flattering one."
+    ///
+    /// Goes through `execute_flow` rather than the routing functions, because the guard lives in
+    /// `run_flow` and a unit test on `pick_edge` cannot see it.
+    #[tokio::test]
+    async fn a_run_that_continues_past_a_failure_is_still_failed() {
+        let engine = ExecutionEngine::new(false, None);
+        let fails = stub_once(500, "{}").await;
+        let passes = stub_once(200, "{}").await;
+        let mut red = make_test_case("red", "Fails", &fails, "GET");
+        red.assertion_script = None;
+        let green = make_test_case("green", "Passes", &passes, "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(red).with_test_case(green);
+
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("a", "testCase", serde_json::json!({"testCaseId": "red"})),
+            make_node("b", "testCase", serde_json::json!({"testCaseId": "green"})),
+            make_node("end", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "a", None),
+            make_edge("e2", "a", "b", Some("any")),
+            make_edge("e3", "b", "end", None),
+        ]);
+
+        let run = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+
+        // Both steps ran — that is what the edge bought.
+        assert_eq!(run.results.len(), 2, "{:?}", run.results.iter().map(|r| &r.node_id).collect::<Vec<_>>());
+        assert_eq!(run.results[1].status, NodeStatus::Passed);
+        // And the run is red anyway.
+        assert_eq!(run.status, "failed", "a green step after a red one must not flatter the run");
+    }
+
+    /// `any` means "then this, whatever happened" — the primitive that was missing.
+    ///
+    /// Without it, the only way to say it was **two edges to the same target**, one untyped and
+    /// one `failure`. That routes correctly and draws as one line, because parallel edges between
+    /// a single pair of nodes overlap exactly: the graph then showed a Failure line where a normal
+    /// step was intended, and a third edge added by hand was invisible. One edge, one line.
+    #[test]
+    fn an_any_edge_is_taken_on_every_verdict() {
+        let engine = ExecutionEngine::new(false, None);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("tc1", "testCase", serde_json::json!({"testCaseId": "tc1"})),
+            make_node("next", "testCase", serde_json::json!({"testCaseId": "tc2"})),
+        ], vec![
+            make_edge("e1", "start", "tc1", None),
+            make_edge("e2", "tc1", "next", Some("any")),
+        ]);
+
+        // A pass goes through `pick_edge`, a failure through the strict `failure_edge`; both have
+        // to find it, or "whatever happened" would mean "whatever except that".
+        assert_eq!(engine.find_next_node(&flow, "tc1", Some("success")), Some("next".to_string()));
+        assert_eq!(failure_edge(&flow, "tc1"), Some("next".to_string()));
+        // And a skip, which routes with no preference at all.
+        assert_eq!(engine.find_next_node(&flow, "tc1", None), Some("next".to_string()));
+    }
+
+    /// The specific type wins. An author who drew Success *and* Always meant the first one on a
+    /// pass; `any` is the edge they also drew, not a competitor for the same verdict.
+    #[test]
+    fn a_named_edge_beats_an_any_edge_for_its_own_verdict() {
+        let engine = ExecutionEngine::new(false, None);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("tc1", "testCase", serde_json::json!({"testCaseId": "tc1"})),
+            make_node("on_pass", "end", serde_json::json!({})),
+            make_node("on_fail", "end", serde_json::json!({})),
+            make_node("otherwise", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "tc1", None),
+            // Deliberately first in the list, so a single-pass `find` would take it and edge order
+            // would silently decide the routing.
+            make_edge("e2", "tc1", "otherwise", Some("any")),
+            make_edge("e3", "tc1", "on_pass", Some("success")),
+            make_edge("e4", "tc1", "on_fail", Some("failure")),
+        ]);
+
+        assert_eq!(engine.find_next_node(&flow, "tc1", Some("success")), Some("on_pass".to_string()));
+        assert_eq!(failure_edge(&flow, "tc1"), Some("on_fail".to_string()));
+    }
+
+    /// `any` outranks `default` and untyped, which are fallbacks rather than choices.
+    #[test]
+    fn an_any_edge_beats_an_untyped_one() {
+        let engine = ExecutionEngine::new(false, None);
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("tc1", "testCase", serde_json::json!({"testCaseId": "tc1"})),
+            make_node("chosen", "end", serde_json::json!({})),
+            make_node("drawn", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "tc1", None),
+            make_edge("e2", "tc1", "drawn", None),
+            make_edge("e3", "tc1", "chosen", Some("any")),
+        ]);
+
+        assert_eq!(engine.find_next_node(&flow, "tc1", Some("success")), Some("chosen".to_string()));
+    }
+
+    /// An untyped edge stays untyped. Every edge in the author's real flows is one, and treating
+    /// them as `any` would change how a failed node routes in seven existing flows.
+    #[test]
+    fn an_untyped_edge_is_still_not_taken_on_a_failure() {
+        let flow = make_flow("flow1", vec![
+            make_node("start", "start", serde_json::json!({})),
+            make_node("tc1", "testCase", serde_json::json!({"testCaseId": "tc1"})),
+            make_node("next", "end", serde_json::json!({})),
+        ], vec![
+            make_edge("e1", "start", "tc1", None),
+            make_edge("e2", "tc1", "next", None),
+        ]);
+        assert_eq!(failure_edge(&flow, "tc1"), None);
     }
 
     #[test]

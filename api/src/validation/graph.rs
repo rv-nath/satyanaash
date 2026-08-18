@@ -342,10 +342,14 @@ impl<'a> GraphValidator<'a> {
 
         // === WARNINGS ===
 
-        // Missing failure edges on test case nodes
+        // Missing failure edges on test case nodes.
+        //
+        // An `any` edge satisfies this, because it is taken on a failure too — that is what makes
+        // it a single answer to both of these warnings instead of two edges to the same target.
         for node in graph.nodes.iter().filter(|n| n.node_type == "testCase") {
             let has_failure = graph.edges.iter()
-                .any(|e| e.source == node.id && edge_type_is(&e, "failure"));
+                .any(|e| e.source == node.id &&
+                     (edge_type_is(&e, "failure") || edge_type_is(&e, "any")));
 
             if !has_failure {
                 warnings.push(ValidationIssue::warning_with_node(
@@ -360,7 +364,8 @@ impl<'a> GraphValidator<'a> {
         for node in graph.nodes.iter().filter(|n| n.node_type == "testCase") {
             let has_success = graph.edges.iter()
                 .any(|e| e.source == node.id &&
-                     (edge_type_is(&e, "success") || edge_type_is(&e, "default") || e.edge_type.is_none()));
+                     (edge_type_is(&e, "success") || edge_type_is(&e, "any")
+                      || edge_type_is(&e, "default") || e.edge_type.is_none()));
 
             if !has_success {
                 warnings.push(ValidationIssue::warning_with_node(
@@ -1953,6 +1958,27 @@ mod tests {
             .find(|w| w.code == "GROUP_FAILURE_EDGE_IGNORED")
             .expect("a dead failure edge should be reported");
         assert_eq!(issue.node_id.as_deref(), Some("g1"));
+    }
+
+    /// One `any` edge answers both warnings, which is the point of it: the alternative was two
+    /// edges to the same target, and those overlap exactly on the canvas.
+    #[tokio::test]
+    async fn an_always_edge_satisfies_both_edge_warnings() {
+        let validator = GraphValidator::new(&NoRepos, &NoRepos);
+        let mut flow = flow_of(
+            vec![
+                plain("start", "start"),
+                plain("tc1", "testCase"),
+                plain("end", "end"),
+            ],
+            vec![edge("e1", "start", "tc1"), edge("e2", "tc1", "end")],
+        );
+        flow.graph_data.edges[1].edge_type = Some("any".to_string());
+
+        let result = validator.validate(&flow).await.unwrap();
+        let codes: Vec<_> = result.warnings.iter().map(|w| w.code.as_str()).collect();
+        assert!(!codes.contains(&"NO_FAILURE_EDGE"), "{:?}", codes);
+        assert!(!codes.contains(&"NO_SUCCESS_EDGE"), "{:?}", codes);
     }
 
     #[tokio::test]

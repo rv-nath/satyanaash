@@ -1,4 +1,6 @@
 import { useCallback, useState, useEffect, useRef, useMemo } from "react";
+import { EDGE_LABEL, type EdgeKind } from "@/lib/api/types";
+import { isEdgeEvent } from "@/lib/canvasEvents";
 import {
   ReactFlow,
   Background,
@@ -52,6 +54,10 @@ const TestCanvasContent = () => {
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
   const [showEdgeTypeDialog, setShowEdgeTypeDialog] = useState(false);
+  /** The existing edge whose type is being changed, if that is why the dialog is open. The
+   *  alternative was delete-and-redraw, which loses the edge and is an odd thing to have to do to
+   *  change one word about it. */
+  const [retypingEdge, setRetypingEdge] = useState<string | null>(null);
   const { fitView, setViewport: setReactFlowViewport, getViewport: getReactFlowViewport } = useReactFlow();
   const viewportDebounceRef = useRef<NodeJS.Timeout | null>(null);
   const isRestoringViewportRef = useRef(false);
@@ -76,10 +82,12 @@ const TestCanvasContent = () => {
   const hasAnyNodes = nodes.length > 0;
   const executionMode = hasCustomFlow ? 'flow' : 'fifo';
   const totalTests = flows.reduce((sum, g) => sum + g.testCases.length, 0);
-  const [contextMenu, setContextMenu] = useState<{ 
-    x: number; 
-    y: number; 
-    canvasPosition?: { x: number; y: number } 
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    canvasPosition?: { x: number; y: number };
+    /** Set when the menu was opened on an edge, which gives it a different menu entirely. */
+    edgeId?: string;
   } | null>(null);
   const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
 
@@ -231,9 +239,29 @@ const TestCanvasContent = () => {
     [edges, setEdges, setEdgesState]
   );
 
+  /** Change an existing edge's type, from the menu or the dialog. One implementation, so the two
+   *  routes cannot disagree about what changing a type means. */
+  const setEdgeKind = useCallback(
+    (id: string, type: EdgeKind) => {
+      const updated = edges.map(e =>
+        e.id === id ? { ...e, data: { ...e.data, type }, label: EDGE_LABEL[type] } : e,
+      );
+      setEdgesState(updated);
+      setEdges(updated);
+    },
+    [edges, setEdges, setEdgesState],
+  );
+
   const handleEdgeTypeSelect = useCallback(
-    (type: 'success' | 'failure') => {
-      console.log('handleEdgeTypeSelect triggered:', type, pendingConnection);
+    (type: EdgeKind) => {
+      // Changing an existing edge rather than drawing a new one. Same dialog, because it asks the
+      // same question, and the label is rewritten with the type so the two cannot drift.
+      if (retypingEdge) {
+        setEdgeKind(retypingEdge, type);
+        setShowEdgeTypeDialog(false);
+        setRetypingEdge(null);
+        return;
+      }
       if (!pendingConnection) return;
       
       // No `animated` and no `style`: an edge drawn now must look exactly like the same
@@ -244,7 +272,7 @@ const TestCanvasContent = () => {
       const newEdge = {
         ...pendingConnection,
         data: { type },
-        label: type === 'success' ? 'Success' : 'Failure',
+        label: EDGE_LABEL[type],
       };
       const newEdges = addEdge(newEdge, edges);
       console.log('Edge created, new edges:', newEdges);
@@ -253,12 +281,20 @@ const TestCanvasContent = () => {
       setShowEdgeTypeDialog(false);
       setPendingConnection(null);
     },
-    [pendingConnection, edges, setEdges, setEdgesState]
+    [pendingConnection, retypingEdge, setEdgeKind, edges, setEdges, setEdgesState]
   );
 
   const handleEdgeTypeCancel = useCallback(() => {
     setShowEdgeTypeDialog(false);
     setPendingConnection(null);
+    setRetypingEdge(null);
+  }, []);
+
+  /** Double-click an edge to change what it says. Single click already means "bring to front", so
+   *  it could not also mean this. */
+  const handleEdgeDoubleClick = useCallback((_event: React.MouseEvent, edge: { id: string }) => {
+    setRetypingEdge(edge.id);
+    setShowEdgeTypeDialog(true);
   }, []);
 
   const handleAutoLayout = useCallback((direction: LayoutDirection = 'TB', spacing: LayoutSpacing = 'comfortable') => {
@@ -286,6 +322,8 @@ const TestCanvasContent = () => {
 
   const handleContextMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
+    // An edge has its own menu; this one would replace it with the canvas's.
+    if (isEdgeEvent(event.target)) return;
     // Calculate canvas position for node placement
     const canvasPosition = {
       x: event.clientX - 250, // Approximate offset
@@ -296,6 +334,19 @@ const TestCanvasContent = () => {
       y: event.clientY,
       canvasPosition 
     });
+  }, []);
+
+  /** Right-click an edge to change what it says. The canvas menu's other items do not apply, so
+   *  the menu shows only the three kinds. */
+  const handleEdgeContextMenu = useCallback((event: React.MouseEvent, edge: { id: string }) => {
+    event.preventDefault();
+    // The same event bubbles to the container's `onContextMenu`, which sets the *canvas* menu and
+    // would overwrite this one a moment later — each handler correct on its own, and the edge menu
+    // never visible. `isEdgeEvent` guards it from the other side too, so the fix does not depend
+    // on which of the two happens to run last.
+    event.stopPropagation();
+    setSelectedEdge(edge.id);
+    setContextMenu({ x: event.clientX, y: event.clientY, edgeId: edge.id });
   }, []);
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
@@ -478,9 +529,15 @@ const TestCanvasContent = () => {
       className: 'hover:!stroke-[4px] transition-all cursor-pointer',
       style: {
         ...edge.style,
-        stroke: edge.data?.type === 'failure' 
-          ? 'hsl(var(--destructive))' 
-          : 'hsl(var(--success))',
+        // Three states now. `any` is deliberately *not* a third accent colour: red and green mean
+        // verdicts on this canvas, and an Always edge is the absence of a verdict rather than
+        // another one — so it takes the muted foreground and reads as plumbing.
+        stroke:
+          edge.data?.type === 'failure'
+            ? 'hsl(var(--destructive))'
+            : edge.data?.type === 'any'
+              ? 'hsl(var(--muted-foreground))'
+              : 'hsl(var(--success))',
         strokeWidth: edge.id === selectedEdge ? 4 : 2,
       },
     }))
@@ -567,6 +624,8 @@ const TestCanvasContent = () => {
         onNodeClick={handleNodeClick}
         onNodeDoubleClick={handleNodeDoubleClick}
         onEdgeClick={handleEdgeClick}
+        onEdgeDoubleClick={handleEdgeDoubleClick}
+        onEdgeContextMenu={handleEdgeContextMenu}
         onEdgeMouseEnter={handleEdgeMouseEnter}
         onEdgeMouseLeave={handleEdgeMouseLeave}
         onPaneClick={handlePaneClick}
@@ -635,6 +694,10 @@ const TestCanvasContent = () => {
           y={contextMenu.y}
           canvasPosition={contextMenu.canvasPosition || { x: 0, y: 0 }}
           selectedNode={selectedNode}
+          selectedEdge={
+            contextMenu.edgeId ? edges.find(e => e.id === contextMenu.edgeId) ?? null : null
+          }
+          onSetEdgeType={type => contextMenu.edgeId && setEdgeKind(contextMenu.edgeId, type)}
           onClose={() => setContextMenu(null)}
           onConfigureNode={() => {
             setShowConfigPanel(true);
