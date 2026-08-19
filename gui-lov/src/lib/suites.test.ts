@@ -7,6 +7,9 @@ import {
   memberCount,
   memberNote,
   runLabel,
+  sectionCount,
+  sectionState,
+  setSection,
   toggleMember,
 } from "@/lib/suites";
 import type { Flow, SuiteMember, TestCase } from "@/lib/api/types";
@@ -136,5 +139,81 @@ describe("memberNote", () => {
     expect(memberNote(rows([{ needs_flow: true }, { needs_flow: true }]))).toBe(
       "no rows can run alone",
     );
+  });
+});
+
+describe("a whole section at once", () => {
+  it("reads all, some or none — the state a two-way toggle cannot express", () => {
+    // `some` is the usual state with 35 tests in a project, which is why the header needs three.
+    expect(sectionState({ members: [] }, "flow", available)).toBe("none");
+    expect(sectionState({ members: [{ kind: "flow", id: "f1" }] }, "flow", available)).toBe("some");
+    expect(
+      sectionState(
+        { members: [{ kind: "flow", id: "f1" }, { kind: "flow", id: "f2" }] },
+        "flow",
+        available,
+      ),
+    ).toBe("all");
+  });
+
+  it("reads all in everything-mode, because every row is ticked there too", () => {
+    expect(sectionState({ members: undefined }, "flow", available)).toBe("all");
+  });
+
+  it("reads none for a kind the project has none of, rather than all of nothing", () => {
+    expect(sectionState({ members: undefined }, "test", [{ kind: "flow", id: "f1" }])).toBe("none");
+  });
+
+  it("counts picked against total, so a header can say 1/2", () => {
+    expect(sectionCount({ members: [{ kind: "flow", id: "f1" }] }, "flow", available)).toEqual({
+      picked: 1,
+      total: 2,
+    });
+    expect(sectionCount({ members: undefined }, "test", available)).toEqual({ picked: 1, total: 1 });
+  });
+
+  it("ticks every member of one kind and leaves the other kind alone", () => {
+    const next = setSection({ members: [{ kind: "test", id: "t1" }] }, "flow", true, available);
+    expect(next).toEqual([
+      { kind: "flow", id: "f1" },
+      { kind: "flow", id: "f2" },
+      { kind: "test", id: "t1" },
+    ]);
+  });
+
+  it("puts added members in project order, not click order", () => {
+    // The suite runs in this order, so it has to be the order the author reads down the page.
+    const next = setSection({ members: [] }, "flow", true, available);
+    expect(next.map((m) => m.id)).toEqual(["f1", "f2"]);
+  });
+
+  it("unticks a kind without touching the other", () => {
+    const next = setSection(
+      { members: [{ kind: "flow", id: "f1" }, { kind: "test", id: "t1" }] },
+      "flow",
+      false,
+      available,
+    );
+    expect(next).toEqual([{ kind: "test", id: "t1" }]);
+  });
+
+  it("materialises the full list before unticking in everything-mode", () => {
+    // The trap: `members` is null there, so filtering it directly records nothing — and filtering
+    // the wrong way round keeps only what you excluded.
+    const next = setSection({ members: undefined }, "flow", false, available);
+    expect(next).toEqual([{ kind: "test", id: "t1" }]);
+  });
+
+  it("ticking every section is an explicit list, not everything-mode", () => {
+    // These must stay distinct: everything-mode picks up tomorrow's new flow on its own, an
+    // explicit list does not. Collapsing them changes what the suite covers the day one is added.
+    let next = setSection({ members: [] }, "flow", true, available);
+    next = setSection({ members: next }, "test", true, available);
+    expect(next).toEqual(available);
+    expect(coversEverything({ members: next })).toBe(false);
+  });
+
+  it("is a no-op when the project has none of that kind", () => {
+    expect(setSection({ members: [] }, "test", true, [{ kind: "flow", id: "f1" }])).toEqual([]);
   });
 });

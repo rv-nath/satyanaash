@@ -16,7 +16,11 @@ import {
   isSelected,
   memberNote,
   runLabel,
+  sectionCount,
+  sectionState,
+  setSection,
   toggleMember,
+  type SectionState,
 } from "@/lib/suites";
 
 /**
@@ -131,7 +135,14 @@ const SuiteEditor = ({ suiteId, projectId }: Props) => {
             </span>
           </label>
 
-          <Section title="Flows" count={flows.length}>
+          <Section
+            title="Flows"
+            count={flows.length}
+            picked={sectionCount(suite, "flow", available).picked}
+            state={sectionState(suite, "flow", available)}
+            disabled={everything}
+            onToggleAll={(on) => save.mutate({ members: setSection(suite, "flow", on, available) })}
+          >
             {flows.map((flow) => (
               <MemberRow
                 key={flow.id}
@@ -144,7 +155,14 @@ const SuiteEditor = ({ suiteId, projectId }: Props) => {
             ))}
           </Section>
 
-          <Section title="Tests on their own" count={tests.length}>
+          <Section
+            title="Tests on their own"
+            count={tests.length}
+            picked={sectionCount(suite, "test", available).picked}
+            state={sectionState(suite, "test", available)}
+            disabled={everything}
+            onToggleAll={(on) => save.mutate({ members: setSection(suite, "test", on, available) })}
+          >
             {tests.map((test) => (
               <MemberRow
                 key={test.id}
@@ -174,21 +192,58 @@ const SuiteEditor = ({ suiteId, projectId }: Props) => {
   );
 };
 
+/**
+ * One kind of member, with a checkbox that speaks for the whole list.
+ *
+ * The toggle is here rather than beside each row for the obvious reason — 35 tests is 35 clicks —
+ * and it is **tri-state** because with that many rows "some" is the ordinary condition and a
+ * two-way box would have to lie about it.
+ *
+ * Clicking while indeterminate selects all. The alternative, clearing, is the reading nobody
+ * expects: you clicked a half-filled box to finish filling it.
+ *
+ * Disabled while "Everything in this project" is on, exactly as the rows are — that setting is not
+ * a selection this can add to, it is the absence of one.
+ */
 const Section = ({
   title,
   count,
+  picked,
+  state,
+  disabled,
+  onToggleAll,
   children,
 }: {
   title: string;
   count: number;
+  picked: number;
+  state: SectionState;
+  disabled?: boolean;
+  onToggleAll: (on: boolean) => void;
   children: React.ReactNode;
 }) => (
   <div className="mt-4">
     <div className="flex items-center gap-2 px-1 pb-1">
+      {count > 0 && (
+        <Checkbox
+          className="h-3.5 w-3.5"
+          checked={state === "all" ? true : state === "some" ? "indeterminate" : false}
+          disabled={disabled}
+          onCheckedChange={() => onToggleAll(state !== "all")}
+          aria-label={state === "all" ? `Clear all ${title}` : `Select all ${title}`}
+          title={
+            state === "all" ? `Clear all ${title.toLowerCase()}` : `Select all ${title.toLowerCase()}`
+          }
+        />
+      )}
       <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         {title}
       </span>
-      <span className="text-[10px] text-muted-foreground/60">{count}</span>
+      {/* `9/35` only while partly selected. All or none needs one number, and a permanent
+          fraction reading "35/35" spends attention saying "normal". */}
+      <span className="text-[10px] text-muted-foreground/60">
+        {state === "some" ? `${picked}/${count}` : count}
+      </span>
     </div>
     {count === 0 ? (
       <p className="px-1 text-xs text-muted-foreground/70">None yet.</p>
