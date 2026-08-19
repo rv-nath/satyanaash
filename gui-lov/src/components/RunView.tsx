@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Layers, Workflow, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Layers, Workflow, Loader2, Download } from "lucide-react";
 import { runsApi } from "@/lib/api";
 import type { FlowRun, SuiteRun, TestCaseExecutionResult } from "@/lib/api/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -10,6 +10,14 @@ import { SingleResultView, DatasetResultView } from "@/components/TestCaseEditor
 import RunChart from "@/components/RunChart";
 import { CHART_VIEWS, DEFAULT_VIEW, rowsNote, type RunChartView } from "@/lib/runCharts";
 import { liveRunToSuiteRun, progressLine, type LiveRun } from "@/lib/liveRun";
+import { downloadRunCsv, runRows } from "@/lib/runExport";
+import { downloadRunXlsx } from "@/lib/runWorkbook";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   breadcrumb,
   initiallyExpanded,
@@ -264,6 +272,11 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
     </ResizablePanelGroup>
   );
 
+  // Named rather than inlined: `live && !live.status` reads as "there is a live run" until you
+  // notice the second half, and the button's disabled state and its tooltip must agree.
+  const liveInProgress = !!live && !live.status;
+  const leafCount = useMemo(() => runRows(run).length, [run]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-baseline gap-2 border-b border-border px-4 py-2">
@@ -320,6 +333,50 @@ const RunReport = ({ run, live }: { run: SuiteRun; live: LiveRun | null }) => {
         >
           {chartOpen ? "Hide chart" : "Show chart"}
         </Button>
+        {/* Beside the totals rather than in the header, because it is the same thought one step
+            further: these figures count steps, and the file is how you read the rows behind them.
+            Disabled while the run is still going — half a run exported reads as a whole one, and
+            nothing in the file would say which. */}
+        {/* Two formats, because they answer different questions and neither replaces the other: the
+            CSV is one flat sheet to filter, the workbook is three sheets to read. "Both" is there
+            because the honest answer to "which do I want" is often both, once. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 gap-1 px-1.5 text-[10px] text-muted-foreground"
+              disabled={liveInProgress || leafCount === 0}
+              title={liveInProgress ? "Wait for the run to finish" : undefined}
+            >
+              <Download className="h-3 w-3" />
+              Export
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-64">
+            <DropdownMenuItem onClick={() => downloadRunCsv(run)} className="flex-col items-start gap-0.5">
+              <span className="text-xs">CSV</span>
+              <span className="text-[10px] text-muted-foreground">
+                One flat sheet · {leafCount} row{leafCount === 1 ? "" : "s"} · filter it
+              </span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => downloadRunXlsx(run)} className="flex-col items-start gap-0.5">
+              <span className="text-xs">Excel</span>
+              <span className="text-[10px] text-muted-foreground">
+                Summary, failures and results · frozen header, failures in red
+              </span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                downloadRunCsv(run);
+                downloadRunXlsx(run);
+              }}
+              className="flex-col items-start gap-0.5"
+            >
+              <span className="text-xs">Both</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {live && !live.status ? (
           <span className="text-primary">{progressLine(live)}</span>
         ) : (
