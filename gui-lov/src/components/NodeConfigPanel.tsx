@@ -567,7 +567,10 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
             <Section
               icon={<ArrowDownToLine className="h-3.5 w-3.5" />}
               title="Input variables"
-              subtitle="Used as {{name}} here, and beat anything an earlier step left behind"
+              // The subtitle said where the name is *used* and nothing about the value, which read
+              // as "type a literal here" — and the value was in fact the one authored field that
+              // did not resolve templates. It does now, so say so.
+              subtitle="Used as {{name}} here, and beat anything an earlier step left behind. A value may itself be a {{name}}"
               onAdd={addInputVar}
             >
               {inputVars.length === 0 ? (
@@ -588,7 +591,7 @@ export const NodeConfigPanel = ({ node, onClose }: NodeConfigPanelProps) => {
                         className={`h-9 font-mono text-[13px] ${HINT}`}
                       />
                       <Input
-                        placeholder="value"
+                        placeholder="value, or {{from_an_earlier_step}}"
                         value={v.value}
                         onChange={(e) => updateInputVar(i, "value", e.target.value)}
                         className={`h-9 font-mono text-[13px] ${HINT}`}

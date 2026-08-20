@@ -2750,22 +2750,55 @@ impl ExecutionEngine {
             logs.push(format!("Executing test case: {}", test_case.name));
         }
 
-        // Inject node-level input variables (static per-node overrides from flow editor)
-        let node_input_vars: HashMap<String, Value> = node.data
+        // Node-level input variables: what the author typed on this node, for this flow.
+        //
+        // **Interpolated**, like the endpoint, the headers and the body already are. They were
+        // stored verbatim, which made a value of `{{pa_token}}` arrive as those twelve characters —
+        // and the failure landed two steps away, on whatever request used it, so the node that
+        // caused it looked fine. Nothing anywhere said input vars were the one authored field that
+        // did not resolve.
+        //
+        // Resolved against the context **as it stands before this node's own vars are set**, which
+        // gives three properties worth knowing:
+        //
+        // - earlier steps' exports, flow vars, the environment and built-ins all work
+        // - a value may **wrap the name it shadows** — `token = "Bearer {{token}}"` picks up the
+        //   inherited `token` and prefixes it. It cannot loop, because resolution finishes before
+        //   the value is stored
+        // - two input vars on the same node **cannot see each other**: they are all resolved
+        //   against a context none of them is in yet. Deliberate — resolving siblings in map order
+        //   would make the answer depend on iteration order, which is not something an author can
+        //   reason about. Pinned by `sibling_input_vars_do_not_see_each_other`
+        //
+        // The tier order is unchanged: these still beat `context`, for the reason recorded in
+        // `variables.rs` — a value typed on this node must not lose to one an earlier step left
+        // behind. Interpolating changes where the value comes from, not who wins.
+        //
+        // An unresolvable name stays literal and is warned about downstream, the same as anywhere
+        // else. In debug mode the log below now shows the *resolved* value, which is what makes a
+        // mistake visible on the node that made it.
+        let mut node_input_vars: HashMap<String, Value> = HashMap::new();
+        if let Some(arr) = node.data
             .get("config")
             .and_then(|c| c.get("inputVars"))
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        let key = item.get("key")?.as_str()?;
-                        let val = item.get("value")?.as_str()?;
-                        if key.is_empty() { return None; }
-                        Some((key.to_string(), Value::String(val.to_string())))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        {
+            for item in arr {
+                let (Some(key), Some(val)) = (
+                    item.get("key").and_then(|k| k.as_str()),
+                    item.get("value").and_then(|v| v.as_str()),
+                ) else {
+                    continue;
+                };
+                if key.is_empty() {
+                    continue;
+                }
+                // A template that cannot be resolved keeps its literal text, so the existing
+                // unresolved-variable warning reports it rather than this failing the step.
+                let resolved = ctx.interpolate(val).unwrap_or_else(|_| val.to_string());
+                node_input_vars.insert(key.to_string(), Value::String(resolved));
+            }
+        }
 
         if self.debug_mode && !node_input_vars.is_empty() {
             for (k, v) in &node_input_vars {
@@ -5824,6 +5857,125 @@ mod tests {
             .headers
             .clone();
         assert_eq!(sent.get("Authorization").unwrap(), "Bearer from-the-request");
+    }
+
+    /// The point of interpolating them at all: a node can hand a request a value produced
+    /// elsewhere in the run, which is what `{{token}}` on a node is obviously *for*. Stored
+    /// verbatim, it arrived as those literal characters and the failure surfaced on whatever
+    /// request used it — two steps from the node that caused it.
+    #[tokio::test]
+    async fn a_node_input_var_resolves_against_the_run_context() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let tc = make_test_case("tc", "Use it", &format!("{}{{{{who}}}}", url), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "inputVars": [{"key": "who", "value": "{{seed}}-suffix"}]
+        }));
+
+        let mut vars = HashMap::new();
+        vars.insert("seed".to_string(), serde_json::json!("resolved"));
+        let run = engine
+            .execute_flow("exec1", &flow, &repo, vars, HashMap::new(), None)
+            .await
+            .unwrap();
+        let sent = &run.results.iter().find(|r| r.node_id == "b").unwrap()
+            .request.as_ref().unwrap().url;
+        assert!(sent.ends_with("/resolved-suffix"), "url was {}", sent);
+    }
+
+    /// An input var may **wrap the name it shadows**: resolution finishes before the value is
+    /// stored, so `{{token}}` inside `token`'s own value sees the inherited one. It cannot loop.
+    #[tokio::test]
+    async fn a_node_input_var_can_wrap_the_value_it_shadows() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let tc = make_test_case("tc", "Use it", &format!("{}{{{{who}}}}", url), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "inputVars": [{"key": "who", "value": "wrapped-{{who}}"}]
+        }));
+
+        let mut vars = HashMap::new();
+        vars.insert("who".to_string(), serde_json::json!("inherited"));
+        let run = engine
+            .execute_flow("exec1", &flow, &repo, vars, HashMap::new(), None)
+            .await
+            .unwrap();
+        let sent = &run.results.iter().find(|r| r.node_id == "b").unwrap()
+            .request.as_ref().unwrap().url;
+        assert!(sent.ends_with("/wrapped-inherited"), "url was {}", sent);
+    }
+
+    /// Two input vars on one node cannot see each other — they are all resolved against a context
+    /// none of them is in yet. Deliberate: resolving siblings in map order would make the answer
+    /// depend on iteration order, which an author cannot reason about.
+    #[tokio::test]
+    async fn sibling_input_vars_do_not_see_each_other() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let tc = make_test_case("tc", "Use it", &format!("{}{{{{second}}}}", url), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "inputVars": [
+                {"key": "first", "value": "alpha"},
+                {"key": "second", "value": "{{first}}"}
+            ]
+        }));
+
+        let run = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+        let sent = &run.results.iter().find(|r| r.node_id == "b").unwrap()
+            .request.as_ref().unwrap().url;
+        // Literal, not "alpha" — and stated here so the limit is a decision rather than a surprise.
+        assert!(sent.ends_with("/{{first}}"), "url was {}", sent);
+    }
+
+    /// A built-in in an input var is generated, like it is anywhere else.
+    #[tokio::test]
+    async fn a_built_in_in_a_node_input_var_is_generated() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let tc = make_test_case("tc", "Use it", &format!("{}{{{{nonce}}}}", url), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "inputVars": [{"key": "nonce", "value": "{{$UUID}}"}]
+        }));
+
+        let run = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+        let sent = &run.results.iter().find(|r| r.node_id == "b").unwrap()
+            .request.as_ref().unwrap().url;
+        assert!(!sent.contains("{{$UUID}}"), "still literal: {}", sent);
+        // A UUID has four dashes; enough to say something was generated rather than blanked.
+        let tail = sent.rsplit('/').next().unwrap();
+        assert_eq!(tail.matches('-').count(), 4, "not a uuid: {}", tail);
+    }
+
+    /// A name that resolves nowhere keeps its literal text, so the existing unresolved-variable
+    /// warning reports it rather than this failing the step — the same rule the endpoint, the
+    /// headers and the body already follow.
+    #[tokio::test]
+    async fn an_unresolvable_node_input_var_is_sent_literally() {
+        let engine = ExecutionEngine::new(false, None);
+        let url = stub_times(200, "{}", 1).await;
+        let tc = make_test_case("tc", "Use it", &format!("{}{{{{who}}}}", url), "GET");
+        let repo = MockTestCaseRepository::new().with_test_case(tc);
+        let flow = one_node_flow("tc", serde_json::json!({
+            "inputVars": [{"key": "who", "value": "{{nothing_has_this}}"}]
+        }));
+
+        let run = engine
+            .execute_flow("exec1", &flow, &repo, HashMap::new(), HashMap::new(), None)
+            .await
+            .unwrap();
+        let result = run.results.iter().find(|r| r.node_id == "b").unwrap();
+        assert_eq!(result.status, NodeStatus::Passed, "must not fail the step");
+        assert!(result.request.as_ref().unwrap().url.ends_with("/{{nothing_has_this}}"));
     }
 
     /// A blank value is not a value: it must fall through rather than send an empty

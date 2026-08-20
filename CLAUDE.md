@@ -226,6 +226,20 @@ on this node, while `context` is inherited from whatever ran earlier. Ranked the
 other way, a node that set `my_email` explicitly still sent the value an earlier
 step's pre-test script left behind. Don't swap them back.
 
+A node input var's **value is interpolated**, like the endpoint, the headers and the
+body. It was stored verbatim, which made it the one authored field that didn't
+resolve templates — a value of `{{pa_token}}` arrived as those twelve characters, and
+the failure landed on whatever request used it rather than on the node that caused
+it. Resolved against the context *before* this node's own vars are set, which gives
+three properties: earlier exports, flow vars, environment and built-ins all work; a
+value may **wrap the name it shadows** (`token = "Bearer {{token}}"` prefixes the
+inherited one, and cannot loop because resolution finishes before the value is
+stored); and two input vars on one node **cannot see each other**, deliberately —
+resolving siblings in map order would make the answer depend on iteration order.
+Unresolvable names stay literal and are reported by the existing warning. In debug
+mode the `Node input var:` log shows the *resolved* value, which is what makes a
+mistake visible where it was made.
+
 `row_vars` sits above `node_input_vars` for the same kind of reason, one level
 finer: the node says what is true for the whole set (`expected_count`), the row says
 what changes per iteration (`channel`). Set per row on that row's **own clone** of
